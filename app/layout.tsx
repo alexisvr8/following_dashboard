@@ -1,11 +1,12 @@
 import type { Metadata } from "next";
-import { Geist, Geist_Mono } from "next/font/google";
+import { Inter, Geist_Mono } from "next/font/google";
 import { TooltipProvider } from "@/components/ui/tooltip";
 import { AppHeader } from "@/components/layout/AppHeader";
+import { Sidebar } from "@/components/layout/Sidebar";
 import "./globals.css";
 
-const geistSans = Geist({
-  variable: "--font-geist-sans",
+const inter = Inter({
+  variable: "--font-sans",
   subsets: ["latin"],
 });
 
@@ -23,12 +24,17 @@ export default function RootLayout({ children }: LayoutProps<"/">) {
   return (
     <html
       lang="es"
-      className={`${geistSans.variable} ${geistMono.variable} h-full antialiased`}
+      className={`${inter.variable} ${geistMono.variable} h-full antialiased`}
     >
       <body className="min-h-full flex flex-col">
         <TooltipProvider>
-          <AppHeader />
-          <main className="flex-1">{children}</main>
+          <div className="flex min-h-full flex-1">
+            <Sidebar />
+            <div className="flex min-w-0 flex-1 flex-col">
+              <AppHeader />
+              <main className="flex-1 overflow-y-auto">{children}</main>
+            </div>
+          </div>
         </TooltipProvider>
       </body>
     </html>

@@ -19,6 +19,9 @@ create table accounts (
   execution_minutes_actual integer not null default 0,
   engagement_percent numeric(5,2),
   last_activity_at timestamptz,
+  tracking_status text not null default 'no_contact'
+    check (tracking_status in ('no_contact','in_progress','waiting_client','at_risk','closed_ok')),
+  last_note_summary text,
   created_at timestamptz not null default now(),
   updated_at timestamptz not null default now()
 );

@@ -4,6 +4,13 @@ export type PriorityQuadrant =
   | "fill_in"
   | "thankless_task";
 
+export type TrackingStatus =
+  | "no_contact"
+  | "in_progress"
+  | "waiting_client"
+  | "at_risk"
+  | "closed_ok";
+
 export interface Account {
   id: string;
   name: string;
@@ -14,4 +21,6 @@ export interface Account {
   executionMinutesActual: number;
   engagementPercent: number | null;
   lastActivityAt: string | null;
+  trackingStatus: TrackingStatus;
+  lastNoteSummary: string | null;
 }

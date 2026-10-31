@@ -4,6 +4,15 @@ Dashboard personal de un solo usuario. Sin auth. Self-hosted (no Vercel).
 
 ## Stack
 Next.js 16 (App Router, TS) · Supabase (Postgres) · Tailwind v4 + shadcn/ui · pnpm
+Fuente: Inter (`--font-sans`, next/font/google, en `app/layout.tsx`).
+
+## Navegación
+Sidebar fijo (`components/layout/Sidebar.tsx`) con 2 secciones:
+- `/` Dashboard: `MetricsOverview` (cuentas asignadas, en riesgo, engagement promedio,
+  tiempo dedicado) + `AccountsSplitView` + tickets + integraciones.
+- `/tablero` Tablero Seguimiento: kanban de cuentas por `tracking_status`
+  (`components/tablero/{TrackingBoard,TrackingColumn,TrackingCard}.tsx`), drag-and-drop
+  nativo HTML5 (sin librería externa). Estado local en Fase 1, sin persistencia.
 
 ## Comandos
 pnpm install · pnpm dev · pnpm build · pnpm lint
@@ -16,7 +25,9 @@ Proyecto Supabase aún no creado; `lib/supabase/{client,server}.ts` y
 
 - **accounts**: cuentas, `is_assigned`, `time_score`/`difficulty_score` (clasificador
   de prioridad), `calendar_minutes_planned`/`execution_minutes_actual` (gauge),
-  `last_activity_at` (→ churn-risk), `engagement_percent` (cache, derivado de tickets).
+  `last_activity_at` (→ churn-risk), `engagement_percent` (cache, derivado de tickets),
+  `tracking_status` (no_contact/in_progress/waiting_client/at_risk/closed_ok, ver
+  `lib/tracking.ts`) y `last_note_summary` (texto libre) para el Tablero Seguimiento.
 - **tickets**: accionables semanales por cuenta, `week_start_date`, `is_done` (→ % engagement).
 - **integrations_status**: estado de gmail/calendar/notion/xtract/gemini_notes.
 - **meetings**: minutas, `sentiment`, `followup_draft`, `followup_reminder_at`.
