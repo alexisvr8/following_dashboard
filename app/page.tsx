@@ -1,4 +1,5 @@
 import { AccountsSplitView } from "@/components/dashboard/AccountsSplitView";
+import { WeeklyTicketList } from "@/components/dashboard/WeeklyTicketList";
 import { mockAccounts } from "@/lib/mock/accounts";
 import { mockTickets } from "@/lib/mock/tickets";
 import { computeEngagementPercent } from "@/lib/utils/engagement";
@@ -16,6 +17,11 @@ export default function Home() {
       <section className="space-y-4">
         <h2 className="text-sm font-medium text-muted-foreground">Cuentas</h2>
         <AccountsSplitView accounts={accounts} />
+      </section>
+
+      <section className="space-y-4">
+        <h2 className="text-sm font-medium text-muted-foreground">Tickets / Accionables</h2>
+        <WeeklyTicketList tickets={mockTickets} />
       </section>
     </div>
   );
