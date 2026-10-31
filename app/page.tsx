@@ -1,7 +1,9 @@
 import { AccountsSplitView } from "@/components/dashboard/AccountsSplitView";
 import { WeeklyTicketList } from "@/components/dashboard/WeeklyTicketList";
+import { IntegrationsGrid } from "@/components/dashboard/IntegrationsGrid";
 import { mockAccounts } from "@/lib/mock/accounts";
 import { mockTickets } from "@/lib/mock/tickets";
+import { mockIntegrations } from "@/lib/mock/integrations";
 import { computeEngagementPercent } from "@/lib/utils/engagement";
 
 export default function Home() {
@@ -22,6 +24,11 @@ export default function Home() {
       <section className="space-y-4">
         <h2 className="text-sm font-medium text-muted-foreground">Tickets / Accionables</h2>
         <WeeklyTicketList tickets={mockTickets} />
+      </section>
+
+      <section className="space-y-4">
+        <h2 className="text-sm font-medium text-muted-foreground">Integraciones</h2>
+        <IntegrationsGrid integrations={mockIntegrations} />
       </section>
     </div>
   );
