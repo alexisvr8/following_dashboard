@@ -177,10 +177,19 @@ Pendiente explícito: persistir en Supabase cuando exista el proyecto, extracci�
 accionables por LLM desde el texto de la minuta, análisis de sentimiento real, envío
 real de emails (hoy solo se crea el draft).
 
-## Cron externo
-No hay Vercel Cron. Un cron externo (GitHub Actions scheduled workflow o cron de VPS)
-debe hacer `POST` cada lunes a `/api/cron/weekly-actionables` y cada día hábil (p. ej. 8:30) a
-`/api/cron/daily-followup`, ambos con header `x-cron-secret: $CRON_SECRET`.
+## Sincronización automática (scheduler interno + cron externo opcional)
+`lib/jobs/sync-job.ts` `runSync({drafts, trigger})`: minutas nuevas (`discoverGeminiMeetings(7d)` incremental +
+`mergeDiscovery`) → `syncClientsActivity` (asignados + no asignados) → `computeAlerts` → si `drafts`,
+borradores en Gmail (dedupe `autoFor`). Candado en `globalThis.__syncRunning` (corrida simultánea ⇒ `skipped`).
+Estado en `.data/sync-status.json` (`lib/store/sync-status-store.ts`).
+Scheduler: `instrumentation.ts` → `lib/jobs/scheduler.ts`, solo si `CRON_ENABLED=true` (runtime nodejs; corre
+con `pnpm dev`/`pnpm start`). Tick por minuto, hora local (`TZ`): días `settings.workDays` a `CRON_DRAFTS_AT`
+(08:30) sync + borradores; entre `CRON_FROM`–`CRON_TO` (9–18) cada `CRON_INTERVAL_MINUTES` (15) sync; al
+iniciar o tras suspensión, recuperación si la última corrida es más vieja que el intervalo.
+Endpoints: `GET /api/cron/sync` (estado, lo consulta `components/layout/SyncStatus.tsx` en el header cada 60 s y
+hace `router.refresh()` si hubo corrida nueva); `POST /api/cron/sync[?drafts=1]` y
+`POST /api/cron/daily-followup[?drafts=0]` (wrapper de `runSync`) con header `x-cron-secret: $CRON_SECRET` para
+un cron externo opcional. `POST /api/cron/weekly-actionables` sigue stub.
 
 ## Regla de tokens
 Para ahorrar tokens, proveer respuestas directas sin relleno, generar exclusivamente los
