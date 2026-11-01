@@ -2,6 +2,7 @@ import Link from "next/link";
 import { ProfileAvatar } from "@/components/layout/ProfileAvatar";
 import { ThemeToggleButton } from "@/components/layout/ThemeToggleButton";
 import { MainNav, MobileNav } from "@/components/layout/MainNav";
+import { SyncStatus } from "@/components/layout/SyncStatus";
 
 export function AppHeader() {
   return (
@@ -15,6 +16,7 @@ export function AppHeader() {
         </Link>
         <MainNav />
         <div className="flex items-center gap-2 justify-self-end">
+          <SyncStatus />
           <ThemeToggleButton />
           <ProfileAvatar />
           <MobileNav />

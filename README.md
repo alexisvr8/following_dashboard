@@ -99,16 +99,25 @@ conectar cada una.
 
 ---
 
-## 4. Automatización (cron externo)
+## 4. Sincronización automática
 
-No se usa Vercel Cron. Un cron externo (GitHub Actions o un cron en el VPS) debe llamar a:
+La app se actualiza sola con un programador interno (no hace falta Vercel Cron ni crontab). Se activa con
+`CRON_ENABLED=true` en `.env.local` y corre mientras el servidor esté levantado (`pnpm dev` o `pnpm start`).
 
-| Cuándo | Endpoint | Qué hace |
-|---|---|---|
-| Cada día hábil (~8:30) | `POST /api/cron/daily-followup` | Sincroniza la actividad de los clientes asignados, calcula alertas y crea 1 borrador de actualización por cuenta alertada (`?drafts=0` solo sincroniza). |
-| Cada lunes | `POST /api/cron/weekly-actionables` | Corrida semanal (por ahora es un stub). |
+| Cuándo (días hábiles) | Qué hace |
+|---|---|
+| Cada 15 min entre 9 y 18 h | Busca minutas nuevas de Gemini (reuniones y próximos accionables), actualiza los mails enviados y recibidos con cualquier persona del cliente y recalcula alertas. |
+| 8:30 | Lo mismo y además crea en Gmail 1 borrador de actualización por cuenta alertada (nunca se envían solos). |
+| Al iniciar la app o al despertar el equipo | Si la última sincronización quedó vieja, corre una enseguida. |
 
-Ambos requieren el header `x-cron-secret: $CRON_SECRET`.
+En el encabezado se ve "hace X min" con la última sincronización. Cuando entra una nueva, la pantalla se
+refresca sola. El horario se ajusta con `CRON_INTERVAL_MINUTES`, `CRON_FROM`, `CRON_TO` y `CRON_DRAFTS_AT`.
+
+**En un servidor/VPS:** `pnpm build && pnpm start` con pm2 o systemd, `CRON_ENABLED=true`, `TZ=America/Santiago`
+(o la zona que corresponda), redirect URIs de Google/Notion apuntando al dominio, y copiar la carpeta `.data/`.
+
+**Cron externo (opcional):** `POST /api/cron/sync` (`?drafts=1` para borradores) o `POST /api/cron/daily-followup`
+con el header `x-cron-secret: $CRON_SECRET`.
 
 ---
 

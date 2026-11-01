@@ -16,7 +16,7 @@ const geistMono = Geist_Mono({
 });
 
 export const metadata: Metadata = {
-  title: "Xtract Method Dashboard",
+  title: "Xtract - Dashboard",
   description: "Dashboard personal de seguimiento de cuentas — Metodología Xtract",
 };
 
