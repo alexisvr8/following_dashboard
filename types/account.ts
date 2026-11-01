@@ -5,15 +5,15 @@ export type PriorityQuadrant =
   | "thankless_task";
 
 export type TrackingStatus =
-  | "no_contact"
-  | "in_progress"
-  | "waiting_client"
-  | "at_risk"
-  | "closed_ok";
+  | "tasks_generated"
+  | "tasks_in_progress"
+  | "tasks_priority"
+  | "tasks_done";
 
 export interface Account {
   id: string;
   name: string;
+  contactEmail: string | null;
   isAssigned: boolean;
   timeScore: number;
   difficultyScore: number;
@@ -23,4 +23,6 @@ export interface Account {
   lastActivityAt: string | null;
   trackingStatus: TrackingStatus;
   lastNoteSummary: string | null;
+  erp?: string | null;
+  referentCount?: number;
 }

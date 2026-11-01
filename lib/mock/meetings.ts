@@ -17,4 +17,20 @@ export const mockMeetings: Meeting[] = [
     source: "manual",
     sentiment: "neutral",
   },
+  {
+    id: "m-3",
+    accountId: "acc-3",
+    title: "Llamada de seguimiento",
+    meetingDate: new Date(Date.now() - 1 * 86_400_000).toISOString(),
+    source: "manual",
+    sentiment: "negative",
+  },
+  {
+    id: "m-5",
+    accountId: "acc-5",
+    title: "Primera llamada de descubrimiento",
+    meetingDate: new Date(Date.now() - 5 * 86_400_000).toISOString(),
+    source: "gemini_notes",
+    sentiment: "positive",
+  },
 ];

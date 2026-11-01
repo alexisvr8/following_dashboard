@@ -6,6 +6,8 @@ export interface Meeting {
   title: string;
   meetingDate: string;
   source: "manual" | "gemini_notes";
+  durationMinutes?: number | null;
+  attendeeCount?: number;
   rawNotes?: string;
   sentiment?: MeetingSentiment;
   followupDraft?: string;

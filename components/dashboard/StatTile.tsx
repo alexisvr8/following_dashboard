@@ -24,10 +24,10 @@ export function StatTile({
   return (
     <Card>
       <CardContent className="flex items-start justify-between gap-3">
-        <div className="space-y-1">
+        <div className="min-w-0 space-y-1">
           <p className="text-xs text-muted-foreground">{label}</p>
           <p className="text-2xl font-semibold tracking-tight">{value}</p>
-          {hint && <p className="text-xs text-muted-foreground">{hint}</p>}
+          {hint && <p className="line-clamp-2 text-xs text-muted-foreground" title={hint}>{hint}</p>}
         </div>
         <div className={cn("flex size-9 shrink-0 items-center justify-center rounded-lg", TONE_CLASSNAME[tone])}>
           <Icon className="size-4.5" />

@@ -37,6 +37,9 @@ yarn-error.log*
 # vercel
 .vercel
 
+# tokens de integraciones (Google OAuth, etc.) — Fase 1.5, sin Supabase todavía
+/.data
+
 # typescript
 *.tsbuildinfo
 next-env.d.ts

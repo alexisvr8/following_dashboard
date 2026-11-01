@@ -1,11 +1,13 @@
 import type { IntegrationStatus } from "@/types/integration";
+import { getTokens } from "@/lib/integrations/google-token-store";
 
-// TODO Fase 2: leer/escribir integrations_status en Supabase y conectar OAuth real de Google Calendar.
 export async function GET() {
+  const tokens = await getTokens();
+
   const body: IntegrationStatus = {
     integrationKey: "calendar",
-    status: "not_configured",
-    lastSyncedAt: null,
+    status: tokens ? "connected" : "not_configured",
+    lastSyncedAt: tokens ? new Date(tokens.obtainedAt).toISOString() : null,
     config: {},
   };
   return Response.json(body);
