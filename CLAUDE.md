@@ -39,7 +39,8 @@ se vuelve menú desplegable `MobileNav`). Sin sidebar. 4 secciones (+ detalle `/
   (`components/tablero/{TrackingBoard,TrackingColumn,TrackingCard,TrackingDialog}.tsx`),
   drag-and-drop propio con pointer events (sin HTML5 DnD ni librería): overlay en portal con
   tilt por velocidad, placeholder, FLIP con Web Animations, autoscroll, Esc cancela, touch con
-  long-press. Orden dentro de columna solo local; `?open=<id>` abre el Dialog. Columnas = pipeline de tareas (`lib/tracking.ts`):
+  long-press. Orden dentro de columna solo local; `?open=<id>` abre el Dialog. Buscador por nombre
+  en el header (filtro local; columnas centradas con `justify-center-safe`). Columnas = pipeline de tareas (`lib/tracking.ts`):
   `tasks_generated` (Tareas Generadas) → `tasks_in_progress` (Tareas en Curso) →
   `tasks_priority` (Tareas con Prioridad) → `tasks_done` (Tareas Finalizadas). El status
   **Datos reales**: solo clientes con `status: "assigned"` de `.data/clients.json`,
