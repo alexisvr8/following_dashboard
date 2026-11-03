@@ -120,6 +120,32 @@ export function followupRecipients(
   }));
 }
 
+/** Referentes y equipo Xtract que no estén ya en "to": en copia para que todos queden al tanto del mail nuevo. */
+function newMailCc(client: ClientRecord, ownerEmail: string | null, to: { email: string }[]): string[] {
+  const already = new Set(to.map((r) => r.email));
+  return computeParticipants(client, ownerEmail)
+    .filter((p) => (p.role === "referent" || p.role === "team") && !already.has(p.email))
+    .map((p) => p.email);
+}
+
+/** Todos los que aparecieron en De/Para/Cc del hilo, salvo yo y quienes ya están en "to": "Responder a todos". */
+function replyAllCc(
+  client: ClientRecord,
+  threadId: string,
+  ownerEmail: string | null,
+  to: { email: string }[],
+): string[] {
+  const already = new Set(to.map((r) => r.email));
+  const emails = new Set<string>();
+  for (const m of client.activity?.recentMails ?? []) {
+    if (m.threadId !== threadId) continue;
+    emails.add(m.from.toLowerCase());
+    for (const r of m.recipients ?? []) emails.add(r.toLowerCase());
+  }
+  const me = ownerEmail?.toLowerCase();
+  return [...emails].filter((e) => e !== me && !already.has(e) && !/^(no-?reply|notifications?)@/i.test(e));
+}
+
 const normName = (s: string) =>
   s.toLowerCase().normalize("NFD").replace(/[\u0300-\u036f]/g, "").replace(/[^a-z ]/g, " ").split(/\s+/).filter((w) => w.length > 1);
 
@@ -260,6 +286,7 @@ export function buildFollowup(
     subject: `Resumen y próximos pasos – ${meeting.title}`,
     body: lines.join("\n"),
     to: recipients.map((r) => r.email),
+    cc: newMailCc(client, ownerEmail, recipients),
     updatedAt: now.toISOString(),
     reviewNotes,
   };
@@ -379,6 +406,9 @@ export function buildStatusUpdate(
     subject: anchorMail ? `Re: ${cleanSubject(anchorMail.subject)}` : `Actualización de avance – ${client.name}`,
     body: lines.join("\n"),
     to: recipients.map((r) => r.email),
+    cc: anchorMail
+      ? replyAllCc(client, anchorMail.threadId, ownerEmail, recipients)
+      : newMailCc(client, ownerEmail, recipients),
     updatedAt: now.toISOString(),
     ...(anchorMail ? { threadId: anchorMail.threadId } : {}),
     reviewNotes,
@@ -406,7 +436,16 @@ export function getDraft(
   if (!saved || saved.sentAt) return { draft: generated, generated, regenerated: false, lastSentAt };
   const changedAt = [client.ticketsUpdatedAt, client.activity?.lastMail?.date].filter(Boolean).sort().at(-1);
   if (changedAt && changedAt > saved.updatedAt) {
-    return { draft: { ...generated, to: saved.to.length ? saved.to : generated.to }, generated, regenerated: true, lastSentAt };
+    return {
+      draft: {
+        ...generated,
+        to: saved.to.length ? saved.to : generated.to,
+        cc: saved.cc?.length ? saved.cc : generated.cc,
+      },
+      generated,
+      regenerated: true,
+      lastSentAt,
+    };
   }
   return { draft: saved, generated, regenerated: false, lastSentAt };
 }

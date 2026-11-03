@@ -24,6 +24,7 @@ type Body = {
   subject?: string;
   body?: string;
   to?: string[];
+  cc?: string[];
   threadId?: string | null;
   send?: boolean;
 };
@@ -35,13 +36,14 @@ async function resolve(rawId: string, input: Body) {
   if (!client || !meeting) return null;
   const kind: FollowupKind = input.kind === "status" ? "status" : "meeting";
   const { draft: base } = getDraft(kind, client, meeting, file.ownerEmail ?? null, await getSettings());
+  const parseEmails = (list: string[]) =>
+    list.map((e) => String(e).trim().toLowerCase()).filter((e) => /^[^\s@]+@[^\s@]+$/.test(e));
   const draft: FollowupDraft = {
     ...base,
     subject: typeof input.subject === "string" ? input.subject.slice(0, 300) : base.subject,
     body: typeof input.body === "string" ? input.body.slice(0, 20_000) : base.body,
-    to: Array.isArray(input.to)
-      ? input.to.map((e) => String(e).trim().toLowerCase()).filter((e) => /^[^\s@]+@[^\s@]+$/.test(e))
-      : base.to,
+    to: Array.isArray(input.to) ? parseEmails(input.to) : base.to,
+    cc: Array.isArray(input.cc) ? parseEmails(input.cc) : base.cc,
     threadId: input.threadId !== undefined ? input.threadId : base.threadId,
     updatedAt: new Date().toISOString(),
   };
@@ -99,6 +101,7 @@ export async function POST(request: Request, { params }: { params: Promise<{ id:
       sent = await sendThreadMail({
         threadId: input.threadId,
         to: r.draft.to,
+        cc: r.draft.cc,
         subject: r.draft.subject,
         body: r.draft.body,
         replacesDraftId: r.pendingDraftId,
@@ -124,6 +127,7 @@ export async function POST(request: Request, { params }: { params: Promise<{ id:
     const created = await createThreadDraft({
       threadId: input.threadId ?? null,
       to: r.draft.to,
+      cc: r.draft.cc,
       subject: r.draft.subject,
       body: r.draft.body,
     });

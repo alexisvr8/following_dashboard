@@ -48,6 +48,7 @@ export function FollowupComposer({
   const [subject, setSubject] = useState(initial.subject);
   const [body, setBody] = useState(initial.body);
   const [to, setTo] = useState(initial.to.join(", "));
+  const [cc, setCc] = useState(initial.cc?.join(", ") ?? "");
   // null = eligió mail nuevo; undefined = sin preferencia (último hilo).
   const [threadId, setThreadId] = useState<string>(
     initial.threadId === null ? NEW_THREAD : (initial.threadId ?? threads[0]?.threadId ?? NEW_THREAD),
@@ -58,6 +59,7 @@ export function FollowupComposer({
   const [confirming, setConfirming] = useState(false);
   const cancelSendRef = useRef<HTMLButtonElement>(null);
   const recipients = to.split(/[,;\s]+/).filter(Boolean);
+  const ccRecipients = cc.split(/[,;\s]+/).filter(Boolean);
   const [sentNow, setSentNow] = useState(false);
   // Novedades (mails, reuniones, accionables): se aplican solas salvo que estés editando.
   const [seenBody, setSeenBody] = useState(initial.body);
@@ -71,6 +73,7 @@ export function FollowupComposer({
       setSubject(initial.subject);
       setBody(initial.body);
       setTo(initial.to.join(", "));
+      setCc(initial.cc?.join(", ") ?? "");
       if (initial.threadId) setThreadId(initial.threadId);
     }
   }
@@ -88,6 +91,7 @@ export function FollowupComposer({
     subject,
     body,
     to: to.split(/[,;\s]+/).filter(Boolean),
+    cc: cc.split(/[,;\s]+/).filter(Boolean),
     threadId: threadId === NEW_THREAD ? null : threadId,
   });
 
@@ -177,6 +181,7 @@ export function FollowupComposer({
       setSubject(draft.subject);
       setBody(draft.body);
       setTo(draft.to.join(", "));
+      setCc(draft.cc?.join(", ") ?? "");
       setThreadId(draft.threadId ?? threads[0]?.threadId ?? NEW_THREAD);
       setSeenBody(draft.body);
       setEdited(false);
@@ -266,6 +271,23 @@ export function FollowupComposer({
             }}
             className={`${inputClass} h-9`}
           />
+        </div>
+        <div className="space-y-1.5">
+          <Label htmlFor={`${kind}-cc`}>Cc</Label>
+          <input
+            id={`${kind}-cc`}
+            value={cc}
+            onChange={(e) => {
+              setCc(e.target.value);
+              setEdited(true);
+            }}
+            className={`${inputClass} h-9`}
+          />
+          <p className="text-[11px] text-muted-foreground">
+            {threadId === NEW_THREAD
+              ? "Referentes y equipo Xtract en copia, para que todos queden al tanto."
+              : "Resto del hilo en copia (Responder a todos), para no perder invitados."}
+          </p>
         </div>
         {threadId === NEW_THREAD && (
           <div className="space-y-1.5">
@@ -361,6 +383,12 @@ export function FollowupComposer({
               <dt className="text-xs text-muted-foreground">Para</dt>
               <dd className="break-words font-medium">{recipients.join(", ") || "Sin destinatarios"}</dd>
             </div>
+            {!!ccRecipients.length && (
+              <div>
+                <dt className="text-xs text-muted-foreground">Cc</dt>
+                <dd className="break-words">{ccRecipients.join(", ")}</dd>
+              </div>
+            )}
             <div>
               <dt className="text-xs text-muted-foreground">Dónde</dt>
               <dd className="break-words">{threadLabel}</dd>
