@@ -147,14 +147,29 @@ tiempo/dificultad → quick_win/major_project/fill_in/thankless_task), no se per
   solo asignados; `client_waiting` (mail del cliente sin responder ≥1 día hábil),
   `no_progress` / `awaiting_client` (sin mails ni reuniones ≥ `settings.staleBusinessDays`
   (default 2) días hábiles con accionables abiertos).
-- Borradores (`lib/utils/followup.ts`, `getDraft(kind)`): `meeting` = resumen + próximos pasos de
-  la última minuta; `status` = actualización de avance (completado esta semana con fecha / en curso
-  nuestro con arrastrados marcados / pedidos del cliente / pendiente del cliente / otros); si
-  cambiaron tickets o llegó un mail después de la edición guardada se regenera (`regenerated`). Ticket sintético follow-up `followupTicketId`.
+- Borradores (`lib/utils/followup.ts`, `getDraft(kind)`), por reglas y sin placeholders en el cuerpo:
+  `meeting` = resumen, hitos, decisiones (acordadas / por definir) y accionables vigentes para la próxima
+  sesión (arrastrados + consultas por mail; "Ya avanzamos con" = tildados) por
+  lado (`stepSide`: me/team/client/shared/unknown) con fecha objetivo (`parseStep`/`parseDue`, resuelta
+  contra la fecha de la reunión); `status` parte de `latestInteraction`: último mail recibido del cliente
+  o enviado por mí (no del equipo) si es posterior a la reunión; si no hay, accionables de la última reunión con lo tildado como avance. Con mail: responde en
+  ese hilo y a sus participantes del lado cliente (`MailRef.recipients`, poblado en cada sync; fallback
+  asistentes de la reunión). Secciones: avances del tablero desde mi último mail posterior a la reunión (o desde la reunión) / en curso nuestro con arrastrados
+  marcados / conversado por mail desde la reunión (`mailTrace`: `relatedTicketIds`, sin mails resumen `isRecapMail`; nunca
+  da por completado) / pedidos del cliente (solo si su mail es lo último) / pendiente del cliente / en conjunto /
+  otros. El extracto del último mail va en `reviewNotes` (`lastTalkNote`). La trazabilidad excluye borradores (`-in:drafts`). Lo que requiere revisión va en `FollowupDraft.reviewNotes` (UI, nunca en el mail). En ambos tipos, si
+  cambiaron tickets o llegó un mail después de la edición guardada se regenera (`regenerated`); tras `sentAt`
+  se genera uno nuevo. `FollowupComposer` aplica novedades solo si no estás editando (si no, aviso). Botón Actualizar =
+  `PATCH /api/clients/[id]/followup`: sincroniza esa cuenta y regenera (descarta la edición, pide confirmación si la hay). Ticket sintético follow-up `followupTicketId`.
+- Minutas (`lib/utils/gemini-notes-parser.ts`): `summary` + `milestones` (temas del Resumen) + `decisions`
+  + `nextSteps`. `backfillMeetingNotes` (`gemini-mail.ts`, en `runSync` y `/api/clients/discover`) reprocesa
+  por tandas de 25 las minutas con `milestones === undefined`, sin tocar `nextSteps` (los ids dependen del índice).
   `PUT|POST /api/clients/[id]/followup` `{kind, meetingId, ...}` guarda en
   `client.followups[followupKey(kind, id)]` / crea draft en Gmail (`createThreadDraft`: dentro del
-  hilo elegido con Re:/In-Reply-To, o mail nuevo). Nunca envía. UI: tabs en `/cuentas/[id]`
-  (`?borrador=status#borradores`), `FollowupComposer` (hilo, Para, editar, Copiar, Regenerar).
+  hilo elegido con Re:/In-Reply-To, o mail nuevo). Con `send: true` envía de verdad (`sendThreadMail`, solo desde el
+  botón Enviar con confirmación; descarta el draft previo y refresca la actividad). El cron nunca envía. MIME
+  (`buildMimeMessage`): multipart/alternative + HTML estilo Gmail + firma de la cuenta (`sendAs`). UI: tabs en `/cuentas/[id]`
+  (`?borrador=status#borradores`), `FollowupComposer` (hilo, Para, editar, Copiar, Actualizar, Enviar).
 - `POST /api/cron/daily-followup` (header `x-cron-secret`, cron externo diario hábil): sync de
   asignados + alertas + 1 draft de actualización en Gmail por cuenta alertada y movimiento
   (dedupe `autoFor`); `?drafts=0` solo sincroniza.
@@ -175,7 +190,7 @@ Wrappers: `lib/integrations/{gmail,calendar,drive}.ts`. Env vars nuevas:
 `GOOGLE_CLIENT_ID`/`GOOGLE_CLIENT_SECRET`/`GOOGLE_REDIRECT_URI`.
 Pendiente explícito: persistir en Supabase cuando exista el proyecto, extracción de
 accionables por LLM desde el texto de la minuta, análisis de sentimiento real, envío
-real de emails (hoy solo se crea el draft).
+automático de emails (el envío es manual, desde `/cuentas/[id]`).
 
 ## Sincronización automática (scheduler interno + cron externo opcional)
 `lib/jobs/sync-job.ts` `runSync({drafts, trigger})`: minutas nuevas (`discoverGeminiMeetings(7d)` incremental +

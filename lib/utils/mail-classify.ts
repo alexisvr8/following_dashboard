@@ -105,6 +105,9 @@ const REQUEST =
   /\?|\b(podr[ií]as?|podr[ií]an|pueden|puedes|podemos|necesit\w*|por favor|favor de|quedamos? a la espera|aguardamos|solicit\w*|confirm\w*|nos (env[ií]en|pasen|compartan|indiquen)|me (env[ií]en|pasen|compartan|indiquen)|ser[ií]a posible|ayud\w*|urgente|pendiente)\b/i;
 const NOISE = /^(saludos|gracias|muchas gracias|hola|buen(os|as)? (d[ií]as|tardes)|quedo atent|atte|cordialmente|enviado desde|get outlook|this email|este correo|confidencial|aviso legal|antes de imprimir|el presente (correo|mensaje)|este e-?mail|piense en el medio ambiente|la informaci[oó]n contenida|this message|the information|privileged|si (usted )?no es el destinatario|if you are not the intended)/i;
 
+// "Alexis, ¿cómo estás?": saludo con signo de pregunta, no una consulta.
+const GREETING_QUESTION = /^(\p{L}+\s*,\s*)?¿?\s*c[oó]mo (est[aá]s|est[aá]n|and[aá]s|and[aá]n|te va|les va|va)\s*\??\.?$/iu;
+
 /** Pedidos/preguntas del cliente (oraciones con "?" o verbos de pedido), máx. 5. */
 export function extractRequests(text: string): string[] {
   const body = text.replace(/\r/g, "");
@@ -130,7 +133,7 @@ export function extractRequests(text: string): string[] {
         .replace(/\s+/g, " ")
         .trim(),
     )
-    .filter((s) => s.length >= 15 && s.length <= 280 && !NOISE.test(s));
+    .filter((s) => s.length >= 15 && s.length <= 280 && !NOISE.test(s) && !GREETING_QUESTION.test(s));
   return [...new Set(sentences.filter((s) => REQUEST.test(s)))].slice(0, 5);
 }
 

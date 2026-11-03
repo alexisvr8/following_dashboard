@@ -31,12 +31,19 @@ export function mailTickets(client: ClientRecord): MailTicket[] {
 }
 
 /**
+ * Mail nuestro que repasa varios accionables (minuta, resumen, seguimiento): coincide por palabras
+ * con todos porque los enumera, así que no indica que se haya avanzado en ninguno.
+ */
+export const isRecapMail = (mail: MailRef) =>
+  (mail.direction === "me" || mail.direction === "team") && mail.relatedTicketIds.length >= 3;
+
+/**
  * Nota de trazabilidad para un ticket de minuta según el mail más reciente que lo trata:
  * mío/del equipo → "posiblemente resuelto"; del cliente → "mencionado por".
  */
 export function relatedMailNote(client: ClientRecord, ticketId: string): string | undefined {
   const mails = client.activity?.recentMails ?? client.activity?.recentInbound ?? [];
-  const mail = mails.find((m) => m.relatedTicketIds.includes(ticketId));
+  const mail = mails.find((m) => m.relatedTicketIds.includes(ticketId) && !isRecapMail(m));
   if (!mail) return undefined;
   if (mail.direction === "me" || mail.direction === "team") {
     return `Posiblemente resuelto: mail de ${mail.direction === "me" ? "vos" : who(mail)} (${fmt(mail.date)}) “${mail.subject}”`;

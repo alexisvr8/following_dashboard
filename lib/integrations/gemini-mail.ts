@@ -3,6 +3,7 @@ import { getAuthorizedClient } from "./google-client";
 import { getDocText } from "./drive";
 import { parseGeminiNotes } from "@/lib/utils/gemini-notes-parser";
 import type {
+  ClientsFile,
   DiscoveredClient,
   DiscoveredMeeting,
   DiscoveryResult,
@@ -173,6 +174,34 @@ function eventAttendees(e: calendar_v3.Schema$Event): MeetingAttendee[] {
     .map((a) => ({ email: a.email!.toLowerCase(), name: a.displayName ?? null }));
 }
 
+const BACKFILL_PER_RUN = 25;
+
+/**
+ * Lee de nuevo los Docs de minutas guardadas antes de extraer hitos/decisiones (el escaneo saltea
+ * los mails ya procesados). Por tandas, de la más nueva a la más vieja. Si el Doc ya no es accesible
+ * se marca vacío para no reintentarlo; ante cualquier otro error se reintenta en la próxima corrida.
+ */
+export async function backfillMeetingNotes(file: ClientsFile) {
+  const seen = new Set<string>();
+  const pending = file.clients
+    .filter((c) => c.status === "assigned" || c.status === "unassigned")
+    .flatMap((c) => c.meetings)
+    .filter((m) => m.docId && m.milestones === undefined && !seen.has(m.id) && seen.add(m.id))
+    .sort((a, b) => b.date.localeCompare(a.date))
+    .slice(0, BACKFILL_PER_RUN);
+
+  const updates = await mapLimit(pending, CONCURRENCY, async (m) => {
+    try {
+      const { milestones, decisions } = parseGeminiNotes(await withRetry(() => getDocText(m.docId!)));
+      return { meetingId: m.id, milestones, decisions };
+    } catch (error) {
+      const code = (error as { code?: number; status?: number }).code ?? (error as { status?: number }).status;
+      return code === 403 || code === 404 ? { meetingId: m.id, milestones: [], decisions: [] } : null;
+    }
+  });
+  return updates.filter((u) => u !== null);
+}
+
 export interface DiscoveryStats {
   scanned: number;
   skipped: number;
@@ -263,6 +292,8 @@ export async function discoverGeminiMeetings(
       date: new Date(event ? eventStart(event) : mailTime).toISOString(),
       summary: parsed.summary,
       nextSteps: parsed.nextSteps,
+      milestones: parsed.milestones,
+      decisions: parsed.decisions,
       durationMinutes: event ? eventMinutes(event) : null,
       attendees: event ? eventAttendees(event) : [],
     };

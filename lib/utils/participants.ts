@@ -46,6 +46,15 @@ function domainLabels(domain: string): string[] {
     .filter(Boolean);
 }
 
+/** ¿Es la cuenta dueña o alguien de su mismo dominio? (un dominio freemail no define un equipo). */
+export function isOwnTeamEmail(email: string, ownerEmail: string | null | undefined): boolean {
+  const owner = ownerEmail?.toLowerCase();
+  if (!owner) return false;
+  const e = email.toLowerCase();
+  const domain = domainOf(owner);
+  return e === owner || (!isFreemail(domain) && domainOf(e) === domain);
+}
+
 export function domainMatchesCompany(email: string, names: string[]): boolean {
   const domain = domainOf(email);
   if (!domain || isFreemail(domain)) return false;

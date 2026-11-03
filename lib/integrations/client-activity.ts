@@ -44,6 +44,10 @@ function parseFrom(from: string): { email: string; name: string | null } {
     : { email: from.trim().toLowerCase(), name: null };
 }
 
+const parseAddresses = (value: string) => [
+  ...new Set((value.match(/[^\s<>,;"']+@[^\s<>,;"']+/g) ?? []).map((e) => e.toLowerCase())),
+];
+
 function hasCalendarPart(part?: gmail_v1.Schema$MessagePart): boolean {
   if (!part) return false;
   if (part.mimeType === "text/calendar" || part.mimeType === "application/ics") return true;
@@ -97,7 +101,7 @@ async function syncOne(
     const list = await withRetry(() =>
       gmail.users.messages.list({
         userId: "me",
-        q: `{from:(${or}) to:(${or}) cc:(${or})} -from:${GEMINI_SENDER} -from:calendar-notification@google.com newer_than:${LOOKBACK_DAYS}d`,
+        q: `{from:(${or}) to:(${or}) cc:(${or})} -from:${GEMINI_SENDER} -from:calendar-notification@google.com -in:drafts newer_than:${LOOKBACK_DAYS}d`,
         maxResults: MAX_MAILS_CHECK,
       }),
     );
@@ -106,6 +110,7 @@ async function syncOne(
       if (recentMails.length >= KEEP_MAILS && hasClient) break;
       if (recentMails.length >= KEEP_MAILS * 2) break;
       const msg = (await withRetry(() => gmail.users.messages.get({ userId: "me", id: id!, format: "full" }))).data;
+      if (msg.labelIds?.includes("DRAFT")) continue; // un borrador no es un mail: nadie lo recibió
       const h = hdr(msg);
       const from = parseFrom(h["from"] ?? "");
       const dir = direction(from.email);
@@ -132,6 +137,7 @@ async function syncOne(
         threadId: msg.threadId!,
         from: from.email,
         fromName: from.name,
+        recipients: parseAddresses(`${h["to"] ?? ""},${h["cc"] ?? ""}`),
         subject,
         date: new Date(Number(msg.internalDate)).toISOString(),
         excerpt: (own || msg.snippet || "").slice(0, 1200),
@@ -152,7 +158,7 @@ async function syncOne(
     const tl = await withRetry(() =>
       gmail.users.threads.list({
         userId: "me",
-        q: `{from:(${or}) to:(${or}) cc:(${or})} -from:${GEMINI_SENDER} -from:calendar-notification@google.com newer_than:${LOOKBACK_DAYS}d`,
+        q: `{from:(${or}) to:(${or}) cc:(${or})} -from:${GEMINI_SENDER} -from:calendar-notification@google.com -in:drafts newer_than:${LOOKBACK_DAYS}d`,
         maxResults: KEEP_THREADS * 2,
       }),
     );
@@ -170,6 +176,7 @@ async function syncOne(
       ).data;
       const msgs = th.messages ?? [];
       const real = msgs.filter((m) => {
+        if (m.labelIds?.includes("DRAFT")) return false;
         const h = hdr(m);
         return (
           classifyMail({ subject: h["subject"] ?? "", from: h["from"] ?? "", headers: h, hasCalendarPart: false }) ===
@@ -196,7 +203,7 @@ async function syncOne(
       const sent = await withRetry(() =>
         gmail.users.messages.list({
           userId: "me",
-          q: `from:me {to:(${or}) cc:(${or})} after:${after}`,
+          q: `from:me {to:(${or}) cc:(${or})} -in:drafts after:${after}`,
           maxResults: 5,
         }),
       );
@@ -207,6 +214,7 @@ async function syncOne(
           )
         ).data;
         const h = hdr(m);
+        if (m.labelIds?.includes("DRAFT")) continue;
         if (classifyMail({ subject: h["subject"] ?? "", from: "", headers: h, hasCalendarPart: false }) === "message") {
           autoDoneTicketIds.push(followupTicketId(client.id, latest.id));
           break;
