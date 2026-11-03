@@ -98,6 +98,7 @@ export function bodyToHtml(body: string): string {
  */
 export function buildMimeMessage(input: {
   to: string[];
+  cc?: string[];
   subject: string;
   body: string;
   signatureHtml?: string;
@@ -118,6 +119,7 @@ export function buildMimeMessage(input: {
   }</div>`;
   return [
     `To: ${input.to.join(", ")}`,
+    ...(input.cc?.length ? [`Cc: ${input.cc.join(", ")}`] : []),
     `Subject: ${encodeHeader(input.subject)}`,
     ...(input.extraHeaders ?? []),
     "MIME-Version: 1.0",
@@ -130,7 +132,7 @@ export function buildMimeMessage(input: {
   ].join("\r\n");
 }
 
-type MailInput = { threadId: string | null; to: string[]; subject: string; body: string };
+type MailInput = { threadId: string | null; to: string[]; cc?: string[]; subject: string; body: string };
 
 /** La API no agrega la firma de Gmail como lo hace el redactor: se toma de la cuenta principal. */
 async function primarySignature(gmail: gmail_v1.Gmail): Promise<string> {

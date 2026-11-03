@@ -100,6 +100,8 @@ export interface FollowupDraft {
   subject: string;
   body: string;
   to: string[];
+  /** Referentes/equipo en copia: mail nuevo (todos) o resto del hilo al "Responder a todos". */
+  cc?: string[];
   updatedAt: string;
   gmailDraftId?: string;
   gmailMessageId?: string;

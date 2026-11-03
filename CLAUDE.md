@@ -162,6 +162,12 @@ tiempo/dificultad → quick_win/major_project/fill_in/thankless_task), no se per
   cambiaron tickets o llegó un mail después de la edición guardada se regenera (`regenerated`); tras `sentAt`
   se genera uno nuevo. `FollowupComposer` aplica novedades solo si no estás editando (si no, aviso). Botón Actualizar =
   `PATCH /api/clients/[id]/followup`: sincroniza esa cuenta y regenera (descarta la edición, pide confirmación si la hay). Ticket sintético follow-up `followupTicketId`.
+- Destinatarios (`lib/utils/followup.ts`, `FollowupDraft.cc`): mail nuevo (sin hilo) → `to` + `cc` con
+  referentes y equipo Xtract que no estén ya en `to` (`newMailCc`), para que todos queden al tanto.
+  Responder dentro de un hilo (hay `anchorMail`) → "Responder a todos": `cc` = De/Para/Cc de todos los
+  mails de ese `threadId` en `recentMails`, salvo yo y quienes ya están en `to` (`replyAllCc`). Editable
+  en `FollowupComposer` (campo Cc) y persiste en `client.followups[...].cc`; viaja a Gmail como header
+  `Cc` (`buildMimeMessage`/`createThreadDraft`/`sendThreadMail`).
 - Minutas (`lib/utils/gemini-notes-parser.ts`): `summary` + `milestones` (temas del Resumen) + `decisions`
   + `nextSteps`. `backfillMeetingNotes` (`gemini-mail.ts`, en `runSync` y `/api/clients/discover`) reprocesa
   por tandas de 25 las minutas con `milestones === undefined`, sin tocar `nextSteps` (los ids dependen del índice).
