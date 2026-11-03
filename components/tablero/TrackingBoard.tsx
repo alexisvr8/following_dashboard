@@ -2,6 +2,7 @@
 
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
+import { Search, X } from "lucide-react";
 import { TrackingColumn, PLACEHOLDER_KEY } from "@/components/tablero/TrackingColumn";
 import { TrackingCardFace, type TrackingCardData } from "@/components/tablero/TrackingCard";
 import { TrackingDialog } from "@/components/tablero/TrackingDialog";
@@ -47,19 +48,25 @@ const EASE = "cubic-bezier(0.2, 0.9, 0.25, 1)";
 const clamp = (v: number, min: number, max: number) => Math.min(max, Math.max(min, v));
 const reducedMotion = () =>
   typeof window !== "undefined" && window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+const norm = (s: string) => s.toLowerCase().normalize("NFD").replace(/[̀-ͯ]/g, "");
+const matchesQuery = (account: Account, q: string) => !q || norm(account.name).includes(q);
 
 export function TrackingBoard({
+  heading,
   accounts: initialAccounts,
   meetings,
   tickets: initialTickets,
   initialOpenId = null,
 }: {
+  heading: React.ReactNode;
   accounts: Account[];
   meetings: Meeting[];
   tickets: Ticket[];
   initialOpenId?: string | null;
 }) {
   const [accounts, setAccounts] = useState(initialAccounts);
+  const [query, setQuery] = useState("");
+  const q = norm(query.trim());
   const [doneIds, setDoneIds] = useState(() => new Set(initialTickets.filter((t) => t.isDone).map((t) => t.id)));
   const [drag, setDrag] = useState<DragState | null>(null);
   const [openId, setOpenId] = useState<string | null>(
@@ -103,9 +110,11 @@ export function TrackingBoard({
   const dropping = useRef(false);
   const suppressClick = useRef(false);
   const accountsRef = useRef(accounts);
+  const queryRef = useRef(q);
   useLayoutEffect(() => {
     accountsRef.current = accounts;
-  }, [accounts]);
+    queryRef.current = q;
+  }, [accounts, q]);
 
   const updateDrag = useCallback((next: DragState | null) => {
     dragRef.current = next;
@@ -189,7 +198,9 @@ export function TrackingBoard({
   // ---- hit testing ----
   const columnCards = useCallback(
     (status: TrackingStatus, excludeId: string) =>
-      accountsRef.current.filter((a) => a.trackingStatus === status && a.id !== excludeId),
+      accountsRef.current.filter(
+        (a) => a.trackingStatus === status && a.id !== excludeId && matchesQuery(a, queryRef.current),
+      ),
     [],
   );
 
@@ -315,7 +326,8 @@ export function TrackingBoard({
           if (!moving) return prev;
           const rest = prev.filter((a) => a.id !== d.id);
           const updated = { ...moving, trackingStatus: target.status };
-          const inCol = rest.filter((a) => a.trackingStatus === target.status);
+          // target.index cuenta solo las cards visibles: con filtro activo, las ocultas no ocupan posición.
+          const inCol = rest.filter((a) => a.trackingStatus === target.status && matchesQuery(a, queryRef.current));
           const before = inCol[target.index];
           if (before) rest.splice(rest.indexOf(before), 0, updated);
           else if (inCol.length) rest.splice(rest.indexOf(inCol[inCol.length - 1]) + 1, 0, updated);
@@ -468,12 +480,44 @@ export function TrackingBoard({
   }
 
   const dragData = drag ? cardData.get(drag.id) : null;
+  const visibleAccounts = accounts.filter((a) => matchesQuery(a, q));
 
   return (
     <>
-      <div ref={scrollerRef} className="flex gap-4 overflow-x-auto pb-4">
+      <div className="flex flex-wrap items-center justify-between gap-3">
+        {heading}
+        <div className="relative w-full sm:w-72">
+          <Search className="pointer-events-none absolute left-2.5 top-1/2 size-4 -translate-y-1/2 text-muted-foreground" />
+          <input
+            type="search"
+            value={query}
+            onChange={(e) => setQuery(e.target.value)}
+            placeholder="Buscar cliente…"
+            aria-label="Buscar cliente"
+            className="h-9 w-full rounded-lg border border-input bg-transparent pl-8 pr-8 text-sm outline-none transition-shadow placeholder:text-muted-foreground focus-visible:border-ring focus-visible:ring-3 focus-visible:ring-ring/50 dark:bg-input/30 [&::-webkit-search-cancel-button]:hidden"
+          />
+          {query && (
+            <button
+              type="button"
+              onClick={() => setQuery("")}
+              aria-label="Limpiar búsqueda"
+              className="absolute right-2 top-1/2 -translate-y-1/2 text-muted-foreground hover:text-foreground"
+            >
+              <X className="size-4" />
+            </button>
+          )}
+        </div>
+      </div>
+
+      {q && !visibleAccounts.length && (
+        <p role="status" className="rounded-lg border border-dashed p-4 text-center text-sm text-muted-foreground">
+          Ningún cliente coincide con “{query.trim()}”.
+        </p>
+      )}
+
+      <div ref={scrollerRef} className="flex justify-center-safe gap-4 overflow-x-auto pb-4">
         {TRACKING_COLUMNS.map(({ status, label }) => {
-          const cards = accounts
+          const cards = visibleAccounts
             .filter((a) => a.trackingStatus === status && a.id !== drag?.id)
             .map((a) => cardData.get(a.id)!);
           const hasPlaceholder = drag?.over.status === status;

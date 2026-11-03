@@ -18,25 +18,37 @@ export default async function TableroPage({
     clients.filter((c) => c.status === "assigned"),
   );
 
+  const heading = (
+    <div>
+      <h1 className="text-lg font-semibold">Tablero Seguimiento</h1>
+      <p className="text-sm text-muted-foreground">
+        Arrastra cada cuenta a su etapa actual. Haz click en una cuenta para ver los
+        accionables de su última reunión.
+      </p>
+    </div>
+  );
+
   return (
     <div className="space-y-6 px-6 py-8">
-      <div>
-        <h1 className="text-lg font-semibold">Tablero Seguimiento</h1>
-        <p className="text-sm text-muted-foreground">
-          Arrastra cada cuenta a su etapa actual. Haz click en una cuenta para ver los
-          accionables de su última reunión.
-        </p>
-      </div>
       {accounts.length ? (
-        <TrackingBoard accounts={accounts} meetings={meetings} tickets={tickets} initialOpenId={open ?? null} />
+        <TrackingBoard
+          heading={heading}
+          accounts={accounts}
+          meetings={meetings}
+          tickets={tickets}
+          initialOpenId={open ?? null}
+        />
       ) : (
-        <div className="rounded-lg border border-dashed p-8 text-center text-sm text-muted-foreground">
-          Todavía no hay clientes asignados.{" "}
-          <Link href="/clientes" className="font-medium text-primary underline-offset-4 hover:underline">
-            Escanea y valida tus clientes
-          </Link>{" "}
-          para verlos acá.
-        </div>
+        <>
+          {heading}
+          <div className="rounded-lg border border-dashed p-8 text-center text-sm text-muted-foreground">
+            Todavía no hay clientes asignados.{" "}
+            <Link href="/clientes" className="font-medium text-primary underline-offset-4 hover:underline">
+              Escanea y valida tus clientes
+            </Link>{" "}
+            para verlos acá.
+          </div>
+        </>
       )}
     </div>
   );
