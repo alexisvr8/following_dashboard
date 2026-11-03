@@ -5,6 +5,8 @@ import type { WorkSettings } from "@/lib/store/settings-store";
 
 const GROUP = /^(el grupo|the group|todos|everyone)$/i;
 
+export const isGroupOwner = (owner: string) => GROUP.test(owner.trim());
+
 const norm = (s: string) =>
   s.toLowerCase().normalize("NFD").replace(/[̀-ͯ]/g, "").replace(/\s+/g, " ").trim();
 

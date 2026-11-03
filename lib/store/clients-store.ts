@@ -1,6 +1,8 @@
-import { mkdir, readFile, writeFile } from "fs/promises";
+import { randomUUID } from "crypto";
+import { mkdir, readFile, rename, rm, writeFile } from "fs/promises";
 import path from "path";
 import type { TrackingStatus } from "@/types/account";
+import type { MeetingDecision } from "@/lib/utils/gemini-notes-parser";
 
 // Persistencia local (sin Supabase todavía) de clientes descubiertos desde Gemini Notes.
 // Mismo patrón que google-token-store: archivo JSON en `.data/` (gitignored).
@@ -22,6 +24,9 @@ export interface DiscoveredMeeting {
   durationMinutes?: number | null;
   /** Todos los asistentes del evento de Calendar (internos y externos, sin salas). */
   attendees?: MeetingAttendee[];
+  /** Temas tratados, del Resumen de la minuta. `undefined` = minuta aún sin reprocesar. */
+  milestones?: string[];
+  decisions?: MeetingDecision[];
 }
 
 export interface ClientRecord {
@@ -50,6 +55,8 @@ export interface MailRef {
   threadId: string;
   from: string;
   fromName: string | null;
+  /** Destinatarios (To + Cc): a quién responder si el seguimiento parte de este mail. */
+  recipients?: string[];
   subject: string;
   date: string;
   /** Texto propio del mail (sin citas), recortado. */
@@ -98,8 +105,12 @@ export interface FollowupDraft {
   gmailMessageId?: string;
   threadId?: string | null;
   draftCreatedAt?: string;
+  /** Cuándo se envió desde la app; el próximo borrador se genera de cero con el estado actual. */
+  sentAt?: string;
   /** Si lo generó el cron de seguimiento: fecha del último movimiento que lo disparó (dedupe). */
   autoFor?: string;
+  /** Avisos para quien revisa el borrador: se muestran en la UI, nunca van en el mail. */
+  reviewNotes?: string[];
 }
 
 export type FollowupKind = "meeting" | "status";
@@ -162,16 +173,32 @@ const CLIENTS_FILE = path.join(DATA_DIR, "clients.json");
 const EMPTY: ClientsFile = { clients: [], unmatched: [], lastScanAt: null };
 
 export async function getClientsFile(): Promise<ClientsFile> {
+  let raw: string;
   try {
-    return JSON.parse(await readFile(CLIENTS_FILE, "utf-8")) as ClientsFile;
-  } catch {
-    return { ...EMPTY, clients: [], unmatched: [] };
+    raw = await readFile(CLIENTS_FILE, "utf-8");
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return { ...EMPTY, clients: [], unmatched: [] };
+    throw error;
+  }
+  // Un archivo corrupto NO equivale a vacío: tratarlo así haría que la próxima escritura borre los datos.
+  try {
+    return JSON.parse(raw) as ClientsFile;
+  } catch (error) {
+    throw new Error(`clients_file_corrupt: ${(error as Error).message}`);
   }
 }
 
 async function saveClientsFile(file: ClientsFile): Promise<void> {
   await mkdir(DATA_DIR, { recursive: true });
-  await writeFile(CLIENTS_FILE, JSON.stringify(file, null, 2), "utf-8");
+  // Escritura atómica: dos escrituras simultáneas no pueden mezclarse ni dejar el archivo a medias.
+  const tmp = `${CLIENTS_FILE}.${randomUUID()}.tmp`;
+  try {
+    await writeFile(tmp, JSON.stringify(file, null, 2), "utf-8");
+    await rename(tmp, CLIENTS_FILE);
+  } catch (error) {
+    await rm(tmp, { force: true });
+    throw error;
+  }
 }
 
 /** Ids de mensajes de Gmail ya procesados (para no re-exportar Docs al re-escanear). */
@@ -315,6 +342,22 @@ export async function setClientActivity(
       client.doneTicketAt = { ...client.doneTicketAt, ...Object.fromEntries(fresh.map((t) => [t, now])) };
       client.ticketsUpdatedAt = now;
     }
+  }
+  await saveClientsFile(file);
+}
+
+/** Guarda hitos/decisiones de minutas reprocesadas (no toca `nextSteps`: los ids dependen del índice). */
+export async function setMeetingNotes(
+  updates: { meetingId: string; milestones: string[]; decisions: MeetingDecision[] }[],
+): Promise<void> {
+  if (!updates.length) return;
+  const byId = new Map(updates.map((u) => [u.meetingId, u]));
+  const file = await getClientsFile();
+  for (const m of [...file.clients.flatMap((c) => c.meetings), ...file.unmatched]) {
+    const u = byId.get(m.id);
+    if (!u) continue;
+    m.milestones = u.milestones;
+    m.decisions = u.decisions;
   }
   await saveClientsFile(file);
 }

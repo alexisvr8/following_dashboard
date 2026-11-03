@@ -1,8 +1,12 @@
-import { createThreadDraft } from "@/lib/integrations/gmail";
+import { syncClientsActivity } from "@/lib/integrations/client-activity";
+import { createThreadDraft, sendThreadMail } from "@/lib/integrations/gmail";
 import {
   followupKey,
   getClientsFile,
   saveFollowup,
+  setClientActivity,
+  type ClientRecord,
+  type ClientsFile,
   type FollowupDraft,
   type FollowupKind,
 } from "@/lib/store/clients-store";
@@ -10,8 +14,9 @@ import { getSettings } from "@/lib/store/settings-store";
 import { getDraft } from "@/lib/utils/followup";
 
 // Borradores de la cuenta: `kind` "meeting" (follow-up de la reunión) o "status" (actualización /
-// seguimiento). PUT guarda la edición; POST además crea el draft en Gmail (dentro de `threadId`
-// o como mail nuevo). Nunca envía: el envío se hace desde Gmail.
+// seguimiento). PUT guarda la edición; POST crea el draft en Gmail o, con `send: true`, envía el
+// mail (dentro de `threadId` o como mail nuevo). Sin `send` nunca envía. PATCH trae los mails nuevos
+// de la cuenta y regenera el borrador, descartando una edición guardada.
 
 type Body = {
   kind?: FollowupKind;
@@ -20,6 +25,7 @@ type Body = {
   body?: string;
   to?: string[];
   threadId?: string | null;
+  send?: boolean;
 };
 
 async function resolve(rawId: string, input: Body) {
@@ -36,9 +42,40 @@ async function resolve(rawId: string, input: Body) {
     to: Array.isArray(input.to)
       ? input.to.map((e) => String(e).trim().toLowerCase()).filter((e) => /^[^\s@]+@[^\s@]+$/.test(e))
       : base.to,
+    threadId: input.threadId !== undefined ? input.threadId : base.threadId,
     updatedAt: new Date().toISOString(),
   };
-  return { client, draft, key: followupKey(kind, meeting.id) };
+  const key = followupKey(kind, meeting.id);
+  const saved = client.followups?.[key];
+  return { client, file, draft, key, pendingDraftId: saved?.sentAt ? undefined : saved?.gmailDraftId };
+}
+
+export async function PATCH(request: Request, { params }: { params: Promise<{ id: string }> }) {
+  const { id } = await params;
+  const input = (await request.json()) as Body;
+  const before = await getClientsFile();
+  const stale = before.clients.find((c) => c.id === decodeURIComponent(id));
+  if (!stale) return Response.json({ error: "not_found" }, { status: 404 });
+  const synced = await refreshActivity({ client: stale, file: before }).catch(() => false);
+
+  const file = await getClientsFile();
+  const client = file.clients.find((c) => c.id === stale.id);
+  const meeting = client?.meetings.find((m) => m.id === input.meetingId);
+  if (!client || !meeting) return Response.json({ error: "not_found" }, { status: 404 });
+  const kind: FollowupKind = input.kind === "status" ? "status" : "meeting";
+  const { generated } = getDraft(kind, client, meeting, file.ownerEmail ?? null, await getSettings());
+  const key = followupKey(kind, meeting.id);
+  const saved = client.followups?.[key];
+  if (saved && !saved.sentAt) {
+    // Conserva la referencia al draft de Gmail: enviar luego debe seguir reemplazándolo.
+    await saveFollowup(client.id, key, {
+      ...generated,
+      gmailDraftId: saved.gmailDraftId,
+      gmailMessageId: saved.gmailMessageId,
+      draftCreatedAt: saved.draftCreatedAt,
+    });
+  }
+  return Response.json({ draft: generated, synced });
 }
 
 export async function PUT(request: Request, { params }: { params: Promise<{ id: string }> }) {
@@ -55,6 +92,34 @@ export async function POST(request: Request, { params }: { params: Promise<{ id:
   const r = await resolve(id, input);
   if (!r) return Response.json({ error: "not_found" }, { status: 404 });
   if (!r.draft.to.length) return Response.json({ error: "no_recipients" }, { status: 400 });
+  if (input.send === true) {
+    if (input.threadId === undefined) return Response.json({ error: "thread_required" }, { status: 400 });
+    let sent: Awaited<ReturnType<typeof sendThreadMail>>;
+    try {
+      sent = await sendThreadMail({
+        threadId: input.threadId,
+        to: r.draft.to,
+        subject: r.draft.subject,
+        body: r.draft.body,
+        replacesDraftId: r.pendingDraftId,
+      });
+    } catch (error) {
+      const msg = (error as Error).message;
+      return Response.json({ error: msg }, { status: msg === "google_not_connected" ? 409 : 502 });
+    }
+    // El mail ya salió: ningún fallo posterior puede responder error (invitaría a reenviarlo).
+    const sentAt = new Date().toISOString();
+    await saveFollowup(r.client.id, r.key, {
+      ...r.draft,
+      gmailDraftId: undefined,
+      gmailMessageId: sent.messageId,
+      threadId: sent.threadId,
+      sentAt,
+      updatedAt: sentAt,
+    }).catch(() => undefined);
+    await refreshActivity(r).catch(() => undefined);
+    return Response.json({ sentAt, gmailUrl: gmailDraftUrl({ ...sent }, sent.threadId) });
+  }
   try {
     const created = await createThreadDraft({
       threadId: input.threadId ?? null,
@@ -75,6 +140,14 @@ export async function POST(request: Request, { params }: { params: Promise<{ id:
     const msg = (error as Error).message;
     return Response.json({ error: msg }, { status: msg === "google_not_connected" ? 409 : 502 });
   }
+}
+
+/** Trae enseguida el mail recién enviado, para que los borradores partan de él sin esperar la sync. */
+async function refreshActivity({ client, file }: { client: ClientRecord; file: ClientsFile }) {
+  const results = await syncClientsActivity([client], file.ownerEmail ?? null, file.clients);
+  const ok = (results ?? []).filter((x) => !x.error);
+  if (ok.length) await setClientActivity(ok);
+  return ok.length > 0;
 }
 
 function gmailDraftUrl(c: { account: string | null; threadId: string | null; messageId: string }, threadId: string | null) {

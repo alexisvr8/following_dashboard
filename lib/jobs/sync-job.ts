@@ -1,4 +1,4 @@
-import { discoverGeminiMeetings } from "@/lib/integrations/gemini-mail";
+import { backfillMeetingNotes, discoverGeminiMeetings } from "@/lib/integrations/gemini-mail";
 import { createThreadDraft } from "@/lib/integrations/gmail";
 import { syncClientsActivity } from "@/lib/integrations/client-activity";
 import {
@@ -8,6 +8,7 @@ import {
   mergeDiscovery,
   saveFollowup,
   setClientActivity,
+  setMeetingNotes,
   type ClientsFile,
 } from "@/lib/store/clients-store";
 import { getSettings, type WorkSettings } from "@/lib/store/settings-store";
@@ -77,6 +78,7 @@ async function doSync({ drafts: withDrafts, trigger }: SyncOptions): Promise<Syn
     const { file: merged, newClients } = await mergeDiscovery(discovery.result);
     status.newMeetings = countMeetings(merged) - before;
     status.newClients = newClients;
+    await setMeetingNotes(await backfillMeetingNotes(merged));
 
     // 2) Actividad (mails en cualquier dirección con cualquier persona del cliente + última reunión).
     const targets = merged.clients.filter((c) => c.status === "assigned" || c.status === "unassigned");
@@ -123,7 +125,7 @@ async function createAlertDrafts(file: ClientsFile, settings: WorkSettings, aler
     if (client.followups?.[key]?.autoFor === alert.lastMovementAt) continue; // ya generado
     const draft = buildStatusUpdate(client, meeting, file.ownerEmail ?? null, settings);
     if (!draft.to.length) continue;
-    const threadId = client.activity?.threads[0]?.threadId ?? null;
+    const threadId = draft.threadId ?? client.activity?.threads[0]?.threadId ?? null;
     try {
       const created = await createThreadDraft({ threadId, to: draft.to, subject: draft.subject, body: draft.body });
       await saveFollowup(client.id, key, {

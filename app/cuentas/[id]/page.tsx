@@ -9,7 +9,7 @@ import { AccountProfileForm } from "@/components/cuentas/AccountProfileForm";
 import { ParticipantsList } from "@/components/cuentas/ParticipantsList";
 import { ActivityPanel } from "@/components/cuentas/ActivityPanel";
 import { FollowupComposer } from "@/components/cuentas/FollowupComposer";
-import { getDraft } from "@/lib/utils/followup";
+import { getDraft, latestInteraction } from "@/lib/utils/followup";
 import { getSettings } from "@/lib/store/settings-store";
 import { computeAlerts } from "@/lib/utils/followup-alerts";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
@@ -45,6 +45,11 @@ export default async function CuentaPage({
   const owner = file.ownerEmail ?? null;
   const meetingDraft = latest ? getDraft("meeting", client, latest, owner, settings) : null;
   const statusDraft = latest ? getDraft("status", client, latest, owner, settings) : null;
+  const interaction = latest ? latestInteraction(client, latest) : null;
+  const statusSource =
+    interaction?.kind === "mail"
+      ? `${interaction.mail.direction === "me" ? "tu último mail" : `el último mail de ${interaction.mail.fromName ?? interaction.mail.from}`} (“${interaction.mail.subject}”)`
+      : "la última reunión";
   const alert = computeAlerts([client], settings)[0];
   const defaultTab = borrador === "status" || alert ? "status" : "meeting";
   const ticketTitles = Object.fromEntries(tickets.map((t) => [t.id, t.title]));
@@ -125,7 +130,12 @@ export default async function CuentaPage({
                     kind="meeting"
                     clientId={client.id}
                     title="Follow-up de la reunión"
-                    hint={`Generado de la minuta de “${latest.title}”.`}
+                    hint={
+                      meetingDraft.regenerated
+                        ? `Regenerado con los mails y accionables nuevos, a partir de la minuta de “${latest.title}”.`
+                        : `Accionables de la minuta de “${latest.title}”, al día con mails y lo marcado como realizado.`
+                    }
+                    lastSentAt={meetingDraft.lastSentAt}
                     initial={meetingDraft.draft}
                     generated={meetingDraft.generated}
                     threads={client.activity?.threads ?? []}
@@ -133,14 +143,15 @@ export default async function CuentaPage({
                 </TabsContent>
                 <TabsContent value="status">
                   <FollowupComposer
-                    key={`s-${latest.id}-${client.ticketsUpdatedAt ?? ""}-${client.activity?.lastMail?.date ?? ""}`}
+                    key={`s-${latest.id}`}
+                    lastSentAt={statusDraft.lastSentAt}
                     kind="status"
                     clientId={client.id}
                     title="Actualización de avance"
                     hint={
                       statusDraft.regenerated
-                        ? "Regenerado porque cambiaron los accionables o llegó un mail nuevo después de tu última edición: incluye lo finalizado esta semana y lo que falta."
-                        : "Generado con lo finalizado esta semana (con fecha), lo que falta (incluye lo arrastrado de semanas anteriores) y el último mail del cliente."
+                        ? `Regenerado porque cambiaron los accionables o llegó un mail nuevo después de tu última edición. Parte de ${statusSource}.`
+                        : `Parte de ${statusSource}, con lo avanzado en el tablero desde tu último mail y lo que falta. Se actualiza con cada mail o accionable.`
                     }
                     initial={statusDraft.draft}
                     generated={statusDraft.generated}

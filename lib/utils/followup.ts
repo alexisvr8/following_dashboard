@@ -4,25 +4,24 @@ import {
   type DiscoveredMeeting,
   type FollowupDraft,
   type FollowupKind,
+  type MailRef,
 } from "@/lib/store/clients-store";
 import type { WorkSettings } from "@/lib/store/settings-store";
-import { computeParticipants } from "@/lib/utils/participants";
-import { isOwnActionable } from "@/lib/utils/capacity";
-import { mailTickets } from "@/lib/utils/mail-tickets";
+import { computeParticipants, isOwnTeamEmail, type Participant } from "@/lib/utils/participants";
+import { isGroupOwner, isOwnActionable } from "@/lib/utils/capacity";
+import { isRecapMail, mailTickets, relatedMailNote } from "@/lib/utils/mail-tickets";
 import { accountActionables } from "@/lib/utils/actionables";
+import { parseStep, type StepDue } from "@/lib/utils/gemini-notes-parser";
 
-// Borrador de follow-up post-reunión (por reglas, sin LLM): resumen + próximos pasos de la
-// minuta de Gemini. Se genera al vuelo apenas llega la minuta; se persiste solo al editarlo
-// o al crear el draft en Gmail (`client.followups[meetingId]`).
+// Borradores por reglas (sin LLM), recalculados con cada mail, reunión o accionable tildado.
+// Follow-up: hitos, decisiones y accionables para la próxima sesión (última minuta + arrastrados +
+// pedidos por mail). Seguimiento: avances del tablero desde mi último mail posterior a la reunión,
+// partiendo de la última interacción. Se persisten solo al editarlos, crear el draft en Gmail o
+// enviarlos (`client.followups`). Lo que requiere revisión va en `reviewNotes`,
+// nunca en el cuerpo: los borradores automáticos llegan a Gmail sin pasar por la UI.
 
 const fmtShort = (iso: string) =>
   new Date(iso).toLocaleDateString("es", { weekday: "short", day: "2-digit", month: "2-digit" });
-
-function mondayStart(d: Date): Date {
-  const m = new Date(d.getFullYear(), d.getMonth(), d.getDate());
-  m.setDate(m.getDate() - ((m.getDay() + 6) % 7));
-  return m;
-}
 
 const fmtDate = (iso: string) =>
   new Date(iso).toLocaleDateString("es", { weekday: "long", day: "numeric", month: "long" });
@@ -31,6 +30,78 @@ const fmtDate = (iso: string) =>
 function formatStep(step: string): string {
   const m = step.match(/^\s*\[([^\]]+)\]\s*(.+)$/);
   return m ? `${m[2].trim()} (${m[1].trim()})` : step.trim();
+}
+
+const senderNames = (client: ClientRecord) =>
+  new Map(
+    (client.activity?.recentMails ?? client.activity?.recentInbound ?? [])
+      .filter((m) => m.fromName)
+      .map((m) => [m.from, m.fromName!]),
+  );
+
+const cleanSubject = (subject: string) => subject.replace(/^\s*((re|fwd?|rv)\s*:\s*)+/i, "").trim();
+
+export type Interaction =
+  | { kind: "meeting"; date: string }
+  | { kind: "mail"; date: string; mail: MailRef };
+
+/** Punto de partida del seguimiento: el último mail recibido del cliente o enviado por mí, si es posterior a la reunión. */
+export function latestInteraction(client: ClientRecord, meeting: DiscoveredMeeting): Interaction {
+  const mail = (client.activity?.recentMails ?? [])
+    .filter((m) => m.direction === "client" || m.direction === "me")
+    .reduce<MailRef | null>((last, m) => (!last || m.date > last.date ? m : last), null);
+  return mail && mail.date > meeting.date ? { kind: "mail", date: mail.date, mail } : { kind: "meeting", date: meeting.date };
+}
+
+/** Por accionable, el último mail posterior a la reunión que lo trata (los mails resumen no cuentan). */
+function mailTrace(client: ClientRecord, meeting: DiscoveredMeeting): Map<string, MailRef> {
+  const trace = new Map<string, MailRef>();
+  const mails = (client.activity?.recentMails ?? [])
+    .filter((m) => m.date > meeting.date && !isRecapMail(m))
+    .sort((a, b) => b.date.localeCompare(a.date));
+  for (const mail of mails) {
+    for (const id of mail.relatedTicketIds) if (!trace.has(id)) trace.set(id, mail);
+  }
+  return trace;
+}
+
+/** Lo último conversado, para quien revisa: las reglas no resumen el texto, así que se muestra tal cual. */
+function lastTalkNote(interaction: Interaction): string[] {
+  if (interaction.kind !== "mail") return [];
+  const { mail } = interaction;
+  const text = mail.excerpt.replace(/\s+/g, " ").trim();
+  if (!text) return [];
+  const who = mail.direction === "me" ? "Tu último mail" : `Último mail de ${mail.fromName ?? mail.from}`;
+  return [`${who} (${fmtShort(mail.date)}): “${text.length > 320 ? `${text.slice(0, 320)}…` : text}”`];
+}
+
+/** Pedidos del último mail del cliente: siguen pendientes solo si ese mail es lo último; si respondí, ya los traté. */
+function openRequests(client: ClientRecord, interaction: Interaction) {
+  if (interaction.kind !== "mail" || interaction.mail.direction !== "client") return [];
+  const done = new Set(client.doneTicketIds ?? []);
+  return mailTickets(client).filter((t) => !t.id.endsWith("-reply") && !done.has(t.id));
+}
+
+/** Si parte de un mail: quienes participaron de ese mail del lado del cliente (fallback: los de la reunión). */
+function interactionRecipients(
+  client: ClientRecord,
+  meeting: DiscoveredMeeting,
+  interaction: Interaction,
+  ownerEmail: string | null,
+): { email: string; name: string | null }[] {
+  const fallback = followupRecipients(client, meeting, ownerEmail);
+  if (interaction.kind === "meeting") return fallback;
+  const { mail } = interaction;
+  const emails = [...new Set([...(mail.direction === "client" ? [mail.from] : []), ...(mail.recipients ?? [])])].filter(
+    (e) =>
+      !isOwnTeamEmail(e, ownerEmail) &&
+      !isOwnTeamEmail(e, client.profile?.ownerEmail) &&
+      !/^(no-?reply|notifications?)@/i.test(e),
+  );
+  if (!emails.length) return fallback;
+  const senders = senderNames(client);
+  const people = new Map(computeParticipants(client, ownerEmail).map((p) => [p.email, p.name]));
+  return emails.map((email) => ({ email, name: people.get(email) ?? senders.get(email) ?? null }));
 }
 
 /** Referentes que asistieron a la reunión (fallback: todos los referentes de la cuenta). */
@@ -42,11 +113,7 @@ export function followupRecipients(
   const referents = computeParticipants(client, ownerEmail).filter((p) => p.role === "referent");
   const attended = new Set((meeting.attendees ?? []).map((a) => a.email.toLowerCase()));
   const inMeeting = referents.filter((p) => attended.has(p.email));
-  const mailNames = new Map(
-    (client.activity?.recentMails ?? client.activity?.recentInbound ?? [])
-      .filter((m) => m.fromName)
-      .map((m) => [m.from, m.fromName!]),
-  );
+  const mailNames = senderNames(client);
   return (inMeeting.length ? inMeeting : referents).map((p) => ({
     email: p.email,
     name: p.name ?? mailNames.get(p.email) ?? null,
@@ -56,32 +123,65 @@ export function followupRecipients(
 const normName = (s: string) =>
   s.toLowerCase().normalize("NFD").replace(/[\u0300-\u036f]/g, "").replace(/[^a-z ]/g, " ").split(/\s+/).filter((w) => w.length > 1);
 
+export type StepSide = "me" | "team" | "client" | "shared" | "unknown";
+
+/** "Melani Uban" ↔ nombre "Melani", melani@…, melani.uban@… o muban@… (sin nombre en Calendar). */
+function matchesPerson(target: string[], name: string | null, email: string): boolean {
+  const covers = (words: string[]) =>
+    words.length > 0 && target.filter((w) => words.includes(w)).length >= Math.min(2, target.length, words.length);
+  if (name && covers(normName(name))) return true;
+  const local = normName(email.split("@")[0].replace(/[._-]/g, " "));
+  if (covers(local)) return true;
+  const compact = local.join("");
+  const last = target.at(-1) ?? "";
+  const joined = target.join("");
+  if (joined.length >= 4 && compact.startsWith(joined)) return true; // cristiankeller@, tobias123@
+  return target.length >= 2 && last.length >= 4 && compact === target[0][0] + last;
+}
+
+function ownerSide(
+  owner: string,
+  client: ClientRecord,
+  people: Participant[],
+  settings: WorkSettings,
+): StepSide {
+  if (isGroupOwner(owner)) return "shared";
+  if (isOwnActionable(`[${owner}]`, settings)) return "me";
+  const target = normName(owner);
+  if (!target.length) return "unknown";
+  const company = normName([client.name, client.profile?.emailName ?? "", client.domain.split(".")[0]].join(" "));
+  if (target.every((w) => company.includes(w))) return "client";
+  const hit = people.find((p) => matchesPerson(target, p.name, p.email));
+  if (hit) return hit.role === "team" || hit.role === "owner" ? "team" : "client";
+  // No asistió a ninguna reunión registrada, pero escribió en los hilos de la cuenta.
+  const mail = (client.activity?.recentMails ?? []).find((m) => matchesPerson(target, m.fromName, m.from));
+  if (mail?.direction === "client") return "client";
+  if (mail?.direction === "me") return "me";
+  return mail?.direction === "team" ? "team" : "unknown";
+}
+
 /**
- * De qué lado está un accionable "[Nombre] …": mío (alias), equipo propio (participante del
- * dominio propio con ese nombre), cliente (referente/externo) o desconocido.
+ * De qué lado está un accionable "[Nombre, Nombre] …": mío (alias), equipo propio, cliente,
+ * compartido ("[El grupo]" o dueños de ambos lados) o desconocido.
  */
 export function stepSide(
   step: string,
   client: ClientRecord,
   ownerEmail: string | null,
   settings: WorkSettings,
-): "me" | "team" | "client" | "unknown" {
-  const owner = step.match(/^\s*\[([^\]]+)\]/)?.[1];
-  if (isOwnActionable(step, settings)) return owner ? "me" : "unknown";
-  if (!owner) return "unknown";
-  const target = normName(owner);
+): StepSide {
+  const { owners } = parseStep(step, new Date().toISOString());
   const people = computeParticipants(client, ownerEmail);
-  const mailNames = new Map(
-    (client.activity?.recentMails ?? []).filter((m) => m.fromName).map((m) => [m.from, m.fromName!]),
-  );
-  const hit = people.find((p) => {
-    const n = normName(p.name ?? mailNames.get(p.email) ?? p.email.split("@")[0].replace(/[._]/g, " "));
-    const shared = target.filter((w) => n.includes(w)).length;
-    return shared >= Math.min(2, target.length);
-  });
-  if (!hit) return "unknown";
-  return hit.role === "team" || hit.role === "owner" ? "team" : "client";
+  const sides = owners.map((o) => ownerSide(o, client, people, settings)).filter((s) => s !== "unknown");
+  if (!sides.length) return "unknown";
+  const ours = sides.some((s) => s === "me" || s === "team");
+  if (sides.includes("shared") || (ours && sides.includes("client"))) return "shared";
+  if (!ours) return "client";
+  return sides.includes("me") ? "me" : "team";
 }
+
+/** Fecha objetivo para mostrar en el mail; las ya vencidas no se exponen al cliente. */
+const dueSuffix = (due: StepDue | null, now: Date) => (due && due.until >= now ? ` – objetivo: ${due.label}` : "");
 
 function greet(recipients: { name: string | null }[]): string {
   const firstNames = [...new Set(recipients.map((r) => r.name?.split(/\s+/)[0]).filter(Boolean))];
@@ -90,42 +190,85 @@ function greet(recipients: { name: string | null }[]): string {
     : "Hola equipo,";
 }
 
+/** Follow-up: hitos y decisiones de la reunión + accionables vigentes, al día con mails y tablero. */
 export function buildFollowup(
   client: ClientRecord,
   meeting: DiscoveredMeeting,
   ownerEmail: string | null,
+  settings: WorkSettings,
 ): FollowupDraft {
-  const saved = client.followups?.[followupKey("meeting", meeting.id)];
-  if (saved) return saved;
-
+  const now = new Date();
   const recipients = followupRecipients(client, meeting, ownerEmail);
-  const greeting = greet(recipients);
+  // Arrastrados cerrados antes de esta reunión ya no son novedad.
+  const actionables = accountActionables(client).filter(
+    (a) => !a.done || !a.carried || (a.doneAt && a.doneAt >= meeting.date),
+  );
+  const trace = mailTrace(client, meeting);
+  const interaction = latestInteraction(client, meeting);
+  const steps: { text: string; side: StepSide; done: boolean }[] = actionables.map((a) => ({
+    text:
+      `${formatStep(a.step)}${a.done ? "" : dueSuffix(parseStep(a.step, a.meeting.date).due, now)}` +
+      (!a.done && trace.has(a.id) ? ` (conversado por mail el ${fmtShort(trace.get(a.id)!.date)})` : "") +
+      (a.done && a.doneAt ? ` (${fmtShort(a.doneAt)})` : "") +
+      (!a.done && a.carried ? ` [acordado el ${fmtShort(a.meeting.date)}]` : ""),
+    side: stepSide(a.step, client, ownerEmail, settings),
+    done: a.done,
+  }));
+  const requests = openRequests(client, interaction).map((r) => ({
+    text: `${r.title} (consulta por mail)`,
+    side: "team" as StepSide,
+    done: false,
+  }));
+  const open = [...steps.filter((s) => !s.done), ...requests];
+  const bullets = (items: typeof steps) => items.map((s) => `• ${s.text}`);
+  const group = (title: string, items: typeof steps) => (items.length ? ["", title, ...bullets(items)] : []);
+  const agreed = (meeting.decisions ?? []).filter((d) => d.agreed).map((d) => `• ${d.text}`);
+  const pending = (meeting.decisions ?? []).filter((d) => !d.agreed).map((d) => `• ${d.text}`);
+  const milestones = (meeting.milestones ?? []).map((m) => `• ${m}`);
 
   const lines = [
-    greeting,
+    greet(recipients),
     "",
-    `Gracias por el tiempo en la reunión del ${fmtDate(meeting.date)}. Les comparto un resumen de lo conversado:`,
-    "",
-    meeting.summary ?? "(completar resumen)",
+    `Gracias por el tiempo en la reunión del ${fmtDate(meeting.date)}. Les comparto lo conversado y cómo seguimos.`,
   ];
-  if (meeting.nextSteps.length) {
-    lines.push("", "Próximos pasos:", ...meeting.nextSteps.map((s) => `• ${formatStep(s)}`));
+  if (meeting.summary) lines.push("", meeting.summary);
+  if (milestones.length) lines.push("", "Hitos de la reunión:", ...milestones);
+  if (agreed.length) lines.push("", "Decisiones acordadas:", ...agreed);
+  if (pending.length) lines.push("", "Quedó por definir:", ...pending);
+  if (open.length) {
+    lines.push(
+      "",
+      "Accionables para la próxima sesión:",
+      ...group("De nuestro lado:", open.filter((s) => s.side === "me" || s.side === "team")),
+      ...group("De su lado:", open.filter((s) => s.side === "client")),
+      ...group("En conjunto:", open.filter((s) => s.side === "shared")),
+      ...group("Otros:", open.filter((s) => s.side === "unknown")),
+    );
   }
+  lines.push(...group("Ya avanzamos con:", steps.filter((s) => s.done)));
   lines.push("", "Si algo no quedó bien reflejado, avísenme y lo corregimos.", "", "Saludos,");
+
+  const reviewNotes = lastTalkNote(interaction);
+  if (!meeting.summary) reviewNotes.push("La minuta no trae resumen: agregalo si hace falta.");
+  if (meeting.milestones === undefined) {
+    reviewNotes.push("Esta minuta todavía no se reprocesó: los hitos y decisiones aparecen después de la próxima sincronización.");
+  }
+  if (!steps.length && !requests.length) reviewNotes.push("La minuta no trae próximos pasos: definí los accionables para la próxima sesión.");
 
   return {
     meetingId: meeting.id,
     subject: `Resumen y próximos pasos – ${meeting.title}`,
     body: lines.join("\n"),
     to: recipients.map((r) => r.email),
-    updatedAt: new Date().toISOString(),
+    updatedAt: now.toISOString(),
+    reviewNotes,
   };
 }
 
 /**
- * Mail de actualización/seguimiento sobre lo acordado en la última reunión, según el estado
- * actual de los accionables (tildados = completados) y, si el último mail es del cliente, sus
- * pedidos. Pensado para no dejar pasar más de N días hábiles sin novedades.
+ * Mail de seguimiento: parte de la última interacción (reunión o último mail recibido/enviado),
+ * con el estado actual de los accionables (tildados = completados) y, si la interacción es un mail
+ * del cliente, sus pedidos. Pensado para no dejar pasar más de N días hábiles sin novedades.
  */
 export function buildStatusUpdate(
   client: ClientRecord,
@@ -133,80 +276,137 @@ export function buildStatusUpdate(
   ownerEmail: string | null,
   settings: WorkSettings,
 ): FollowupDraft {
-  const done = new Set(client.doneTicketIds ?? []);
   const now = new Date();
-  const weekStart = mondayStart(now);
   const steps = accountActionables(client).map((a) => ({
     ...a,
     text: formatStep(a.step),
+    due: parseStep(a.step, a.meeting.date).due,
     side: stepSide(a.step, client, ownerEmail, settings),
   }));
-  // Completado esta semana = con fecha de cierre ≥ lunes. Sin fecha (cerrados antes de registrar
-  // fechas) y de la última minuta = "completado previamente".
-  const completedWeek = steps
-    .filter((s) => s.done && s.doneAt && Date.parse(s.doneAt) >= weekStart.getTime())
+  // Avances = tildados en el tablero desde mi último mail posterior a la reunión (o desde la reunión).
+  const lastMine = (client.activity?.recentMails ?? [])
+    .filter((m) => m.direction === "me" && m.date > meeting.date)
+    .reduce<MailRef | null>((last, m) => (!last || m.date > last.date ? m : last), null);
+  const since = lastMine?.date ?? meeting.date;
+  // Lo completado incluye las consultas por mail que tildé, además de los accionables de la minuta.
+  const doneAt = client.doneTicketAt ?? {};
+  const completed = [
+    ...steps
+      .filter((s) => s.done && (!s.carried || (s.doneAt && s.doneAt >= meeting.date)))
+      .map((s) => ({ text: s.text, doneAt: s.doneAt })),
+    ...mailTickets(client)
+      .filter((t) => !t.id.endsWith("-reply") && doneAt[t.id])
+      .map((t) => ({ text: t.title, doneAt: doneAt[t.id] })),
+  ];
+  const advanced = completed
+    .filter((c) => c.doneAt && c.doneAt >= since)
     .sort((a, b) => a.doneAt!.localeCompare(b.doneAt!));
-  const completedBefore = steps.filter((s) => s.done && !s.doneAt && !s.carried);
-  const open = steps.filter((s) => !s.done);
-  const tag = (s: (typeof steps)[number]) => (s.carried ? ` [acordado el ${fmtShort(s.meeting.date)}]` : "");
+  const completedBefore = completed.filter((c) => !advanced.includes(c));
+  const interaction = latestInteraction(client, meeting);
+  const anchorMail = interaction.kind === "mail" ? interaction.mail : null;
+  const pending = steps.filter((s) => !s.done);
+  // Trazabilidad: lo pendiente que ya se habló por mail va aparte. No se da por completado: eso lo
+  // define el tablero, porque la relación se detecta por palabras clave.
+  const trace = mailTrace(client, meeting);
+  const related = pending.filter((s) => trace.has(s.id));
+  const open = pending.filter((s) => !trace.has(s.id));
+  const tag = (s: (typeof steps)[number]) =>
+    `${dueSuffix(s.due, now)}${s.carried ? ` [acordado el ${fmtShort(s.meeting.date)}]` : ""}`;
   const ours = open.filter((s) => s.side === "me" || s.side === "team");
   const theirs = open.filter((s) => s.side === "client");
+  const shared = open.filter((s) => s.side === "shared");
   const other = open.filter((s) => s.side === "unknown");
-  const lastMail = client.activity?.lastMail;
-  const fromClient = lastMail?.direction === "client" ? lastMail : null;
-  const requests = mailTickets(client).filter((t) => !t.id.endsWith("-reply") && !done.has(t.id));
-  const recipients = followupRecipients(client, meeting, ownerEmail);
+  const requests = openRequests(client, interaction);
+  const recipients = interactionRecipients(client, meeting, interaction, ownerEmail);
+  const meetingRef = `la reunión del ${fmtDate(meeting.date)}`;
+  const progress = !steps.length
+    ? `Les escribo para retomar lo conversado en ${meetingRef}.`
+    : pending.length
+      ? `Les comparto ${completed.length ? "los avances sobre" : "cómo venimos con"} lo acordado en ${meetingRef}:`
+      : `Les confirmo que quedaron completos todos los puntos acordados en ${meetingRef}.`;
 
   const lines = [greet(recipients), ""];
-  if (fromClient && fromClient.date > meeting.date) {
-    lines.push(`Gracias por tu mail del ${fmtDate(fromClient.date)} (“${fromClient.subject}”).`, "");
+  if (anchorMail?.direction === "client") {
+    lines.push(`Gracias por el mail del ${fmtDate(anchorMail.date)} sobre “${cleanSubject(anchorMail.subject)}”.`, "", progress);
+  } else if (anchorMail) {
+    lines.push(`Retomo mi mail del ${fmtDate(anchorMail.date)} sobre “${cleanSubject(anchorMail.subject)}”.`, "", progress);
+  } else {
+    lines.push(progress);
   }
-  lines.push(
-    open.length
-      ? `Les comparto una actualización del avance sobre lo acordado en la reunión del ${fmtDate(meeting.date)}:`
-      : `Les comparto el cierre de lo acordado en la reunión del ${fmtDate(meeting.date)}: completamos todos los puntos.`,
-  );
-  if (completedWeek.length) {
+  if (advanced.length) {
     lines.push(
       "",
-      "Completado esta semana:",
-      ...completedWeek.map((s) => `✓ ${s.text}${s.doneAt ? ` (${fmtShort(s.doneAt)})` : ""}`),
+      lastMine ? `Avanzamos desde mi último mail (${fmtShort(lastMine.date)}):` : "Avanzamos desde la reunión:",
+      ...advanced.map((c) => `✓ ${c.text} (${fmtShort(c.doneAt!)})`),
     );
   }
-  if (completedBefore.length) lines.push("", "Completado previamente:", ...completedBefore.map((s) => `✓ ${s.text}`));
-  if (ours.length) lines.push("", "En curso de nuestro lado:", ...ours.map((s) => `• ${s.text}${tag(s)} — (completar estado / fecha estimada)`));
-  if (requests.length) lines.push("", "Sobre lo que nos consultaron:", ...requests.map((r) => `• ${r.title} → (completar respuesta)`));
+  if (completedBefore.length) lines.push("", "Ya completado:", ...completedBefore.map((c) => `✓ ${c.text}`));
+  if (related.length) {
+    lines.push(
+      "",
+      "Conversado por mail desde la reunión:",
+      ...related.map((s) => `• ${s.text}${tag(s)} (mail del ${fmtShort(trace.get(s.id)!.date)})`),
+    );
+  }
+  if (ours.length) lines.push("", "En curso de nuestro lado:", ...ours.map((s) => `• ${s.text}${tag(s)}`));
+  if (requests.length) lines.push("", "Sobre lo que nos consultaron, lo estamos revisando:", ...requests.map((r) => `• ${r.title}`));
   if (theirs.length) lines.push("", "Pendiente de su lado (para poder avanzar):", ...theirs.map((s) => `• ${s.text}${tag(s)}`));
+  if (shared.length) lines.push("", "Para resolver en conjunto:", ...shared.map((s) => `• ${s.text}${tag(s)}`));
   if (other.length) lines.push("", "Otros pendientes acordados:", ...other.map((s) => `• ${s.text}${tag(s)}`));
   lines.push("", "Cualquier duda o si hay algo para priorizar, me avisan.", "", "Saludos,");
 
+  const reviewNotes = lastTalkNote(interaction);
+  if (requests.length) reviewNotes.push(`Agregá la respuesta a ${requests.length} consulta(s) del cliente.`);
+  if (lastMine && anchorMail === lastMine && !advanced.length) {
+    reviewNotes.push("Sin avances nuevos desde tu último mail: evaluá si hace falta enviarlo ahora.");
+  }
+  if (!anchorMail && steps.length && !completed.length) {
+    reviewNotes.push("Todavía no marcaste accionables como completados: el mail solo lista lo pendiente.");
+  }
+  const overdue = pending.filter((s) => s.due && s.due.until < now && s.side !== "client");
+  if (overdue.length) reviewNotes.push(`Fecha objetivo vencida, omitida del mail: ${overdue.map((s) => s.text).join(" · ")}`);
+  for (const s of pending.filter((p) => p.side === "me" || p.side === "team")) {
+    const note = relatedMailNote(client, s.id);
+    if (note) reviewNotes.push(`${s.text} → ${note}`);
+  }
+  const lastMail = client.activity?.lastMail;
+  if (anchorMail && lastMail?.direction === "team" && lastMail.date > anchorMail.date) {
+    reviewNotes.push(`${lastMail.fromName ?? lastMail.from} escribió después (${fmtShort(lastMail.date)}, “${lastMail.subject}”): revisá que no se repita.`);
+  }
+
   return {
     meetingId: meeting.id,
-    subject: `Actualización de avance – ${client.name}`,
+    subject: anchorMail ? `Re: ${cleanSubject(anchorMail.subject)}` : `Actualización de avance – ${client.name}`,
     body: lines.join("\n"),
     to: recipients.map((r) => r.email),
-    updatedAt: new Date().toISOString(),
+    updatedAt: now.toISOString(),
+    ...(anchorMail ? { threadId: anchorMail.threadId } : {}),
+    reviewNotes,
   };
 }
 
-/** Borrador guardado (si existe y sigue vigente) o recién generado, según el tipo. */
+/**
+ * Borrador vigente según el tipo. Un envío previo cierra ese mensaje (se genera uno nuevo). Una edición
+ * guardada se conserva hasta que cambien los accionables o llegue un mail; ahí se regenera con el
+ * estado actual, manteniendo los destinatarios editados.
+ */
 export function getDraft(
   kind: FollowupKind,
   client: ClientRecord,
   meeting: DiscoveredMeeting,
   ownerEmail: string | null,
   settings: WorkSettings,
-): { draft: FollowupDraft; generated: FollowupDraft; regenerated: boolean } {
+): { draft: FollowupDraft; generated: FollowupDraft; regenerated: boolean; lastSentAt: string | null } {
   const generated =
     kind === "status"
       ? buildStatusUpdate(client, meeting, ownerEmail, settings)
-      : buildFollowup({ ...client, followups: {} }, meeting, ownerEmail);
+      : buildFollowup(client, meeting, ownerEmail, settings);
   const saved = client.followups?.[followupKey(kind, meeting.id)];
-  // Seguimiento: si se tildaron/destildaron accionables o hubo mails nuevos después de la
-  // edición guardada, se regenera con el estado actual (conserva destinatarios editados).
+  const lastSentAt = saved?.sentAt ?? null;
+  if (!saved || saved.sentAt) return { draft: generated, generated, regenerated: false, lastSentAt };
   const changedAt = [client.ticketsUpdatedAt, client.activity?.lastMail?.date].filter(Boolean).sort().at(-1);
-  if (kind === "status" && saved && changedAt && changedAt > saved.updatedAt) {
-    return { draft: { ...generated, to: saved.to.length ? saved.to : generated.to }, generated, regenerated: true };
+  if (changedAt && changedAt > saved.updatedAt) {
+    return { draft: { ...generated, to: saved.to.length ? saved.to : generated.to }, generated, regenerated: true, lastSentAt };
   }
-  return { draft: saved ?? generated, generated, regenerated: false };
+  return { draft: saved, generated, regenerated: false, lastSentAt };
 }
