@@ -11,6 +11,25 @@ import type { Ticket } from "@/types/ticket";
 
 const norm = (s: string) => s.toLowerCase().normalize("NFD").replace(/[\u0300-\u036f]/g, "");
 
+/** Más reciente primero; sin movimiento al final; desempate por nombre. */
+function byMovement(a: Account, b: Account): number {
+  const at = (x: Account) => (x.lastMovementAt ? Date.parse(x.lastMovementAt) : 0);
+  return at(b) - at(a) || a.name.localeCompare(b.name, "es");
+}
+
+function movementBucket(iso: string | null | undefined, now: Date): string {
+  if (!iso) return "Anteriores";
+  const today = new Date(now);
+  today.setHours(0, 0, 0, 0);
+  const day = new Date(iso);
+  day.setHours(0, 0, 0, 0);
+  const diff = Math.round((today.getTime() - day.getTime()) / 86_400_000);
+  if (diff <= 0) return "Hoy";
+  if (diff === 1) return "Ayer";
+  // Lunes de esta semana = hace (getDay + 6) % 7 días.
+  return diff <= (today.getDay() + 6) % 7 ? "Esta semana" : "Anteriores";
+}
+
 export function AccountsSplitView({
   accounts,
   meetings,
@@ -22,7 +41,9 @@ export function AccountsSplitView({
 }) {
   const [query, setQuery] = useState("");
   const q = norm(query.trim());
-  const visible = q ? accounts.filter((a) => norm(`${a.name} ${a.id} ${a.erp ?? ""}`).includes(q)) : accounts;
+  const visible = (q ? accounts.filter((a) => norm(`${a.name} ${a.id} ${a.erp ?? ""}`).includes(q)) : accounts)
+    .slice()
+    .sort(byMovement);
   const assigned = visible.filter((a) => a.isAssigned);
   const unassigned = visible.filter((a) => !a.isAssigned);
 
@@ -39,6 +60,27 @@ export function AccountsSplitView({
         pendingActionables={latestTickets.filter((t) => !t.isDone).length}
       />
     );
+  };
+
+  // Títulos por antigüedad del último movimiento; al buscar se muestra la lista corrida.
+  const renderList = (list: Account[]) => {
+    if (!list.length) return q ? empty : null;
+    if (q) return list.map(renderCard);
+    const now = new Date();
+    return list.flatMap((account, i) => {
+      const bucket = movementBucket(account.lastMovementAt, now);
+      const isNew = i === 0 || movementBucket(list[i - 1].lastMovementAt, now) !== bucket;
+      return [
+        ...(isNew
+          ? [
+              <h3 key={`h-${bucket}`} className="col-span-full pt-2 text-xs font-medium text-muted-foreground first:pt-0">
+                {bucket}
+              </h3>,
+            ]
+          : []),
+        renderCard(account),
+      ];
+    });
   };
 
   const empty = (
@@ -77,10 +119,10 @@ export function AccountsSplitView({
         </div>
       </div>
       <TabsContent value="assigned" className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
-        {assigned.length ? assigned.map(renderCard) : q && empty}
+        {renderList(assigned)}
       </TabsContent>
       <TabsContent value="unassigned" className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
-        {unassigned.length ? unassigned.map(renderCard) : q && empty}
+        {renderList(unassigned)}
       </TabsContent>
     </Tabs>
   );

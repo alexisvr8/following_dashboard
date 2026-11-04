@@ -14,6 +14,8 @@ export interface Participant {
   email: string;
   name: string | null;
   role: ParticipantRole;
+  /** Nombre puesto a mano en el perfil (para mostrar y saludar); `name` queda como lo detectó Calendar. */
+  customName: string | null;
   /** true si el rol de referente viene de un override manual. */
   manual: boolean;
   meetingCount: number;
@@ -76,7 +78,8 @@ export function computeParticipants(
   const byEmail = new Map<string, Participant>();
   const touch = (email: string, name: string | null, date: string | null) => {
     const p = byEmail.get(email) ?? {
-      email, name, role: "external" as ParticipantRole, manual: false, meetingCount: 0, lastSeenAt: null,
+      email, name, customName: client.profile?.contactNames?.[email] ?? null,
+      role: "external" as ParticipantRole, manual: false, meetingCount: 0, lastSeenAt: null,
     };
     if (!p.name && name) p.name = name;
     if (date) {

@@ -13,7 +13,7 @@ import {
 } from "@/lib/store/clients-store";
 import { computeParticipants } from "@/lib/utils/participants";
 import { accountActionables } from "@/lib/utils/actionables";
-import { classifyMail, extractRequests, relatedActionables, stripQuoted } from "@/lib/utils/mail-classify";
+import { classifyMail, extractCommitments, extractRequests, relatedActionables, stripQuoted } from "@/lib/utils/mail-classify";
 
 // Sincroniza, por cliente, la última actividad real:
 // - últimos mails REALES (sin invitaciones/respuestas de Calendar, auto-respuestas ni minutas) en
@@ -144,6 +144,7 @@ async function syncOne(
         relatedTicketIds: related,
         direction: dir,
         ...(dir === "client" ? { requests: extractRequests(own) } : {}),
+        ...(dir === "me" ? { commitments: extractCommitments(own) } : {}),
       });
     }
     recentMails.sort((a, b) => b.date.localeCompare(a.date));

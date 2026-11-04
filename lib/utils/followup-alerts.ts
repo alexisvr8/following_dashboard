@@ -54,23 +54,43 @@ export function accountPending(client: ClientRecord, settings: WorkSettings, now
   return { latest, done, pendingOwn, pendingClient };
 }
 
+export interface Movement {
+  at: string;
+  label: string;
+  /** El último movimiento es un mail de nuestro lado (mío o del equipo). */
+  mine: boolean;
+}
+
+/** Último movimiento real de la cuenta: mail, minuta o evento de Calendar ya realizado. */
+export function lastMovement(client: ClientRecord, now = new Date()): Movement | null {
+  const latest = client.meetings.reduce<ClientRecord["meetings"][number] | null>(
+    (max, m) => (!max || Date.parse(m.date) > Date.parse(max.date) ? m : max),
+    null,
+  );
+  const a = client.activity;
+  const candidates: Movement[] = [];
+  if (a?.lastMail) {
+    const m = a.lastMail;
+    const who = m.direction === "me" ? "Tu mail" : `Mail de ${m.fromName ?? m.from}`;
+    candidates.push({ at: m.date, label: `${who}: “${m.subject}”`, mine: m.direction !== "client" });
+  }
+  if (latest) candidates.push({ at: latest.date, label: `Reunión: ${latest.title}`, mine: false });
+  if (a?.lastCalendarMeeting) {
+    candidates.push({ at: a.lastCalendarMeeting.date, label: `Reunión: ${a.lastCalendarMeeting.title}`, mine: false });
+  }
+  return (
+    candidates
+      .filter((x) => Date.parse(x.at) <= now.getTime())
+      .sort((x, y) => Date.parse(y.at) - Date.parse(x.at))[0] ?? null
+  );
+}
+
 export function computeAlerts(clients: ClientRecord[], settings: WorkSettings, now = new Date()): AccountAlert[] {
   const alerts: AccountAlert[] = [];
   for (const c of clients) {
     if (c.status !== "assigned") continue;
-    const { latest, done, pendingOwn, pendingClient } = accountPending(c, settings, now);
-    const a = c.activity;
-    const candidates: { at: string; label: string; mine: boolean }[] = [];
-    if (a?.lastMail) {
-      const m = a.lastMail;
-      const who = m.direction === "me" ? "vos" : (m.fromName ?? m.from);
-      candidates.push({ at: m.date, label: `Mail de ${who}: “${m.subject}”`, mine: m.direction !== "client" });
-    }
-    if (latest) candidates.push({ at: latest.date, label: `Reunión: ${latest.title}`, mine: false });
-    if (a?.lastCalendarMeeting) {
-      candidates.push({ at: a.lastCalendarMeeting.date, label: `Reunión: ${a.lastCalendarMeeting.title}`, mine: false });
-    }
-    const last = candidates.filter((x) => Date.parse(x.at) <= now.getTime()).sort((x, y) => y.at.localeCompare(x.at))[0];
+    const { done, pendingOwn, pendingClient } = accountPending(c, settings, now);
+    const last = lastMovement(c, now);
     if (!last) continue;
     const base = { clientId: c.id, name: c.name, lastMovementAt: last.at, lastMovementLabel: last.label, pendingOwn, pendingClient };
 

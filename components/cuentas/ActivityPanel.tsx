@@ -52,7 +52,7 @@ export function ActivityPanel({
 
   return (
     <Card>
-      <CardHeader className="flex-row items-start justify-between gap-4">
+      <CardHeader className="flex items-start justify-between gap-4">
         <div className="space-y-1">
           <CardTitle className="text-sm">Trazabilidad</CardTitle>
           <p className="text-xs text-muted-foreground">

@@ -32,7 +32,7 @@ export default async function Home({ searchParams }: { searchParams: Promise<{ s
     clients.map((c) => c.activity?.syncedAt).filter((x): x is string => !!x).sort().at(-1) ?? null;
 
   return (
-    <div className="mx-auto max-w-6xl space-y-8 px-6 py-8">
+    <div className="mx-auto max-w-[1440px] space-y-8 px-6 py-8">
       <div>
         <h1 className="text-lg font-semibold">Dashboard</h1>
         <p className="text-sm text-muted-foreground">Resumen de tus cuentas y accionables</p>

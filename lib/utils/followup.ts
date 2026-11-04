@@ -79,7 +79,8 @@ function lastTalkNote(interaction: Interaction): string[] {
 function openRequests(client: ClientRecord, interaction: Interaction) {
   if (interaction.kind !== "mail" || interaction.mail.direction !== "client") return [];
   const done = new Set(client.doneTicketIds ?? []);
-  return mailTickets(client).filter((t) => !t.id.endsWith("-reply") && !done.has(t.id));
+  const { messageId } = interaction.mail;
+  return mailTickets(client).filter((t) => t.kind === "request" && t.messageId === messageId && !done.has(t.id));
 }
 
 /** Si parte de un mail: quienes participaron de ese mail del lado del cliente (fallback: los de la reunión). */
@@ -209,11 +210,33 @@ export function stepSide(
 /** Fecha objetivo para mostrar en el mail; las ya vencidas no se exponen al cliente. */
 const dueSuffix = (due: StepDue | null, now: Date) => (due && due.until >= now ? ` – objetivo: ${due.label}` : "");
 
-function greet(recipients: { name: string | null }[]): string {
-  const firstNames = [...new Set(recipients.map((r) => r.name?.split(/\s+/)[0]).filter(Boolean))];
-  return firstNames.length
-    ? `Hola ${firstNames.length > 1 ? `${firstNames.slice(0, -1).join(", ")} y ${firstNames.at(-1)}` : firstNames[0]},`
-    : "Hola equipo,";
+// Buzones de un área: su nombre visible suele ser el área o la empresa, no una persona.
+const GENERIC_MAILBOX =
+  /^(info|informes|contacto|contact|cuentas|adm|admin|administracion|operaciones|ventas|compras|facturacion|facturas|proveedores|pagos|tesoreria|soporte|sistemas|recepcion|reservas|hola|consultas|gerencia|rrhh)([._-]|\d|@)/i;
+
+const companyName = (client: ClientRecord) => client.profile?.emailName || client.name;
+
+/** "gonzalo.alvarez@x.com" → "Gonzalo". Sin separador no se adivina: "gperez" no dice dónde termina el nombre. */
+function nameFromEmail(email: string): string | null {
+  const [first, ...rest] = email.split("@")[0].split(/[._-]+/);
+  return rest.length && first.length >= 3 ? first[0].toUpperCase() + first.slice(1) : null;
+}
+
+/** El nombre del perfil se usa tal cual; si no, el primer nombre detectado, salvo buzones genéricos. */
+function greet(recipients: { email: string; name: string | null }[], client: ClientRecord): string {
+  const custom = client.profile?.contactNames ?? {};
+  const names = recipients.map((r) => {
+    const email = r.email.toLowerCase();
+    if (custom[email]) return custom[email];
+    if (GENERIC_MAILBOX.test(email)) return null;
+    // Calendar a veces trae el mail como nombre.
+    return r.name && !r.name.includes("@") ? r.name.split(/\s+/)[0] : nameFromEmail(email);
+  });
+  const unique = [...new Set(names.filter(Boolean))];
+  if (unique.length) {
+    return `Hola ${unique.length > 1 ? `${unique.slice(0, -1).join(", ")} y ${unique.at(-1)}` : unique[0]},`;
+  }
+  return client.profile?.emailName ? `Hola equipo de ${client.profile.emailName},` : "Hola equipo,";
 }
 
 /** Follow-up: hitos y decisiones de la reunión + accionables vigentes, al día con mails y tablero. */
@@ -253,7 +276,7 @@ export function buildFollowup(
   const milestones = (meeting.milestones ?? []).map((m) => `• ${m}`);
 
   const lines = [
-    greet(recipients),
+    greet(recipients, client),
     "",
     `Gracias por el tiempo en la reunión del ${fmtDate(meeting.date)}. Les comparto lo conversado y cómo seguimos.`,
   ];
@@ -322,7 +345,7 @@ export function buildStatusUpdate(
       .filter((s) => s.done && (!s.carried || (s.doneAt && s.doneAt >= meeting.date)))
       .map((s) => ({ text: s.text, doneAt: s.doneAt })),
     ...mailTickets(client)
-      .filter((t) => !t.id.endsWith("-reply") && doneAt[t.id])
+      .filter((t) => t.kind === "request" && t.date > meeting.date && doneAt[t.id])
       .map((t) => ({ text: t.title, doneAt: doneAt[t.id] })),
   ];
   const advanced = completed
@@ -352,7 +375,7 @@ export function buildStatusUpdate(
       ? `Les comparto ${completed.length ? "los avances sobre" : "cómo venimos con"} lo acordado en ${meetingRef}:`
       : `Les confirmo que quedaron completos todos los puntos acordados en ${meetingRef}.`;
 
-  const lines = [greet(recipients), ""];
+  const lines = [greet(recipients, client), ""];
   if (anchorMail?.direction === "client") {
     lines.push(`Gracias por el mail del ${fmtDate(anchorMail.date)} sobre “${cleanSubject(anchorMail.subject)}”.`, "", progress);
   } else if (anchorMail) {
@@ -403,7 +426,7 @@ export function buildStatusUpdate(
 
   return {
     meetingId: meeting.id,
-    subject: anchorMail ? `Re: ${cleanSubject(anchorMail.subject)}` : `Actualización de avance – ${client.name}`,
+    subject: anchorMail ? `Re: ${cleanSubject(anchorMail.subject)}` : `Actualización de avance – ${companyName(client)}`,
     body: lines.join("\n"),
     to: recipients.map((r) => r.email),
     cc: anchorMail
@@ -434,7 +457,7 @@ export function getDraft(
   const saved = client.followups?.[followupKey(kind, meeting.id)];
   const lastSentAt = saved?.sentAt ?? null;
   if (!saved || saved.sentAt) return { draft: generated, generated, regenerated: false, lastSentAt };
-  const changedAt = [client.ticketsUpdatedAt, client.activity?.lastMail?.date].filter(Boolean).sort().at(-1);
+  const changedAt = [client.ticketsUpdatedAt, client.profileUpdatedAt, client.activity?.lastMail?.date].filter(Boolean).sort().at(-1);
   if (changedAt && changedAt > saved.updatedAt) {
     return {
       draft: {

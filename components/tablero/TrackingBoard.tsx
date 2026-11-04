@@ -1,22 +1,23 @@
 "use client";
 
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+import { cn } from "@/lib/utils";
 import { createPortal } from "react-dom";
 import { Search, X } from "lucide-react";
 import { TrackingColumn, PLACEHOLDER_KEY } from "@/components/tablero/TrackingColumn";
 import { TrackingCardFace, type TrackingCardData } from "@/components/tablero/TrackingCard";
-import { TrackingDialog } from "@/components/tablero/TrackingDialog";
+import { ArchiveDialog, TrackingDialog } from "@/components/tablero/TrackingDialog";
 import { TRACKING_COLUMNS } from "@/lib/tracking";
-import { getLatestMeeting } from "@/lib/utils/meetings";
-import type { Account, TrackingStatus } from "@/types/account";
-import type { Meeting } from "@/types/meeting";
+import { isSameDay, resolveCardStatus, weekStart, type BoardCard } from "@/lib/utils/board-status";
+import type { TrackingStatus } from "@/types/account";
 import type { Ticket } from "@/types/ticket";
 
 // Drag-and-drop propio con pointer events (sin HTML5 DnD: su "ghost" nativo es el que
 // arrastraba parte de la pantalla). Overlay flotante que sigue al puntero con inclinación
 // según velocidad, placeholder que abre hueco en la columna destino y FLIP (Web Animations)
 // para que el resto de las cards se reacomode con motion. El orden dentro de la columna
-// es local; el status persiste vía PATCH /api/clients/[id].
+// es local. Cada card (una por reunión o mail) se ubica sola según sus tildes; moverla a mano
+// persiste vía PATCH /api/clients/[id] y vale hasta el próximo tildado.
 
 type Slot = { status: TrackingStatus; index: number };
 
@@ -49,52 +50,119 @@ const clamp = (v: number, min: number, max: number) => Math.min(max, Math.max(mi
 const reducedMotion = () =>
   typeof window !== "undefined" && window.matchMedia("(prefers-reduced-motion: reduce)").matches;
 const norm = (s: string) => s.toLowerCase().normalize("NFD").replace(/[̀-ͯ]/g, "");
-const matchesQuery = (account: Account, q: string) => !q || norm(account.name).includes(q);
+
+type Period = "all" | "today" | "week";
+const PERIODS: { value: Period; label: string; hint: string }[] = [
+  { value: "all", label: "Todas", hint: "Todas las cards" },
+  { value: "today", label: "Hoy", hint: "Prioridad, más lo generado o trabajado hoy" },
+  { value: "week", label: "Esta semana", hint: "Reuniones y mails de esta semana" },
+];
+
+type BoardItem = { id: string; trackingStatus: TrackingStatus; data: TrackingCardData };
 
 export function TrackingBoard({
   heading,
-  accounts: initialAccounts,
-  meetings,
+  cards,
   tickets: initialTickets,
   initialOpenId = null,
+  nowIso,
 }: {
   heading: React.ReactNode;
-  accounts: Account[];
-  meetings: Meeting[];
+  cards: BoardCard[];
   tickets: Ticket[];
   initialOpenId?: string | null;
+  nowIso: string;
 }) {
-  const [accounts, setAccounts] = useState(initialAccounts);
+  const now = useMemo(() => new Date(nowIso), [nowIso]);
+  const monday = useMemo(() => weekStart(now), [now]);
+  const [order, setOrder] = useState(() => cards.map((c) => c.id));
+  // Cambios de esta sesión sobre lo que trajo el servidor (null = sin ubicación manual).
+  const [overrides, setOverrides] = useState<Record<string, BoardCard["override"]>>({});
+  const [toggles, setToggles] = useState<Record<string, { isDone: boolean; at: string | null }>>({});
   const [query, setQuery] = useState("");
   const q = norm(query.trim());
-  const [doneIds, setDoneIds] = useState(() => new Set(initialTickets.filter((t) => t.isDone).map((t) => t.id)));
+  const [period, setPeriod] = useState<Period>("all");
+  const [archiveOpen, setArchiveOpen] = useState(false);
   const [drag, setDrag] = useState<DragState | null>(null);
   const [openId, setOpenId] = useState<string | null>(
-    initialOpenId && initialAccounts.some((a) => a.id === initialOpenId) ? initialOpenId : null,
+    initialOpenId && cards.some((c) => c.id === initialOpenId) ? initialOpenId : null,
   );
   const [highlightedId, setHighlightedId] = useState<string | null>(initialOpenId);
 
   const tickets = useMemo(
-    () => initialTickets.map((t) => ({ ...t, isDone: doneIds.has(t.id) })),
-    [initialTickets, doneIds],
+    () =>
+      initialTickets.map((t) => {
+        const local = toggles[t.id];
+        return local ? { ...t, isDone: local.isDone, doneAt: local.at } : t;
+      }),
+    [initialTickets, toggles],
   );
 
   const cardData = useMemo(() => {
     const map = new Map<string, TrackingCardData>();
-    for (const account of accounts) {
-      const latestMeeting = getLatestMeeting(account.id, meetings);
-      const own = tickets.filter((t) => t.accountId === account.id);
+    for (const card of cards) {
+      const own = tickets.filter((t) => t.cardId === card.id);
       const done = own.filter((t) => t.isDone).length;
-      map.set(account.id, {
-        account,
-        latestMeeting,
+      const override = card.id in overrides ? overrides[card.id] : card.override;
+      // Tildar es interacción: la card sale de Prioridad en el momento.
+      const priorityReason = own.some((t) => toggles[t.id]?.isDone) ? null : card.priorityReason;
+      const status = resolveCardStatus({ override }, priorityReason, own.length, done);
+      const lastTick = own.map((t) => t.doneAt).filter((x): x is string => !!x).sort().at(-1);
+      map.set(card.id, {
+        card,
+        status,
+        tickets: own,
+        done,
         total: own.length,
-        pending: own.length - done,
-        engagementPercent: own.length ? Math.round((done / own.length) * 100) : 0,
+        percent: own.length ? Math.round((done / own.length) * 100) : 0,
+        closedAt: status === "tasks_done" ? (override?.at ?? lastTick ?? card.date) : null,
+        priorityReason,
       });
     }
     return map;
-  }, [accounts, meetings, tickets]);
+  }, [cards, tickets, overrides, toggles]);
+
+  // Las cards nuevas (reunión o mail recién llegados) entran primero.
+  const allIds = useMemo(() => {
+    const known = new Set(order);
+    return [...cards.filter((c) => !known.has(c.id)).map((c) => c.id), ...order.filter((id) => cardData.has(id))];
+  }, [cards, order, cardData]);
+  const isArchived = useCallback(
+    (d: TrackingCardData) => d.status === "tasks_done" && !!d.closedAt && new Date(d.closedAt) < monday,
+    [monday],
+  );
+  const items = useMemo<BoardItem[]>(() => {
+    const visible = allIds.map((id) => cardData.get(id)!).filter((d) => !isArchived(d));
+    // Finalizadas: lo último que cerraste, arriba.
+    const closed = visible
+      .filter((d) => d.status === "tasks_done")
+      .sort((a, b) => Date.parse(b.closedAt ?? "") - Date.parse(a.closedAt ?? ""));
+    return [...visible.filter((d) => d.status !== "tasks_done"), ...closed].map((data) => ({
+      id: data.card.id,
+      trackingStatus: data.status,
+      data,
+    }));
+  }, [allIds, cardData, isArchived]);
+  const archived = useMemo(() => [...cardData.values()].filter(isArchived), [cardData, isArchived]);
+
+  const matches = useCallback(
+    ({ data }: BoardItem) => {
+      const { card, status, tickets: own, closedAt } = data;
+      if (q && !norm(`${card.accountName} ${card.title}`).includes(q)) return false;
+      const date = new Date(card.date);
+      if (period === "week") return date >= monday;
+      if (period === "today") {
+        return (
+          status === "tasks_priority" ||
+          isSameDay(date, now) ||
+          (!!closedAt && isSameDay(new Date(closedAt), now)) ||
+          own.some((t) => t.doneAt && isSameDay(new Date(t.doneAt), now))
+        );
+      }
+      return true;
+    },
+    [q, period, monday, now],
+  );
 
   // ---- refs ----
   const scrollerRef = useRef<HTMLDivElement>(null);
@@ -109,12 +177,14 @@ export function TrackingBoard({
   const raf = useRef<number | null>(null);
   const dropping = useRef(false);
   const suppressClick = useRef(false);
-  const accountsRef = useRef(accounts);
-  const queryRef = useRef(q);
+  const itemsRef = useRef(items);
+  const matchesRef = useRef(matches);
+  const allIdsRef = useRef(allIds);
   useLayoutEffect(() => {
-    accountsRef.current = accounts;
-    queryRef.current = q;
-  }, [accounts, q]);
+    itemsRef.current = items;
+    matchesRef.current = matches;
+    allIdsRef.current = allIds;
+  }, [items, matches, allIds]);
 
   const updateDrag = useCallback((next: DragState | null) => {
     dragRef.current = next;
@@ -198,9 +268,7 @@ export function TrackingBoard({
   // ---- hit testing ----
   const columnCards = useCallback(
     (status: TrackingStatus, excludeId: string) =>
-      accountsRef.current.filter(
-        (a) => a.trackingStatus === status && a.id !== excludeId && matchesQuery(a, queryRef.current),
-      ),
+      itemsRef.current.filter((a) => a.trackingStatus === status && a.id !== excludeId && matchesRef.current(a)),
     [],
   );
 
@@ -255,6 +323,13 @@ export function TrackingBoard({
       if (p.x < r.left + EDGE) scroller.scrollLeft -= Math.ceil(((r.left + EDGE - p.x) / EDGE) * 18);
       else if (p.x > r.right - EDGE) scroller.scrollLeft += Math.ceil(((p.x - (r.right - EDGE)) / EDGE) * 18);
     }
+    // En escritorio cada columna tiene su scroll: si la lista es larga, se mueve al llegar al borde.
+    const list = listEls.current.get(d.over.status);
+    if (list) {
+      const r = list.getBoundingClientRect();
+      if (p.y < r.top + 48) list.scrollTop -= 10;
+      else if (p.y > r.bottom - 48) list.scrollTop += 10;
+    }
     if (p.y < EDGE) window.scrollBy(0, -Math.ceil(((EDGE - p.y) / EDGE) * 16));
     else if (p.y > window.innerHeight - EDGE) window.scrollBy(0, Math.ceil(((p.y - (window.innerHeight - EDGE)) / EDGE) * 16));
 
@@ -279,13 +354,13 @@ export function TrackingBoard({
   const activate = useCallback(() => {
     const pd = pending.current;
     if (!pd) return;
-    const account = accountsRef.current.find((a) => a.id === pd.id);
-    if (!account) return;
+    const item = itemsRef.current.find((a) => a.id === pd.id);
+    if (!item) return;
     const rect = pd.el.getBoundingClientRect();
-    const index = columnCards(account.trackingStatus, pd.id).filter(
-      (a) => accountsRef.current.indexOf(a) < accountsRef.current.indexOf(account),
+    const index = columnCards(item.trackingStatus, pd.id).filter(
+      (a) => itemsRef.current.indexOf(a) < itemsRef.current.indexOf(item),
     ).length;
-    const origin = { status: account.trackingStatus, index };
+    const origin = { status: item.trackingStatus, index };
     const p = pointer.current;
     p.tilt = 0;
     p.targetTilt = 0;
@@ -308,6 +383,15 @@ export function TrackingBoard({
     schedule();
   }, [captureRects, columnCards, schedule, updateDrag]);
 
+  const persistMove = useCallback((card: BoardCard, status: TrackingStatus) => {
+    setOverrides((prev) => ({ ...prev, [card.id]: { status, at: new Date().toISOString() } }));
+    void fetch(`/api/clients/${encodeURIComponent(card.accountId)}`, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ boardCard: { id: card.id, status } }),
+    });
+  }, []);
+
   const finish = useCallback(
     (cancel: boolean) => {
       const d = dragRef.current;
@@ -321,27 +405,21 @@ export function TrackingBoard({
         dropping.current = false;
         captureRects();
         landedId.current = d.id;
-        setAccounts((prev) => {
-          const moving = prev.find((a) => a.id === d.id);
-          if (!moving) return prev;
-          const rest = prev.filter((a) => a.id !== d.id);
-          const updated = { ...moving, trackingStatus: target.status };
+        const moving = itemsRef.current.find((a) => a.id === d.id);
+        if (moving) {
+          const rest = itemsRef.current.filter((a) => a.id !== d.id);
           // target.index cuenta solo las cards visibles: con filtro activo, las ocultas no ocupan posición.
-          const inCol = rest.filter((a) => a.trackingStatus === target.status && matchesQuery(a, queryRef.current));
+          const inCol = rest.filter((a) => a.trackingStatus === target.status && matchesRef.current(a));
           const before = inCol[target.index];
-          if (before) rest.splice(rest.indexOf(before), 0, updated);
-          else if (inCol.length) rest.splice(rest.indexOf(inCol[inCol.length - 1]) + 1, 0, updated);
-          else rest.push(updated);
-          return rest;
-        });
-        updateDrag(null);
-        if (target.status !== d.origin.status) {
-          void fetch(`/api/clients/${encodeURIComponent(d.id)}`, {
-            method: "PATCH",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ trackingStatus: target.status }),
-          });
+          if (before) rest.splice(rest.indexOf(before), 0, moving);
+          else if (inCol.length) rest.splice(rest.indexOf(inCol[inCol.length - 1]) + 1, 0, moving);
+          else rest.push(moving);
+          const placed = rest.map((a) => a.id);
+          const others = allIdsRef.current.filter((id) => !placed.includes(id));
+          setOrder([...placed, ...others]);
+          if (target.status !== d.origin.status) persistMove(moving.data.card, target.status);
         }
+        updateDrag(null);
       };
 
       if (cancel && (target.status !== d.over.status || target.index !== d.over.index)) {
@@ -364,7 +442,7 @@ export function TrackingBoard({
         anim.oncancel = commit;
       }));
     },
-    [captureRects, updateDrag],
+    [captureRects, persistMove, updateDrag],
   );
 
   // ---- global pointer listeners ----
@@ -455,45 +533,80 @@ export function TrackingBoard({
   }, []);
 
   function moveTo(id: string, status: TrackingStatus) {
-    const account = accounts.find((a) => a.id === id);
-    if (!account || account.trackingStatus === status) return;
+    const data = cardData.get(id);
+    if (!data || data.status === status) return;
     captureRects();
     landedId.current = id;
-    setAccounts((prev) => [
-      ...prev.filter((a) => a.id !== id),
-      { ...account, trackingStatus: status },
-    ]);
-    void fetch(`/api/clients/${encodeURIComponent(id)}`, {
-      method: "PATCH",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ trackingStatus: status }),
-    });
+    setOrder((prev) => [...prev.filter((x) => x !== id), id]);
+    persistMove(data.card, status);
   }
 
-  function toggleTicket(ticketId: string, isDone: boolean) {
-    setDoneIds((prev) => {
-      const next = new Set(prev);
-      if (isDone) next.add(ticketId);
-      else next.delete(ticketId);
-      return next;
-    });
-  }
+  /** Estado local al tildar: la card pasa sola a En curso, y a Finalizadas con el último punto. */
+  const toggleTicket = useCallback(
+    (ticketId: string, isDone: boolean) => {
+      captureRects();
+      const cardId = initialTickets.find((t) => t.id === ticketId)?.cardId;
+      setToggles((prev) => ({ ...prev, [ticketId]: { isDone, at: isDone ? new Date().toISOString() : null } }));
+      if (cardId) setOverrides((prev) => ({ ...prev, [cardId]: null }));
+    },
+    [captureRects, initialTickets],
+  );
+
+  /** Tildado desde la cara de la card (en el Dialog lo guarda TicketItem). */
+  const toggleFromCard = useCallback(
+    (ticket: Ticket, isDone: boolean) => {
+      toggleTicket(ticket.id, isDone);
+      void fetch(`/api/clients/${encodeURIComponent(ticket.accountId)}`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ ticketId: ticket.id, isDone }),
+      })
+        .then((res) => {
+          if (!res.ok) throw new Error("save_failed");
+        })
+        .catch(() => toggleTicket(ticket.id, !isDone));
+    },
+    [toggleTicket],
+  );
 
   const dragData = drag ? cardData.get(drag.id) : null;
-  const visibleAccounts = accounts.filter((a) => matchesQuery(a, q));
+  const visibleItems = items.filter(matches);
+  const priorityCount = items.filter((i) => i.trackingStatus === "tasks_priority").length;
+  const openCount = items.filter((i) => i.trackingStatus !== "tasks_done").length;
 
   return (
     <>
-      <div className="flex flex-wrap items-center justify-between gap-3">
+      <div className="flex shrink-0 flex-wrap items-center gap-x-4 gap-y-2">
         {heading}
-        <div className="relative w-full sm:w-72">
+        <p className="text-xs text-muted-foreground">
+          <b className="font-semibold text-foreground">{priorityCount}</b> en prioridad ·{" "}
+          <b className="font-semibold text-foreground">{openCount}</b> abiertas
+        </p>
+        <div className="ml-auto inline-flex rounded-lg bg-muted p-[3px]" role="group" aria-label="Filtrar por período">
+          {PERIODS.map((p) => (
+            <button
+              key={p.value}
+              type="button"
+              title={p.hint}
+              aria-pressed={period === p.value}
+              onClick={() => setPeriod(p.value)}
+              className={cn(
+                "rounded-md px-2.5 py-1 text-xs font-medium text-muted-foreground transition-colors hover:text-foreground",
+                period === p.value && "bg-background text-foreground shadow-sm",
+              )}
+            >
+              {p.label}
+            </button>
+          ))}
+        </div>
+        <div className="relative w-full sm:w-64">
           <Search className="pointer-events-none absolute left-2.5 top-1/2 size-4 -translate-y-1/2 text-muted-foreground" />
           <input
             type="search"
             value={query}
             onChange={(e) => setQuery(e.target.value)}
-            placeholder="Buscar cliente…"
-            aria-label="Buscar cliente"
+            placeholder="Buscar cliente o reunión…"
+            aria-label="Buscar cliente o reunión"
             className="h-9 w-full rounded-lg border border-input bg-transparent pl-8 pr-8 text-sm outline-none transition-shadow placeholder:text-muted-foreground focus-visible:border-ring focus-visible:ring-3 focus-visible:ring-ring/50 dark:bg-input/30 [&::-webkit-search-cancel-button]:hidden"
           />
           {query && (
@@ -509,26 +622,27 @@ export function TrackingBoard({
         </div>
       </div>
 
-      {q && !visibleAccounts.length && (
-        <p role="status" className="rounded-lg border border-dashed p-4 text-center text-sm text-muted-foreground">
-          Ningún cliente coincide con “{query.trim()}”.
+      {q && !visibleItems.length && (
+        <p role="status" className="shrink-0 rounded-lg border border-dashed p-4 text-center text-sm text-muted-foreground">
+          Ninguna card coincide con “{query.trim()}”.
         </p>
       )}
 
-      <div ref={scrollerRef} className="flex justify-center-safe gap-4 overflow-x-auto pb-4">
-        {TRACKING_COLUMNS.map(({ status, label }) => {
-          const cards = visibleAccounts
+      <div ref={scrollerRef} className="flex gap-4 overflow-x-auto overflow-y-hidden [scrollbar-width:thin] lg:min-h-0 lg:flex-1">
+        {TRACKING_COLUMNS.map(({ status, label, hint }) => {
+          const columnCards = visibleItems
             .filter((a) => a.trackingStatus === status && a.id !== drag?.id)
-            .map((a) => cardData.get(a.id)!);
+            .map((a) => a.data);
           const hasPlaceholder = drag?.over.status === status;
           return (
             <TrackingColumn
               key={status}
               status={status}
               label={label}
-              cards={cards}
-              count={cards.length + (hasPlaceholder ? 1 : 0)}
-              placeholderIndex={hasPlaceholder ? Math.min(drag!.over.index, cards.length) : null}
+              hint={hint}
+              cards={columnCards}
+              count={columnCards.length + (hasPlaceholder ? 1 : 0)}
+              placeholderIndex={hasPlaceholder ? Math.min(drag!.over.index, columnCards.length) : null}
               placeholderHeight={drag?.height ?? 0}
               isOver={hasPlaceholder && drag!.over.status !== drag!.origin.status}
               isDragging={!!drag}
@@ -537,6 +651,9 @@ export function TrackingBoard({
               registerCard={registerCard}
               onCardPointerDown={onCardPointerDown}
               onOpen={onOpen}
+              onToggle={toggleFromCard}
+              archivedCount={status === "tasks_done" ? archived.length : undefined}
+              onOpenArchive={status === "tasks_done" ? () => setArchiveOpen(true) : undefined}
             />
           );
         })}
@@ -561,10 +678,18 @@ export function TrackingBoard({
 
       <TrackingDialog
         data={openId ? cardData.get(openId) ?? null : null}
-        tickets={tickets}
         onClose={() => setOpenId(null)}
         onMove={moveTo}
         onToggleTicket={toggleTicket}
+      />
+      <ArchiveDialog
+        open={archiveOpen}
+        cards={archived}
+        onClose={() => setArchiveOpen(false)}
+        onOpenCard={(id) => {
+          setArchiveOpen(false);
+          setOpenId(id);
+        }}
       />
     </>
   );

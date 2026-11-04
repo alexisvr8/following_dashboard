@@ -1,6 +1,8 @@
 import Link from "next/link";
 import { TrackingBoard } from "@/components/tablero/TrackingBoard";
 import { getClientsFile } from "@/lib/store/clients-store";
+import { getSettings } from "@/lib/store/settings-store";
+import { buildBoardCards } from "@/lib/utils/board-cards";
 import { clientsToBoard } from "@/lib/utils/clients-to-board";
 
 // Datos reales: clientes asignados en /clientes (descubiertos desde Gemini Notes),
@@ -14,29 +16,35 @@ export default async function TableroPage({
 }) {
   const { open } = await searchParams;
   const { clients } = await getClientsFile();
-  const { accounts, meetings, tickets } = clientsToBoard(
-    clients.filter((c) => c.status === "assigned"),
-  );
+  const assigned = clients.filter((c) => c.status === "assigned");
+  const now = new Date();
+  const { tickets } = clientsToBoard(assigned, now);
+  const cards = buildBoardCards(assigned, tickets, await getSettings(), now);
+  // ?open= acepta una card o una cuenta: de la cuenta abre su card abierta más reciente.
+  const ofAccount = cards
+    .filter((c) => c.accountId === open)
+    .sort((a, b) => Date.parse(b.date) - Date.parse(a.date));
+  const isOpen = (id: string) => tickets.some((t) => t.cardId === id && !t.isDone);
+  const openCard = cards.find((c) => c.id === open) ?? ofAccount.find((c) => isOpen(c.id)) ?? ofAccount[0];
 
   const heading = (
     <div>
       <h1 className="text-lg font-semibold">Tablero Seguimiento</h1>
-      <p className="text-sm text-muted-foreground">
-        Arrastra cada cuenta a su etapa actual. Haz click en una cuenta para ver los
-        accionables de su última reunión.
+      <p className="text-xs text-muted-foreground">
+        Una card abierta por cliente. Lo nuevo se suma y se mueve sola al marcar puntos.
       </p>
     </div>
   );
 
   return (
-    <div className="space-y-6 px-6 py-8">
-      {accounts.length ? (
+    <div className="mx-auto flex max-w-[1760px] flex-col gap-3 px-6 py-3 lg:h-[calc(100dvh-3.6rem)]">
+      {cards.length ? (
         <TrackingBoard
           heading={heading}
-          accounts={accounts}
-          meetings={meetings}
+          cards={cards}
           tickets={tickets}
-          initialOpenId={open ?? null}
+          initialOpenId={openCard?.id ?? null}
+          nowIso={now.toISOString()}
         />
       ) : (
         <>

@@ -4,8 +4,10 @@ import type { Meeting } from "@/types/meeting";
 import type { Ticket } from "@/types/ticket";
 import { computeEngagementPercent } from "@/lib/utils/engagement";
 import { computeParticipants } from "@/lib/utils/participants";
+import { assignCards } from "@/lib/utils/board-status";
 import { mailTickets, relatedMailNote } from "@/lib/utils/mail-tickets";
 import { accountActionables } from "@/lib/utils/actionables";
+import { lastMovement } from "@/lib/utils/followup-alerts";
 
 const MEETING_TIME_WINDOW_DAYS = 30;
 
@@ -18,7 +20,7 @@ function mondayOf(isoDate: string): string {
 
 // Proyecta clientes de `.data/clients.json` a los tipos de Dashboard/Tablero.
 // - ids de meeting/ticket con prefijo del cliente: una misma reunión puede tener 2 clientes.
-// - Tickets = próximos pasos de la ÚLTIMA reunión (lo que se ve y tilda en el Tablero);
+// - Tickets = accionables vigentes (ver actionables.ts), agrupados en cards del Tablero (`assignCards`);
 //   engagement = % de esos tickets marcados como hechos.
 // - calendarMinutesPlanned = minutos en reuniones de los últimos 30 días (Calendar).
 //   executionMinutesActual queda en 0: no hay fuente de tiempo de ejecución real todavía.
@@ -42,6 +44,10 @@ export function clientsToBoard(
       id: a.id,
       accountId: client.id,
       meetingId: `${client.id}:${a.meeting.id}`,
+      sourceId: a.meeting.id,
+      sourceKind: "meeting" as const,
+      sourceTitle: a.meeting.title,
+      sourceDate: a.meeting.date,
       title: a.step,
       weekStartDate: mondayOf(a.meeting.date),
       meetingDate: a.meeting.date,
@@ -49,7 +55,9 @@ export function clientsToBoard(
       isDone: a.done,
       doneAt: a.doneAt,
       source: "gemini_notes" as const,
-      description: relatedMailNote(client, a.id),
+      description: a.repeatedClosed
+        ? `Se repitió en la minuta del ${new Date(a.meeting.date).toLocaleDateString("es", { day: "2-digit", month: "short" })}: se mantiene cerrado. Reabrilo si es una tarea nueva.`
+        : relatedMailNote(client, a.id),
     }));
     // Accionable propio: enviar el follow-up de la reunión (auto-tildado si el sync detecta
     // un mail mío a referentes posterior a la reunión).
@@ -59,6 +67,10 @@ export function clientsToBoard(
         id,
         accountId: client.id,
         meetingId: `${client.id}:${latest.id}`,
+        sourceId: latest.id,
+        sourceKind: "meeting",
+        sourceTitle: latest.title,
+        sourceDate: latest.date,
         title: "Enviar follow-up de la reunión (resumen + próximos pasos)",
         weekStartDate: mondayOf(latest.date),
         isDone: done.has(id),
@@ -74,6 +86,10 @@ export function clientsToBoard(
         id: t.id,
         accountId: client.id,
         meetingId: latest ? `${client.id}:${latest.id}` : null,
+        sourceId: `mail-${t.messageId}`,
+        sourceKind: "mail",
+        sourceTitle: t.subject,
+        sourceDate: t.date,
         title: t.title,
         description: t.description,
         weekStartDate: mondayOf(t.date),
@@ -81,9 +97,12 @@ export function clientsToBoard(
         doneAt: client.doneTicketAt?.[t.id] ?? null,
         meetingDate: t.date,
         source: "gmail",
+        origin: "mail",
       });
     }
+    assignCards(client.id, clientTickets);
     tickets.push(...clientTickets);
+    const movement = lastMovement(client, now);
 
     for (const m of sorted) {
       meetings.push({
@@ -110,6 +129,8 @@ export function clientsToBoard(
       executionMinutesActual: 0,
       engagementPercent: computeEngagementPercent(clientTickets),
       lastActivityAt: latest?.date ?? null,
+      lastMovementAt: movement?.at ?? null,
+      lastMovementLabel: movement?.label ?? null,
       trackingStatus: client.trackingStatus ?? "tasks_generated",
       lastNoteSummary: latest?.summary ?? null,
       erp: client.profile?.erp ?? null,

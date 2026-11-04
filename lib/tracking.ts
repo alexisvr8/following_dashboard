@@ -1,11 +1,10 @@
 import type { TrackingStatus } from "@/types/account";
 
-// Pipeline de tareas del Tablero Seguimiento. El status inicial de cada cuenta lo
-// calcula lib/utils/tracking-heuristic.ts (placeholder de Fase 1, sin agente LLM
-// todavía); el usuario puede corregirlo a mano por drag-and-drop.
-export const TRACKING_COLUMNS: { status: TrackingStatus; label: string }[] = [
-  { status: "tasks_generated", label: "Tareas Generadas" },
-  { status: "tasks_in_progress", label: "Tareas en Curso" },
-  { status: "tasks_priority", label: "Tareas con Prioridad" },
-  { status: "tasks_done", label: "Tareas Finalizadas" },
+// Columnas del Tablero Seguimiento, en el orden en que conviene atacarlas. Cada card se ubica sola
+// (lib/utils/board-status.ts) y se puede mover a mano por drag-and-drop.
+export const TRACKING_COLUMNS: { status: TrackingStatus; label: string; hint: string }[] = [
+  { status: "tasks_priority", label: "Prioridad", hint: "Sin interacción o el cliente espera respuesta: atacar primero" },
+  { status: "tasks_generated", label: "Generadas", hint: "Reuniones y mails nuevos, sin empezar" },
+  { status: "tasks_in_progress", label: "En curso", hint: "Con al menos un punto marcado" },
+  { status: "tasks_done", label: "Finalizadas", hint: "Cerradas esta semana; las anteriores pasan al archivo" },
 ];

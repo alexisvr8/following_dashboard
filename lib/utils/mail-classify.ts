@@ -103,17 +103,17 @@ export function relatedActionables(mailText: string, steps: string[]): number[] 
 
 const REQUEST =
   /\?|\b(podr[ií]as?|podr[ií]an|pueden|puedes|podemos|necesit\w*|por favor|favor de|quedamos? a la espera|aguardamos|solicit\w*|confirm\w*|nos (env[ií]en|pasen|compartan|indiquen)|me (env[ií]en|pasen|compartan|indiquen)|ser[ií]a posible|ayud\w*|urgente|pendiente)\b/i;
-const NOISE = /^(saludos|gracias|muchas gracias|hola|buen(os|as)? (d[ií]as|tardes)|quedo atent|atte|cordialmente|enviado desde|get outlook|this email|este correo|confidencial|aviso legal|antes de imprimir|el presente (correo|mensaje)|este e-?mail|piense en el medio ambiente|la informaci[oó]n contenida|this message|the information|privileged|si (usted )?no es el destinatario|if you are not the intended)/i;
+const NOISE = /^(saludos|gracias|muchas gracias|hola|buen(os|as)? (d[ií]as|tardes|noches)|quedo atent|atte|cordialmente|enviado desde|get outlook|this email|este correo|confidencial|aviso legal|antes de imprimir|el presente (correo|mensaje)|este e-?mail|piense en el medio ambiente|la informaci[oó]n contenida|this message|the information|privileged|si (usted )?no es el destinatario|if you are not the intended)/i;
 
 // "Alexis, ¿cómo estás?": saludo con signo de pregunta, no una consulta.
 const GREETING_QUESTION = /^(\p{L}+\s*,\s*)?¿?\s*c[oó]mo (est[aá]s|est[aá]n|and[aá]s|and[aá]n|te va|les va|va)\s*\??\.?$/iu;
 
-/** Pedidos/preguntas del cliente (oraciones con "?" o verbos de pedido), máx. 5. */
-export function extractRequests(text: string): string[] {
+/** Oraciones propias del mail: sin firma, sin URLs, sin saludos ni avisos legales. */
+function ownSentences(text: string): string[] {
   const body = text.replace(/\r/g, "");
   // Corta la firma ("--") y une líneas cortadas por el ancho fijo de texto plano.
   const own = body.split(/\n--\s*\n/)[0];
-  const sentences = own
+  return own
     .split(/\n\s*\n/)
     .flatMap((para) =>
       para
@@ -134,7 +134,38 @@ export function extractRequests(text: string): string[] {
         .trim(),
     )
     .filter((s) => s.length >= 15 && s.length <= 280 && !NOISE.test(s) && !GREETING_QUESTION.test(s));
-  return [...new Set(sentences.filter((s) => REQUEST.test(s)))].slice(0, 5);
+}
+
+/** Pedidos/preguntas del cliente (oraciones con "?" o verbos de pedido), máx. 5. */
+export function extractRequests(text: string): string[] {
+  return [...new Set(ownSentences(text).filter((s) => REQUEST.test(s)))].slice(0, 5);
+}
+
+const word = (alternatives: string) => new RegExp(`(?<!\\p{L})(${alternatives})(?!\\p{L})`, "iu");
+// Lo dicho en futuro siempre es compromiso.
+const COMMITMENT_FUTURE = word(
+  "voy a|vamos a|me encargo|nos encargamos|me ocupo|nos ocupamos|quedo a cargo|quedamos a cargo|" +
+    "(enviar|revisar|avanzar|coordinar|confirmar|compartir|preparar|validar|actualizar|ajustar|cargar|contactar)(é|e|emos)",
+);
+// En presente solo si dice para cuándo. "Les comparto" y "les escribo" quedan fuera: es lo que hace ese mismo mail.
+const COMMITMENT_PRESENT = word(
+  "(te|les|le) (env[ií]o|paso|mando|confirmo|aviso|contacto|respondo|actualizo)|lo (reviso|revisamos|veo|vemos|preparo|preparamos)",
+);
+const COMMITMENT_WHEN = word(
+  "mañana|hoy|lunes|martes|mi[eé]rcoles|jueves|viernes|luego|despu[eé]s|m[aá]s tarde|en breve|apenas|cuando|esta semana|pr[oó]xima semana|semana que viene",
+);
+// "ya" = hecho; "Si deseas…, te confirmo" = condicional, no una promesa.
+const NOT_COMMITMENT = word("adjunt\\p{L}*|(voy|vamos) a (estar|quedar)|ya|^si");
+
+/** Lo que prometo en un mail mío ("les envío X el viernes", "voy a revisar Y"), máx. 5. */
+export function extractCommitments(text: string): string[] {
+  const found = ownSentences(text).filter(
+    (s) =>
+      !s.includes("?") &&
+      !NOT_COMMITMENT.test(s) &&
+      (COMMITMENT_FUTURE.test(s) || (COMMITMENT_PRESENT.test(s) && COMMITMENT_WHEN.test(s))),
+  );
+  return [...new Set(found)].slice(0, 5);
 }
 
 /** Similitud por palabras clave (compartidas / min(tamaños)) entre dos accionables. */

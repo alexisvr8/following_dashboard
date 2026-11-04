@@ -1,7 +1,8 @@
 import type { NextConfig } from "next";
 
 const nextConfig: NextConfig = {
-  /* config options here */
+  // Abajo a la izquierda tapaba el botón Enviar del redactor de la cuenta.
+  devIndicators: { position: "bottom-right" },
   turbopack: {
     rules: {
       "*.css": {
