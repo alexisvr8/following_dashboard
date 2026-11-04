@@ -244,7 +244,7 @@ export function FollowupComposer({
               setThreadId(e.target.value);
               setEdited(true);
             }}
-            className={`${inputClass} h-9`}
+            className={`${inputClass} h-9 dark:[color-scheme:dark] [&_option]:bg-popover [&_option]:text-popover-foreground`}
           >
             {threads.map((t, i) => (
               <option key={t.threadId} value={t.threadId}>
