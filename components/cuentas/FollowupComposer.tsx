@@ -2,7 +2,7 @@
 
 import { useRef, useState } from "react";
 import { useRouter } from "next/navigation";
-import { Check, Copy, ExternalLink, Loader2, Mail, RefreshCw, Save, Send } from "lucide-react";
+import { Check, Copy, ExternalLink, Loader2, Mail, RefreshCw, Send } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import {
@@ -53,7 +53,7 @@ export function FollowupComposer({
   const [threadId, setThreadId] = useState<string>(
     initial.threadId === null ? NEW_THREAD : (initial.threadId ?? threads[0]?.threadId ?? NEW_THREAD),
   );
-  const [state, setState] = useState<"idle" | "saving" | "drafting" | "sending" | "updating" | "copied" | "saved">("idle");
+  const [state, setState] = useState<"idle" | "drafting" | "sending" | "updating" | "copied">("idle");
   const [confirmingUpdate, setConfirmingUpdate] = useState(false);
   const [notice, setNotice] = useState<string | null>(null);
   const [confirming, setConfirming] = useState(false);
@@ -94,23 +94,6 @@ export function FollowupComposer({
     cc: cc.split(/[,;\s]+/).filter(Boolean),
     threadId: threadId === NEW_THREAD ? null : threadId,
   });
-
-  async function save() {
-    setState("saving");
-    setError(null);
-    const res = await fetch(`/api/clients/${encodeURIComponent(clientId)}/followup`, {
-      method: "PUT",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(payload()),
-    });
-    setState(res.ok ? "saved" : "idle");
-    if (res.ok) {
-      setEdited(false);
-      setHasNews(false);
-    } else {
-      setError("No se pudo guardar");
-    }
-  }
 
   async function send() {
     setState("sending");
@@ -316,7 +299,6 @@ export function FollowupComposer({
             onChange={(e) => {
               setBody(e.target.value);
               setEdited(true);
-              if (state === "saved") setState("idle");
             }}
             rows={20}
             className={`${inputClass} min-h-0 flex-1 py-2 font-mono text-xs leading-relaxed lg:resize-none`}
@@ -361,9 +343,6 @@ export function FollowupComposer({
           <Button variant="outline" onClick={copy}>
             {state === "copied" ? <Check /> : <Copy />} {state === "copied" ? "Copiado" : "Copiar"}
           </Button>
-          {/* <Button variant="ghost" onClick={save} disabled={state === "saving"}>
-            {state === "saved" ? <Check /> : <Save />} {state === "saved" ? "Guardado" : "Guardar edición"}
-          </Button> */}
           {gmailUrl && (
             <a
               href={gmailUrl}
