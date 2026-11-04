@@ -31,7 +31,7 @@ const BLOCK_CARD: Record<BlockKind, string> = {
     "border-muted-foreground/50 bg-[repeating-linear-gradient(135deg,color-mix(in_oklab,var(--muted-foreground)_25%,transparent)_0_1.5px,transparent_1.5px_6px)]",
 };
 
-const HOUR_PX = 52;
+const HOUR_PX = 60;
 
 const KIND_LABEL: Record<BlockKind, string> = {
   client: "Reunión con cliente",

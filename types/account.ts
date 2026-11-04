@@ -25,4 +25,7 @@ export interface Account {
   lastNoteSummary: string | null;
   erp?: string | null;
   referentCount?: number;
+  /** Último mail, minuta o evento realizado (ordena las cards). No afecta al churn. */
+  lastMovementAt?: string | null;
+  lastMovementLabel?: string | null;
 }

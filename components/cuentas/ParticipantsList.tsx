@@ -17,6 +17,7 @@ const GROUPS: { role: ParticipantRole; label: string; hint: string }[] = [
 ];
 
 function displayName(p: Participant) {
+  if (p.customName) return p.customName;
   if (p.name) return p.name;
   return p.email
     .split("@")[0]

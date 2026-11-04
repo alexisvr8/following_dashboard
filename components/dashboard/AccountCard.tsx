@@ -28,14 +28,17 @@ export function AccountCard({
       className="group block rounded-xl outline-none focus-visible:ring-2 focus-visible:ring-ring"
     >
       <Card className="h-full transition-all duration-200 group-hover:-translate-y-0.5 group-hover:shadow-md group-hover:ring-foreground/20">
-        <CardHeader className="flex-row items-start justify-between gap-2">
-          <div className="min-w-0 space-y-1">
+        <CardHeader className="flex items-start justify-between gap-2">
+          <div className="min-w-0 flex-1 space-y-1">
             <CardTitle className="truncate text-base">{account.name}</CardTitle>
-            <p className="truncate text-xs text-muted-foreground">
-              {latestMeeting
-                ? `${formatShortDate(latestMeeting.meetingDate)} · ${daysAgo(latestMeeting.meetingDate)}`
-                : "Sin reuniones"}
-            </p>
+            {account.lastMovementAt ? (
+              <p className="flex gap-1 text-xs text-muted-foreground" title={account.lastMovementLabel ?? undefined}>
+                <span className="min-w-0 truncate">{account.lastMovementLabel}</span>
+                <span className="shrink-0">· {daysAgo(account.lastMovementAt)}</span>
+              </p>
+            ) : (
+              <p className="text-xs text-muted-foreground">Sin movimientos</p>
+            )}
           </div>
           <div className="flex shrink-0 items-center gap-1.5">
             <ChurnRiskBadge lastActivityAt={account.lastActivityAt} />
@@ -54,6 +57,12 @@ export function AccountCard({
             <Stat icon={Users} label="Referentes" value={String(account.referentCount ?? 0)} />
           </dl>
           <div className="flex flex-wrap items-center gap-1.5 text-xs text-muted-foreground">
+            {latestMeeting && (
+              <>
+                <span>Reunión {formatShortDate(latestMeeting.meetingDate)}</span>
+                <span>·</span>
+              </>
+            )}
             <span>{meetingCount} reuniones (60d)</span>
             <span>·</span>
             <span>{formatMinutes(account.calendarMinutesPlanned)} en 30d</span>

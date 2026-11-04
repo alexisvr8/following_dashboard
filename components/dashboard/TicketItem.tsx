@@ -9,6 +9,7 @@ export function TicketItem({
   onToggle,
   onSaved,
   meta,
+  actions,
 }: {
   ticket: Ticket;
   onToggle?: (ticketId: string, isDone: boolean) => void;
@@ -16,6 +17,8 @@ export function TicketItem({
   onSaved?: (ticketId: string, isDone: boolean, doneAt: string | null) => void;
   /** Texto chico a la derecha (p. ej. fecha de finalización). */
   meta?: string;
+  /** Botones a la derecha (editar, quitar). Sus clicks no tildan el punto. */
+  actions?: React.ReactNode;
 }) {
   // Persiste en `.data/clients.json` (doneTicketIds del cliente). TODO: Supabase.
   const [isDone, setIsDone] = useState(ticket.isDone);
@@ -46,12 +49,17 @@ export function TicketItem({
     >
       <Checkbox id={id} checked={isDone} onCheckedChange={(v) => toggle(v === true)} />
       <span className="min-w-0">
-        <span className={isDone ? "text-muted-foreground line-through" : undefined}>{ticket.title}</span>
+        <span className={isDone ? "text-muted-foreground" : undefined}>{ticket.title}</span>
         {ticket.description && (
           <span className="block text-[11px] text-muted-foreground">{ticket.description}</span>
         )}
       </span>
-      {meta && <span className="ml-auto shrink-0 text-[11px] tabular-nums text-muted-foreground">{meta}</span>}
+      {(meta || actions) && (
+        <span className="ml-auto flex shrink-0 items-center gap-2">
+          {meta && <span className="text-[11px] tabular-nums text-muted-foreground">{meta}</span>}
+          {actions && <span onClick={(e) => e.preventDefault()}>{actions}</span>}
+        </span>
+      )}
     </label>
   );
 }

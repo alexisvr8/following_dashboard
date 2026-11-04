@@ -207,32 +207,35 @@ export function FollowupComposer({
   }
 
   return (
-    <Card>
-      <CardHeader className="space-y-1">
-        <CardTitle className="text-sm">{title}</CardTitle>
-        <p className="text-xs text-muted-foreground">
-          {hint} Revisalo, editalo y crealo como borrador en Gmail o copialo.
+    <Card className="lg:h-full">
+      <CardHeader>
+        <CardTitle className="sr-only">{title}</CardTitle>
+        <p className="line-clamp-2 text-xs text-muted-foreground" title={hint}>
+          {hint}
           {draftCreatedAt && ` Borrador creado el ${new Date(draftCreatedAt).toLocaleString("es")}.`}
           {lastSentAt && ` Último envío desde acá: ${new Date(lastSentAt).toLocaleString("es")}.`}
         </p>
       </CardHeader>
-      <CardContent className="space-y-3">
+      <CardContent className="flex min-h-0 flex-1 flex-col gap-3 [scrollbar-width:thin] lg:overflow-y-auto">
         {hasNews && (
           <p className="rounded-md border border-primary/40 bg-primary/10 px-3 py-2 text-xs">
             Hay novedades (mails o accionables) y no pisé tu edición. Usá Actualizar para incorporarlas.
           </p>
         )}
         {!!generated.reviewNotes?.length && (
-          <div className="rounded-md border border-amber-500/40 bg-amber-500/10 px-3 py-2 text-xs">
-            <p className="font-medium">Revisar antes de enviar (no forma parte del mail)</p>
+          <details className="shrink-0 rounded-md border border-amber-500/40 bg-amber-500/10 px-3 py-1.5 text-xs">
+            <summary className="cursor-pointer font-medium">
+              Revisar antes de enviar ({generated.reviewNotes.length}) · no forma parte del mail
+            </summary>
             <ul className="mt-1 list-disc space-y-0.5 pl-4">
               {generated.reviewNotes.map((note) => (
                 <li key={note}>{note}</li>
               ))}
             </ul>
-          </div>
+          </details>
         )}
-        <div className="space-y-1.5">
+        <div className="grid shrink-0 gap-3 sm:grid-cols-2">
+        <div className="min-w-0 space-y-1.5 sm:col-span-2">
           <Label htmlFor={`${kind}-thread`}>Dónde</Label>
           <select
             id={`${kind}-thread`}
@@ -260,7 +263,7 @@ export function FollowupComposer({
             </p>
           )}
         </div>
-        <div className="space-y-1.5">
+        <div className="min-w-0 space-y-1.5">
           <Label htmlFor={`${kind}-to`}>Para</Label>
           <input
             id={`${kind}-to`}
@@ -269,10 +272,11 @@ export function FollowupComposer({
               setTo(e.target.value);
               setEdited(true);
             }}
+            title={to}
             className={`${inputClass} h-9`}
           />
         </div>
-        <div className="space-y-1.5">
+        <div className="min-w-0 space-y-1.5">
           <Label htmlFor={`${kind}-cc`}>Cc</Label>
           <input
             id={`${kind}-cc`}
@@ -281,16 +285,16 @@ export function FollowupComposer({
               setCc(e.target.value);
               setEdited(true);
             }}
+            title={
+              threadId === NEW_THREAD
+                ? "Referentes y equipo Xtract en copia, para que todos queden al tanto."
+                : "Resto del hilo en copia (Responder a todos), para no perder invitados."
+            }
             className={`${inputClass} h-9`}
           />
-          <p className="text-[11px] text-muted-foreground">
-            {threadId === NEW_THREAD
-              ? "Referentes y equipo Xtract en copia, para que todos queden al tanto."
-              : "Resto del hilo en copia (Responder a todos), para no perder invitados."}
-          </p>
         </div>
         {threadId === NEW_THREAD && (
-          <div className="space-y-1.5">
+          <div className="min-w-0 space-y-1.5 sm:col-span-2">
             <Label htmlFor={`${kind}-subject`}>Asunto</Label>
             <input
               id={`${kind}-subject`}
@@ -303,7 +307,8 @@ export function FollowupComposer({
             />
           </div>
         )}
-        <div className="space-y-1.5">
+        </div>
+        <div className="flex min-h-[200px] flex-1 flex-col gap-1.5">
           <Label htmlFor={`${kind}-body`}>Mensaje</Label>
           <textarea
             id={`${kind}-body`}
@@ -313,8 +318,8 @@ export function FollowupComposer({
               setEdited(true);
               if (state === "saved") setState("idle");
             }}
-            rows={14}
-            className={`${inputClass} py-2 font-mono text-xs leading-relaxed`}
+            rows={20}
+            className={`${inputClass} min-h-0 flex-1 py-2 font-mono text-xs leading-relaxed lg:resize-none`}
           />
         </div>
         {error && <p className="text-xs text-destructive">{error}</p>}
@@ -335,7 +340,7 @@ export function FollowupComposer({
         {sentNow && (
           <p className="text-xs text-primary">Mail enviado. El borrador ya se generó de nuevo a partir de este envío.</p>
         )}
-        <div className="flex flex-wrap items-center gap-2">
+        <div className="sticky bottom-0 z-10 flex shrink-0 flex-wrap items-center gap-2 bg-card pt-1">
         <Button onClick={() => setConfirming(true)} disabled={state === "sending" || confirming}>
             {state === "sending" ? <Loader2 className="animate-spin" /> : <Send />}
             Enviar
