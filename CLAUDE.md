@@ -14,8 +14,9 @@ se vuelve menú desplegable `MobileNav`). Sin sidebar. 4 secciones (+ detalle `/
   `FollowupAlerts` → **Cuentas** `AccountsSplitView` (client, buscador por nombre/dominio/ERP).
   Capacidad = `WeekPlanner` (planificador por día, meta = cerrar
   pendientes al viernes: veredicto core/flex/deficit, métricas (reuniones, libre normal + flex,
-  pendientes, meta diaria), fila por día con timeline [reuniones Calendar, almuerzo,
-  accionables proyectados, zonas flex] expandible a agenda + chips de huecos libres; toggle
+  pendientes, meta diaria), calendario vertical estilo Google Calendar: columna por día y eje de
+  horas [reuniones Calendar, almuerzo, accionables proyectados, zonas flex; solapes en carriles,
+  `layoutBlocks`]; click en el encabezado del día abre debajo agenda + chips de huecos libres; toggle
   Esta/Próxima `?semana=0|1` (default próxima si no queda jornada); botón Actualizar =
   `router.refresh()`; ⚙ `WorkSettingsDialog`); `AccountCard` → `/cuentas/[id]`. Motor
   `lib/utils/week-plan.ts`: ventana flexible `workStart–workEnd` (9–18) con horario normal
