@@ -85,7 +85,10 @@ sueltos, `data jsonb` = `ClientRecord`, `version` para control optimista) y `app
 `clients-store.ts` mantiene su API; los mutadores usan `mutateClient(s)` (lee la fila, aplica, `update … where version`;
 ante conflicto relee y reaplica; `SKIP` = sin cambios) y `mutateFileLevel` (altas, sin cliente, meta).
 `settings-store`, `sync-status-store`, `google/notion-token-store` → `getState/setState`.
-Migrar datos locales: `pnpm migrate:supabase [--force]` (`scripts/migrate-to-supabase.mjs`, lee `.env.local`).
+Migrar datos locales: `pnpm migrate:supabase` (`scripts/migrate-to-supabase.mjs`, lee `.env.local`): carga inicial;
+`--merge [--dry-run]` combina el `.data/clients.json` de otra PC con la base (`scripts/merge-clients.mjs`: unión de reuniones,
+tildados [fecha = primer cierre], accionables propios/ediciones/quitados, cards y borradores por fecha más nueva, perfil;
+conflictos de estado/nombre se dejan como en la base y se informan; respaldo en `.data/supabase-backup-*.json`); `--force` pisa.
 Local (opción vigente): `pnpm autostart:install|uninstall|restart|logs` (`scripts/autostart.sh`) instala un LaunchAgent
 `com.xtract.method` que corre `scripts/start-local.sh` al iniciar sesión (recompila si cambió el commit o
 `FORCE_BUILD=1`, luego `next start`; logs en `~/Library/Logs/xtract-method.log`). **No instalado**: macOS (TCC) no deja
