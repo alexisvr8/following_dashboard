@@ -88,7 +88,9 @@ ante conflicto relee y reaplica; `SKIP` = sin cambios) y `mutateFileLevel` (alta
 Migrar datos locales: `pnpm migrate:supabase [--force]` (`scripts/migrate-to-supabase.mjs`, lee `.env.local`).
 Local (opción vigente): `pnpm autostart:install|uninstall|restart|logs` (`scripts/autostart.sh`) instala un LaunchAgent
 `com.xtract.method` que corre `scripts/start-local.sh` al iniciar sesión (recompila si cambió el commit o
-`FORCE_BUILD=1`, luego `next start`; logs en `~/Library/Logs/xtract-method.log`). Node >=22 (`.nvmrc`).
+`FORCE_BUILD=1`, luego `next start`; logs en `~/Library/Logs/xtract-method.log`). **No instalado**: macOS (TCC) no deja
+a launchd leer `~/Desktop`; solo sirve si el proyecto se mueve fuera de Escritorio/Documentos. Hoy se arranca a mano
+(`pnpm dev` o `pnpm build && pnpm start`). Node >=22 (`.nvmrc`).
 Servidor (opcional): `Dockerfile` (`NEXT_OUTPUT=standalone`), una sola instancia (candado de sync por proceso), env
 `CRON_ENABLED=true`, `TZ`, `APP_USER`/`APP_PASSWORD` → Basic Auth en `proxy.ts` (fuera: callbacks OAuth y POST `/api/cron/*`).
 
