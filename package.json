@@ -6,7 +6,12 @@
     "dev": "next dev",
     "build": "next build",
     "start": "next start",
-    "lint": "eslint"
+    "lint": "eslint",
+    "migrate:supabase": "node --env-file=.env.local scripts/migrate-to-supabase.mjs",
+    "autostart:install": "sh scripts/autostart.sh install",
+    "autostart:uninstall": "sh scripts/autostart.sh uninstall",
+    "autostart:restart": "sh scripts/autostart.sh restart",
+    "autostart:logs": "sh scripts/autostart.sh logs"
   },
   "dependencies": {
     "@base-ui/react": "^1.9.0",
@@ -32,6 +37,9 @@
     "eslint-config-next": "16.4.3",
     "tailwindcss": "^4",
     "typescript": "^5"
+  },
+  "engines": {
+    "node": ">=22"
   },
   "packageManager": "pnpm@9.15.0"
 }

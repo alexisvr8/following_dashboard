@@ -2,13 +2,14 @@ import { randomUUID } from "crypto";
 import { mkdir, readFile, rename, rm, writeFile } from "fs/promises";
 import path from "path";
 import type { TrackingStatus } from "@/types/account";
+import { DATA_DIR, getState, setState, usingSupabase } from "@/lib/store/backend";
+import { supabaseAdmin } from "@/lib/supabase/admin";
 import type { MeetingDecision } from "@/lib/utils/gemini-notes-parser";
 import { collectMailItems, mailTicketId, type MailItem } from "@/lib/utils/mail-items";
 
 export { mailTicketId };
 
-// Persistencia local (sin Supabase todavía) de clientes descubiertos desde Gemini Notes.
-// Mismo patrón que google-token-store: archivo JSON en `.data/` (gitignored).
+// Clientes descubiertos desde Gemini Notes. Persistencia: ver "Persistencia" más abajo.
 
 export type ClientStatus = "pending" | "assigned" | "unassigned" | "ignored";
 
@@ -192,12 +193,25 @@ export interface DiscoveryResult {
 
 export const eventKey = (title: string, dateIso: string) => `${title}|${dateIso}`;
 
-const DATA_DIR = path.join(process.cwd(), ".data");
 const CLIENTS_FILE = path.join(DATA_DIR, "clients.json");
 
 const EMPTY: ClientsFile = { clients: [], unmatched: [], lastScanAt: null };
 
-export async function getClientsFile(): Promise<ClientsFile> {
+// Persistencia: Supabase (una fila por cliente en `clients`, más `app_state.clients_meta` y
+// `clients_unmatched`) o, en modo local, `.data/clients.json`. Ver `lib/store/backend.ts`.
+
+interface ClientsMeta {
+  lastScanAt: string | null;
+  ownerEmail?: string | null;
+}
+
+interface ClientRow {
+  id: string;
+  data: ClientRecord;
+  version: number;
+}
+
+async function readLocalFile(): Promise<ClientsFile> {
   let raw: string;
   try {
     raw = await readFile(CLIENTS_FILE, "utf-8");
@@ -226,6 +240,112 @@ async function saveClientsFile(file: ClientsFile): Promise<void> {
   }
 }
 
+/** Columnas de la fila (las sueltas son para filtrar/ver en el panel; la verdad es `data`). */
+export function clientRow(c: ClientRecord) {
+  return { id: c.id, status: c.status, name: c.name, domain: c.domain, data: c };
+}
+
+async function fetchRows(ids?: string[]): Promise<ClientRow[]> {
+  let query = supabaseAdmin().from("clients").select("id, data, version").order("seq");
+  if (ids) query = query.in("id", ids);
+  const { data, error } = await query;
+  if (error) throw new Error(`clients_read: ${error.message}`);
+  return (data ?? []) as ClientRow[];
+}
+
+export async function getClientsFile(): Promise<ClientsFile> {
+  if (!usingSupabase()) return readLocalFile();
+  const [rows, meta, unmatched] = await Promise.all([
+    fetchRows(),
+    getState<ClientsMeta>("clients_meta"),
+    getState<DiscoveredMeeting[]>("clients_unmatched"),
+  ]);
+  return {
+    clients: rows.map((r) => r.data),
+    unmatched: unmatched ?? [],
+    lastScanAt: meta?.lastScanAt ?? null,
+    ownerEmail: meta?.ownerEmail ?? null,
+  };
+}
+
+/** Devolverlo desde un mutador = no hubo cambios, no se escribe. */
+const SKIP: unique symbol = Symbol("skip");
+type Mutator<R> = (client: ClientRecord) => R | typeof SKIP;
+type Mutated<R> = { client: ClientRecord; result: R };
+
+/** Escribe una fila solo si nadie la cambió desde que se leyó; si no, relee y reaplica `fn`. */
+async function applyToRow<R>(row: ClientRow, fn: Mutator<R>, attempt = 0): Promise<Mutated<R> | null> {
+  const client = row.data;
+  const result = fn(client);
+  if (result === SKIP) return null;
+  const { data, error } = await supabaseAdmin()
+    .from("clients")
+    .update({ ...clientRow(client), version: row.version + 1 })
+    .eq("id", row.id)
+    .eq("version", row.version)
+    .select("id");
+  if (error) throw new Error(`clients_write(${row.id}): ${error.message}`);
+  if (data?.length) return { client, result };
+  if (attempt >= 4) throw new Error(`clients_write_conflict(${row.id})`);
+  const [fresh] = await fetchRows([row.id]);
+  return fresh ? applyToRow(fresh, fn, attempt + 1) : null;
+}
+
+/** Aplica `fn` a los clientes `ids` (o a todos con `null`) y persiste solo los que cambiaron. */
+async function mutateClients<R>(ids: string[] | null, fn: Mutator<R>): Promise<Map<string, Mutated<R>>> {
+  const out = new Map<string, Mutated<R>>();
+  if (!usingSupabase()) {
+    const file = await readLocalFile();
+    const wanted = ids && new Set(ids);
+    for (const client of file.clients) {
+      if (wanted && !wanted.has(client.id)) continue;
+      const result = fn(client);
+      if (result !== SKIP) out.set(client.id, { client, result });
+    }
+    if (out.size) await saveClientsFile(file);
+    return out;
+  }
+  const rows = await fetchRows(ids ?? undefined);
+  for (let i = 0; i < rows.length; i += 8) {
+    const done = await Promise.all(rows.slice(i, i + 8).map((row) => applyToRow(row, fn)));
+    for (const m of done) if (m) out.set(m.client.id, m);
+  }
+  return out;
+}
+
+async function mutateClient<R>(id: string, fn: Mutator<R>): Promise<Mutated<R> | null> {
+  return (await mutateClients([id], fn)).get(id) ?? null;
+}
+
+/** Aplica `fn` a los campos de nivel archivo (clientes nuevos, sin cliente, meta), sin tocar los existentes. */
+async function mutateFileLevel(fn: (state: { added: ClientRecord[]; unmatched: DiscoveredMeeting[]; meta: ClientsMeta }) => void): Promise<void> {
+  if (!usingSupabase()) {
+    const file = await readLocalFile();
+    const known = new Set(file.clients.map((c) => c.id));
+    const state = { added: [] as ClientRecord[], unmatched: file.unmatched, meta: { lastScanAt: file.lastScanAt, ownerEmail: file.ownerEmail } };
+    fn(state);
+    file.clients.push(...state.added.filter((c) => !known.has(c.id)));
+    file.unmatched = state.unmatched;
+    file.lastScanAt = state.meta.lastScanAt;
+    file.ownerEmail = state.meta.ownerEmail;
+    await saveClientsFile(file);
+    return;
+  }
+  const [meta, unmatched] = await Promise.all([
+    getState<ClientsMeta>("clients_meta"),
+    getState<DiscoveredMeeting[]>("clients_unmatched"),
+  ]);
+  const state = { added: [] as ClientRecord[], unmatched: unmatched ?? [], meta: meta ?? { lastScanAt: null } };
+  fn(state);
+  if (state.added.length) {
+    const { error } = await supabaseAdmin()
+      .from("clients")
+      .upsert(state.added.map(clientRow), { onConflict: "id", ignoreDuplicates: true });
+    if (error) throw new Error(`clients_insert: ${error.message}`);
+  }
+  await Promise.all([setState("clients_unmatched", state.unmatched), setState("clients_meta", state.meta)]);
+}
+
 /** Ids de mensajes de Gmail ya procesados (para no re-exportar Docs al re-escanear). */
 export function knownMeetingIds(file: ClientsFile): Set<string> {
   const ids = new Set<string>();
@@ -238,43 +358,8 @@ function byDateDesc(a: DiscoveredMeeting, b: DiscoveredMeeting) {
   return b.date.localeCompare(a.date);
 }
 
-/** Merge no destructivo: preserva status/name/trackingStatus, agrega meetings nuevos por id. */
-export async function mergeDiscovery(
-  result: DiscoveryResult,
-): Promise<{ file: ClientsFile; newClients: number }> {
-  const file = await getClientsFile();
-  let newClients = 0;
-
-  for (const found of result.clients) {
-    const existing = file.clients.find((c) => c.id === found.id);
-    if (!existing) {
-      file.clients.push({
-        ...found,
-        status: "pending",
-        trackingStatus: null,
-        meetings: [...found.meetings].sort(byDateDesc),
-      });
-      newClients++;
-      continue;
-    }
-    const ids = new Set(existing.meetings.map((m) => m.id));
-    existing.meetings = [
-      ...existing.meetings,
-      ...found.meetings.filter((m) => !ids.has(m.id)),
-    ].sort(byDateDesc);
-    existing.contactEmails = [...new Set([...existing.contactEmails, ...found.contactEmails])];
-  }
-
-  const matchedIds = new Set(file.clients.flatMap((c) => c.meetings.map((m) => m.id)));
-  const unmatchedIds = new Set(file.unmatched.map((m) => m.id));
-  file.unmatched = [
-    ...file.unmatched,
-    ...result.unmatched.filter((m) => !unmatchedIds.has(m.id)),
-  ]
-    .filter((m) => !matchedIds.has(m.id))
-    .sort(byDateDesc);
-
-  for (const m of [...file.clients.flatMap((c) => c.meetings), ...file.unmatched]) {
+function backfillMeetings(meetings: DiscoveredMeeting[], result: DiscoveryResult): void {
+  for (const m of meetings) {
     if (m.durationMinutes == null && m.docId && result.durationsByDocId[m.docId] != null) {
       m.durationMinutes = result.durationsByDocId[m.docId];
     }
@@ -285,73 +370,115 @@ export async function mergeDiscovery(
       if (found?.length) m.attendees = found;
     }
   }
+}
 
-  if (result.ownerEmail) file.ownerEmail = result.ownerEmail;
+/** Merge no destructivo: preserva status/name/trackingStatus, agrega meetings nuevos por id. */
+export async function mergeDiscovery(
+  result: DiscoveryResult,
+): Promise<{ file: ClientsFile; newClients: number }> {
+  const before = await getClientsFile();
+  const known = new Set(before.clients.map((c) => c.id));
+  const foundById = new Map(result.clients.map((c) => [c.id, c]));
 
-  file.lastScanAt = new Date().toISOString();
-  await saveClientsFile(file);
-  return { file, newClients };
+  // Clientes existentes: meetings nuevos, emails nuevos y backfill de duración/asistentes.
+  await mutateClients(null, (existing) => {
+    const snapshot = JSON.stringify(existing);
+    const found = foundById.get(existing.id);
+    if (found) {
+      const ids = new Set(existing.meetings.map((m) => m.id));
+      existing.meetings = [
+        ...existing.meetings,
+        ...found.meetings.filter((m) => !ids.has(m.id)),
+      ].sort(byDateDesc);
+      existing.contactEmails = [...new Set([...existing.contactEmails, ...found.contactEmails])];
+    }
+    backfillMeetings(existing.meetings, result);
+    return JSON.stringify(existing) === snapshot ? SKIP : true;
+  });
+
+  const added: ClientRecord[] = result.clients
+    .filter((found) => !known.has(found.id))
+    .map((found) => ({
+      ...found,
+      status: "pending",
+      trackingStatus: null,
+      meetings: [...found.meetings].sort(byDateDesc),
+    }));
+  for (const c of added) backfillMeetings(c.meetings, result);
+
+  const matchedIds = new Set([
+    ...before.clients.flatMap((c) => c.meetings.map((m) => m.id)),
+    ...result.clients.flatMap((c) => c.meetings.map((m) => m.id)),
+  ]);
+  await mutateFileLevel((state) => {
+    state.added = added;
+    const unmatchedIds = new Set(state.unmatched.map((m) => m.id));
+    state.unmatched = [
+      ...state.unmatched,
+      ...result.unmatched.filter((m) => !unmatchedIds.has(m.id)),
+    ]
+      .filter((m) => !matchedIds.has(m.id))
+      .sort(byDateDesc);
+    backfillMeetings(state.unmatched, result);
+    if (result.ownerEmail) state.meta.ownerEmail = result.ownerEmail;
+    state.meta.lastScanAt = new Date().toISOString();
+  });
+
+  return { file: await getClientsFile(), newClients: added.length };
 }
 
 export async function updateClient(
   id: string,
   patch: Partial<Pick<ClientRecord, "status" | "name" | "trackingStatus">>,
 ): Promise<ClientRecord | null> {
-  const file = await getClientsFile();
-  const client = file.clients.find((c) => c.id === id);
-  if (!client) return null;
-  Object.assign(client, patch);
-  await saveClientsFile(file);
-  return client;
+  const m = await mutateClient(id, (client) => {
+    Object.assign(client, patch);
+  });
+  return m?.client ?? null;
 }
 
 export async function updateClientProfile(
   id: string,
   patch: Partial<ClientProfile>,
 ): Promise<ClientRecord | null> {
-  const file = await getClientsFile();
-  const client = file.clients.find((c) => c.id === id);
-  if (!client) return null;
-  const profile = { ...client.profile };
-  const naming = (p: ClientProfile) => JSON.stringify([p.emailName ?? "", p.contactNames ?? {}]);
-  const namingBefore = naming(profile);
-  for (const [k, v] of Object.entries(patch) as [keyof ClientProfile, unknown][]) {
-    if (k === "referentOverrides") {
-      profile.referentOverrides = { ...profile.referentOverrides, ...(v as Record<string, boolean>) };
-    } else if (k === "contactNames") {
-      const names = { ...profile.contactNames };
-      for (const [email, name] of Object.entries(v as Record<string, string>)) {
-        if (name.trim()) names[email] = name.trim();
-        else delete names[email];
+  const m = await mutateClient(id, (client) => {
+    const profile = { ...client.profile };
+    const naming = (p: ClientProfile) => JSON.stringify([p.emailName ?? "", p.contactNames ?? {}]);
+    const namingBefore = naming(profile);
+    for (const [k, v] of Object.entries(patch) as [keyof ClientProfile, unknown][]) {
+      if (k === "referentOverrides") {
+        profile.referentOverrides = { ...profile.referentOverrides, ...(v as Record<string, boolean>) };
+      } else if (k === "contactNames") {
+        const names = { ...profile.contactNames };
+        for (const [email, name] of Object.entries(v as Record<string, string>)) {
+          if (name.trim()) names[email] = name.trim();
+          else delete names[email];
+        }
+        profile.contactNames = names;
+      } else if (typeof v === "string") {
+        if (v.trim()) (profile[k] as string) = v.trim();
+        else delete profile[k];
       }
-      profile.contactNames = names;
-    } else if (typeof v === "string") {
-      if (v.trim()) (profile[k] as string) = v.trim();
-      else delete profile[k];
     }
-  }
-  client.profile = profile;
-  if (naming(profile) !== namingBefore) client.profileUpdatedAt = new Date().toISOString();
-  await saveClientsFile(file);
-  return client;
+    client.profile = profile;
+    if (naming(profile) !== namingBefore) client.profileUpdatedAt = new Date().toISOString();
+  });
+  return m?.client ?? null;
 }
 
 export async function setBoardOverride(id: string, cardId: string, status: TrackingStatus): Promise<ClientRecord | null> {
-  const file = await getClientsFile();
-  const client = file.clients.find((c) => c.id === id);
-  if (!client) return null;
-  client.boardOverrides = { ...client.boardOverrides, [cardId]: { status, at: new Date().toISOString() } };
-  await saveClientsFile(file);
-  return client;
+  const m = await mutateClient(id, (client) => {
+    client.boardOverrides = { ...client.boardOverrides, [cardId]: { status, at: new Date().toISOString() } };
+  });
+  return m?.client ?? null;
 }
 
 /** La card vuelve al estado automático. */
 export async function clearBoardOverride(id: string, cardId: string): Promise<void> {
-  const file = await getClientsFile();
-  const client = file.clients.find((c) => c.id === id);
-  if (!client?.boardOverrides?.[cardId]) return;
-  delete client.boardOverrides[cardId];
-  await saveClientsFile(file);
+  await mutateClient(id, (client) => {
+    if (!client.boardOverrides?.[cardId]) return SKIP;
+    delete client.boardOverrides[cardId];
+  });
 }
 
 export type ActionableChange =
@@ -361,41 +488,40 @@ export type ActionableChange =
 
 /** Crear, corregir o quitar un accionable. Toca `ticketsUpdatedAt`: los borradores se regeneran con el cambio. */
 export async function changeActionable(id: string, change: ActionableChange): Promise<{ client: ClientRecord; ticketId: string } | null> {
-  const file = await getClientsFile();
-  const client = file.clients.find((c) => c.id === id);
-  if (!client) return null;
-  const now = new Date().toISOString();
-  let ticketId: string;
-  if (change.op === "add") {
-    const latest = client.meetings.reduce<DiscoveredMeeting | null>((max, m) => (!max || m.date > max.date ? m : max), null);
-    if (!latest) return null;
-    ticketId = `${client.id}:custom-${randomUUID().slice(0, 8)}`;
-    client.customActionables = [
-      ...(client.customActionables ?? []),
-      {
-        id: ticketId,
-        title: change.title,
-        meetingId: latest.id,
-        createdAt: now,
-      },
-    ];
-  } else if (change.op === "edit") {
-    ticketId = change.id;
-    client.actionableEdits = { ...client.actionableEdits, [change.id]: change.title };
-  } else {
-    ticketId = change.id;
-    if (client.customActionables?.some((c) => c.id === change.id)) {
-      client.customActionables = client.customActionables.filter((c) => c.id !== change.id);
+  const m = await mutateClient(id, (client): string | typeof SKIP => {
+    const now = new Date().toISOString();
+    let ticketId: string;
+    if (change.op === "add") {
+      const latest = client.meetings.reduce<DiscoveredMeeting | null>((max, m) => (!max || m.date > max.date ? m : max), null);
+      if (!latest) return SKIP;
+      ticketId = `${client.id}:custom-${randomUUID().slice(0, 8)}`;
+      client.customActionables = [
+        ...(client.customActionables ?? []),
+        {
+          id: ticketId,
+          title: change.title,
+          meetingId: latest.id,
+          createdAt: now,
+        },
+      ];
+    } else if (change.op === "edit") {
+      ticketId = change.id;
+      client.actionableEdits = { ...client.actionableEdits, [change.id]: change.title };
     } else {
-      client.removedTicketIds = [...new Set([...(client.removedTicketIds ?? []), change.id])];
+      ticketId = change.id;
+      if (client.customActionables?.some((c) => c.id === change.id)) {
+        client.customActionables = client.customActionables.filter((c) => c.id !== change.id);
+      } else {
+        client.removedTicketIds = [...new Set([...(client.removedTicketIds ?? []), change.id])];
+      }
+      if (client.actionableEdits) delete client.actionableEdits[change.id];
+      client.doneTicketIds = (client.doneTicketIds ?? []).filter((t) => t !== change.id);
+      if (client.doneTicketAt) delete client.doneTicketAt[change.id];
     }
-    if (client.actionableEdits) delete client.actionableEdits[change.id];
-    client.doneTicketIds = (client.doneTicketIds ?? []).filter((t) => t !== change.id);
-    if (client.doneTicketAt) delete client.doneTicketAt[change.id];
-  }
-  client.ticketsUpdatedAt = now;
-  await saveClientsFile(file);
-  return { client, ticketId };
+    client.ticketsUpdatedAt = now;
+    return ticketId;
+  });
+  return m ? { client: m.client, ticketId: m.result } : null;
 }
 
 export async function setTicketDone(
@@ -403,33 +529,30 @@ export async function setTicketDone(
   ticketId: string,
   isDone: boolean,
 ): Promise<ClientRecord | null> {
-  const file = await getClientsFile();
-  const client = file.clients.find((c) => c.id === id);
-  if (!client) return null;
-  const done = new Set(client.doneTicketIds ?? []);
-  const at = { ...client.doneTicketAt };
-  const now = new Date().toISOString();
-  if (isDone) {
-    done.add(ticketId);
-    at[ticketId] ??= now;
-  } else {
-    done.delete(ticketId);
-    delete at[ticketId];
-  }
-  client.doneTicketIds = [...done];
-  client.doneTicketAt = at;
-  client.ticketsUpdatedAt = now;
-  await saveClientsFile(file);
-  return client;
+  const m = await mutateClient(id, (client) => {
+    const done = new Set(client.doneTicketIds ?? []);
+    const at = { ...client.doneTicketAt };
+    const now = new Date().toISOString();
+    if (isDone) {
+      done.add(ticketId);
+      at[ticketId] ??= now;
+    } else {
+      done.delete(ticketId);
+      delete at[ticketId];
+    }
+    client.doneTicketIds = [...done];
+    client.doneTicketAt = at;
+    client.ticketsUpdatedAt = now;
+  });
+  return m?.client ?? null;
 }
 
 export async function setClientActivity(
   updates: { id: string; activity: ClientActivity; autoDoneTicketIds: string[] }[],
 ): Promise<void> {
-  const file = await getClientsFile();
-  for (const u of updates) {
-    const client = file.clients.find((c) => c.id === u.id);
-    if (!client) continue;
+  const byId = new Map(updates.map((u) => [u.id, u]));
+  await mutateClients([...byId.keys()], (client) => {
+    const u = byId.get(client.id)!;
     client.activity = u.activity;
     client.mailActionables = collectMailItems(client);
     const already = new Set(client.doneTicketIds ?? []);
@@ -440,8 +563,7 @@ export async function setClientActivity(
       client.doneTicketAt = { ...client.doneTicketAt, ...Object.fromEntries(fresh.map((t) => [t, now])) };
       client.ticketsUpdatedAt = now;
     }
-  }
-  await saveClientsFile(file);
+  });
 }
 
 /** Guarda hitos/decisiones de minutas reprocesadas (no toca `nextSteps`: los ids dependen del índice). */
@@ -450,14 +572,19 @@ export async function setMeetingNotes(
 ): Promise<void> {
   if (!updates.length) return;
   const byId = new Map(updates.map((u) => [u.meetingId, u]));
-  const file = await getClientsFile();
-  for (const m of [...file.clients.flatMap((c) => c.meetings), ...file.unmatched]) {
-    const u = byId.get(m.id);
-    if (!u) continue;
-    m.milestones = u.milestones;
-    m.decisions = u.decisions;
-  }
-  await saveClientsFile(file);
+  const apply = (meetings: DiscoveredMeeting[]): boolean => {
+    let changed = false;
+    for (const m of meetings) {
+      const u = byId.get(m.id);
+      if (!u) continue;
+      m.milestones = u.milestones;
+      m.decisions = u.decisions;
+      changed = true;
+    }
+    return changed;
+  };
+  await mutateClients(null, (client) => (apply(client.meetings) ? true : SKIP));
+  await mutateFileLevel((state) => void apply(state.unmatched));
 }
 
 export async function saveFollowup(
@@ -465,10 +592,8 @@ export async function saveFollowup(
   key: string,
   draft: FollowupDraft,
 ): Promise<ClientRecord | null> {
-  const file = await getClientsFile();
-  const client = file.clients.find((c) => c.id === id);
-  if (!client) return null;
-  client.followups = { ...client.followups, [key]: draft };
-  await saveClientsFile(file);
-  return client;
+  const m = await mutateClient(id, (client) => {
+    client.followups = { ...client.followups, [key]: draft };
+  });
+  return m?.client ?? null;
 }

@@ -1,7 +1,6 @@
-import { mkdir, readFile, writeFile } from "fs/promises";
-import path from "path";
+import { getState, setState } from "@/lib/store/backend";
 
-// Jornada laboral y supuestos de capacidad. Archivo local `.data/settings.json`.
+// Jornada laboral y supuestos de capacidad. `app_state.settings` (o `.data/settings.json`).
 export interface WorkSettings {
   /** "HH:MM" ventana extendida (lo más temprano que arrancás / lo más tarde que terminás). */
   workStart: string;
@@ -38,14 +37,8 @@ export const DEFAULT_SETTINGS: WorkSettings = {
   staleBusinessDays: 2,
 };
 
-const FILE = path.join(process.cwd(), ".data", "settings.json");
-
 export async function getSettings(): Promise<WorkSettings> {
-  try {
-    return { ...DEFAULT_SETTINGS, ...(JSON.parse(await readFile(FILE, "utf-8")) as Partial<WorkSettings>) };
-  } catch {
-    return { ...DEFAULT_SETTINGS };
-  }
+  return { ...DEFAULT_SETTINGS, ...((await getState<Partial<WorkSettings>>("settings")) ?? {}) };
 }
 
 const HHMM = /^([01]\d|2[0-3]):[0-5]\d$/;
@@ -73,7 +66,6 @@ export async function updateSettings(patch: Partial<WorkSettings>): Promise<Work
   if (typeof patch.staleBusinessDays === "number" && patch.staleBusinessDays >= 1 && patch.staleBusinessDays <= 15) {
     next.staleBusinessDays = Math.round(patch.staleBusinessDays);
   }
-  await mkdir(path.dirname(FILE), { recursive: true });
-  await writeFile(FILE, JSON.stringify(next, null, 2), "utf-8");
+  await setState("settings", next);
   return next;
 }
