@@ -1,5 +1,4 @@
-import { mkdir, readFile, writeFile, rm } from "fs/promises";
-import path from "path";
+import { getState, setState } from "@/lib/store/backend";
 
 export interface GoogleTokens {
   accessToken: string;
@@ -9,24 +8,20 @@ export interface GoogleTokens {
   obtainedAt: number;
 }
 
-const TOKENS_DIR = path.join(process.cwd(), ".data");
-const TOKENS_FILE = path.join(TOKENS_DIR, "google-tokens.json");
-
+// `app_state.google_tokens` (o `.data/google-tokens.json` en modo local).
 export async function saveTokens(tokens: Omit<GoogleTokens, "obtainedAt">): Promise<void> {
-  await mkdir(TOKENS_DIR, { recursive: true });
   const withTimestamp: GoogleTokens = { ...tokens, obtainedAt: Date.now() };
-  await writeFile(TOKENS_FILE, JSON.stringify(withTimestamp, null, 2), "utf-8");
+  await setState("google_tokens", withTimestamp);
 }
 
 export async function getTokens(): Promise<GoogleTokens | null> {
   try {
-    const raw = await readFile(TOKENS_FILE, "utf-8");
-    return JSON.parse(raw) as GoogleTokens;
+    return await getState<GoogleTokens>("google_tokens");
   } catch {
     return null;
   }
 }
 
 export async function clearTokens(): Promise<void> {
-  await rm(TOKENS_FILE, { force: true });
+  await setState("google_tokens", null);
 }

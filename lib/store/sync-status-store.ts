@@ -1,7 +1,6 @@
-import { mkdir, readFile, writeFile } from "fs/promises";
-import path from "path";
+import { getState, setState } from "@/lib/store/backend";
 
-// Resultado de la última sincronización automática/manual (`runSync`). Archivo `.data/sync-status.json`.
+// Resultado de la última sincronización automática/manual (`runSync`). `app_state.sync_status` (o `.data/sync-status.json`).
 export interface SyncStatus {
   lastRunAt: string | null;
   ok: boolean;
@@ -16,8 +15,6 @@ export interface SyncStatus {
   durationMs: number;
   error: string | null;
 }
-
-const FILE = path.join(process.cwd(), ".data", "sync-status.json");
 
 export const EMPTY_SYNC_STATUS: SyncStatus = {
   lastRunAt: null,
@@ -36,13 +33,12 @@ export const EMPTY_SYNC_STATUS: SyncStatus = {
 
 export async function getSyncStatus(): Promise<SyncStatus> {
   try {
-    return { ...EMPTY_SYNC_STATUS, ...(JSON.parse(await readFile(FILE, "utf-8")) as Partial<SyncStatus>) };
+    return { ...EMPTY_SYNC_STATUS, ...((await getState<Partial<SyncStatus>>("sync_status")) ?? {}) };
   } catch {
     return { ...EMPTY_SYNC_STATUS };
   }
 }
 
 export async function saveSyncStatus(status: SyncStatus): Promise<void> {
-  await mkdir(path.dirname(FILE), { recursive: true });
-  await writeFile(FILE, JSON.stringify(status, null, 2), "utf-8");
+  await setState("sync_status", status);
 }

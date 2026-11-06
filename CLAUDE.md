@@ -73,14 +73,26 @@ Dark mode vía `next-themes` (`ThemeProvider`/`ThemeToggleButton` en
 `app/globals.css` (`:root`/`.dark`).
 
 ## Comandos
-pnpm install · pnpm dev · pnpm build · pnpm lint
+pnpm install · pnpm dev · pnpm build · pnpm lint · pnpm migrate:supabase · pnpm autostart:{install,restart,logs}
 
-## DB (Supabase) — resumen
-Proyecto Supabase aún no creado; `lib/supabase/{client,server}.ts` y
-`supabase/migrations/0001_init.sql` listos para cuando se pegue
-`NEXT_PUBLIC_SUPABASE_URL`/`NEXT_PUBLIC_SUPABASE_ANON_KEY` en `.env.local`
-(ver `.env.local.example`). Fase 1 corre sobre `lib/mock/*`, no sobre Supabase real.
+## Persistencia (Supabase o archivo) — resumen
+`lib/store/backend.ts`: `usingSupabase()` (`STORE_BACKEND=supabase|file`; vacío = supabase si hay
+`SUPABASE_SERVICE_ROLE_KEY`), `getState/setState(key)` sobre `app_state` (o `.data/*.json`). Cliente servidor
+`lib/supabase/admin.ts` (service_role, sin cookies: sirve en el scheduler). Esquema vigente
+`supabase/migrations/0002_app_store.sql`: `clients` (una fila por cliente: `id`, `seq` = orden, `status`/`name`/`domain`
+sueltos, `data jsonb` = `ClientRecord`, `version` para control optimista) y `app_state` (`clients_meta`,
+`clients_unmatched`, `settings`, `sync_status`, `google_tokens`, `notion_tokens`). RLS sin políticas: solo service_role.
+`clients-store.ts` mantiene su API; los mutadores usan `mutateClient(s)` (lee la fila, aplica, `update … where version`;
+ante conflicto relee y reaplica; `SKIP` = sin cambios) y `mutateFileLevel` (altas, sin cliente, meta).
+`settings-store`, `sync-status-store`, `google/notion-token-store` → `getState/setState`.
+Migrar datos locales: `pnpm migrate:supabase [--force]` (`scripts/migrate-to-supabase.mjs`, lee `.env.local`).
+Local (opción vigente): `pnpm autostart:install|uninstall|restart|logs` (`scripts/autostart.sh`) instala un LaunchAgent
+`com.xtract.method` que corre `scripts/start-local.sh` al iniciar sesión (recompila si cambió el commit o
+`FORCE_BUILD=1`, luego `next start`; logs en `~/Library/Logs/xtract-method.log`). Node >=22 (`.nvmrc`).
+Servidor (opcional): `Dockerfile` (`NEXT_OUTPUT=standalone`), una sola instancia (candado de sync por proceso), env
+`CRON_ENABLED=true`, `TZ`, `APP_USER`/`APP_PASSWORD` → Basic Auth en `proxy.ts` (fuera: callbacks OAuth y POST `/api/cron/*`).
 
+Esquema legado de Fase 1 (`0001_init.sql`, no lo usa el código actual):
 - **accounts**: cuentas, `contact_email` (match con hilos de Gmail/eventos de Calendar),
   `is_assigned`, `time_score`/`difficulty_score` (clasificador
   de prioridad), `calendar_minutes_planned`/`execution_minutes_actual` (gauge),
@@ -200,11 +212,10 @@ tiempo/dificultad → quick_win/major_project/fill_in/thankless_task), no se per
 OAuth único (mismo client) para los tres: scopes `gmail.readonly`, `gmail.compose`,
 `calendar.readonly`, `calendar.events`, `drive.readonly` (`lib/integrations/google-client.ts`).
 Flujo: `GET /api/auth/google/connect` → consentimiento → `GET /api/auth/google/callback`
-guarda tokens en `.data/google-tokens.json` (gitignored; **no Supabase todavía**, por
-decisión explícita — se resetea si se borra el archivo o se reinicia en otro filesystem).
+guarda tokens en `app_state.google_tokens` (Supabase) o `.data/google-tokens.json` en modo local.
 Wrappers: `lib/integrations/{gmail,calendar,drive}.ts`. Env vars nuevas:
 `GOOGLE_CLIENT_ID`/`GOOGLE_CLIENT_SECRET`/`GOOGLE_REDIRECT_URI`.
-Pendiente explícito: persistir en Supabase cuando exista el proyecto, extracción de
+Pendiente explícito: extracción de
 accionables por LLM desde el texto de la minuta, análisis de sentimiento real, envío
 automático de emails (el envío es manual, desde `/cuentas/[id]`).
 
