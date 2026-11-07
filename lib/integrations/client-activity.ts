@@ -32,19 +32,19 @@ const KEEP_THREADS = 5;
 const CONCURRENCY = 2;
 const FREEMAIL = /^(gmail|googlemail|hotmail|outlook|live|msn|yahoo|icloud|proton|protonmail)\./;
 
-const hdr = (msg: gmail_v1.Schema$Message) =>
+export const hdr = (msg: gmail_v1.Schema$Message) =>
   Object.fromEntries(
     (msg.payload?.headers ?? []).map((h) => [h.name?.toLowerCase() ?? "", h.value ?? ""]),
   ) as Record<string, string>;
 
-function parseFrom(from: string): { email: string; name: string | null } {
+export function parseFrom(from: string): { email: string; name: string | null } {
   const m = from.match(/^\s*"?([^"<]*?)"?\s*<([^>]+)>/);
   return m
     ? { email: m[2].toLowerCase(), name: m[1].trim() || null }
     : { email: from.trim().toLowerCase(), name: null };
 }
 
-const parseAddresses = (value: string) => [
+export const parseAddresses = (value: string) => [
   ...new Set((value.match(/[^\s<>,;"']+@[^\s<>,;"']+/g) ?? []).map((e) => e.toLowerCase())),
 ];
 
@@ -294,4 +294,39 @@ export async function syncClientsActivity(
       };
     }
   });
+}
+
+export interface ThreadMessage {
+  messageId: string;
+  from: string;
+  fromName: string | null;
+  to: string[];
+  subject: string;
+  date: string;
+  /** Texto propio del mail (sin citas). */
+  text: string;
+}
+
+/** Hilo completo de Gmail para leerlo en la app (solo lectura, scope gmail.readonly). Sin borradores. */
+export async function getThreadMessages(threadId: string): Promise<ThreadMessage[] | null> {
+  const auth = await getAuthorizedClient();
+  if (!auth) return null;
+  const gmail = google.gmail({ version: "v1", auth });
+  const thread = (await withRetry(() => gmail.users.threads.get({ userId: "me", id: threadId, format: "full" }))).data;
+  return (thread.messages ?? [])
+    .filter((msg) => !msg.labelIds?.includes("DRAFT"))
+    .map((msg) => {
+      const h = hdr(msg);
+      const from = parseFrom(h["from"] ?? "");
+      const { text, html } = extractBody(msg.payload ?? undefined);
+      return {
+        messageId: msg.id!,
+        from: from.email,
+        fromName: from.name,
+        to: parseAddresses(`${h["to"] ?? ""},${h["cc"] ?? ""}`),
+        subject: h["subject"] ?? "(sin asunto)",
+        date: new Date(Number(msg.internalDate)).toISOString(),
+        text: (stripQuoted(text || stripHtml(html)) || msg.snippet || "").slice(0, 20_000),
+      };
+    });
 }

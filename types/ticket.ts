@@ -17,9 +17,7 @@ export interface Ticket {
   source: TicketSource;
   /** Surge de un mail posterior a la última reunión (pedido del cliente o compromiso mío). */
   origin?: "mail";
-  /** Card del Tablero a la que pertenece (ver `assignCards`). */
-  cardId?: string;
-  /** Reunión o mail de donde salió: una card puede juntar varios. */
+  /** Reunión o mail de donde salió (agrupa los puntos por origen). */
   sourceId?: string;
   sourceKind?: "meeting" | "mail";
   sourceTitle?: string;

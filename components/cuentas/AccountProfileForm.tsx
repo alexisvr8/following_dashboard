@@ -6,7 +6,10 @@ import { Check, ChevronDown, Loader2, Settings2 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Label } from "@/components/ui/label";
+import { inputClass as baseInput } from "@/components/ui/input";
 import { cn } from "@/lib/utils";
+
+const inputClass = `${baseInput} h-9`;
 
 const ERP_SUGGESTIONS = [
   "SAP Business One", "SAP S/4HANA", "Tango Gestión", "Bejerman", "Flexus", "Finnegans",
@@ -23,8 +26,6 @@ type ProfileValues = {
 };
 type TextField = Exclude<keyof ProfileValues, "contactNames">;
 
-const inputClass =
-  "h-9 w-full rounded-lg border border-input bg-transparent px-3 text-sm outline-none transition-shadow placeholder:text-muted-foreground focus-visible:border-ring focus-visible:ring-3 focus-visible:ring-ring/50 dark:bg-input/30";
 
 // Encabezado de la cuenta con el perfil desplegable: nombre en correos, cómo saludar, ERP, owner y notas.
 export function AccountProfileForm({
@@ -90,7 +91,7 @@ export function AccountProfileForm({
       </header>
 
       {open && (
-        <Card id="account-profile" className="absolute inset-x-0 top-full z-30 mt-2 max-h-[calc(100dvh-8rem)] overflow-y-auto shadow-lg">
+        <Card id="account-profile" className="absolute inset-x-0 top-full z-30 mt-2 max-h-[calc(100dvh-8rem)] overflow-y-auto border-border-strong shadow-popover">
           <CardHeader>
             <CardTitle className="text-sm">Perfil de la cuenta</CardTitle>
             <p className="text-xs text-muted-foreground">
@@ -99,7 +100,7 @@ export function AccountProfileForm({
           </CardHeader>
           <CardContent>
             <form onSubmit={save} className="space-y-6">
-              <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
+              <div className="grid gap-4 sm:grid-cols-2">
                 <Field label="Nombre de la cuenta" htmlFor="name">
                   <input id="name" className={inputClass} value={values.name} onChange={set("name")} required />
                 </Field>
@@ -126,7 +127,7 @@ export function AccountProfileForm({
                       como cuentas@ o info@, “Hola equipo,”.
                     </p>
                   </div>
-                  <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
+                  <div className="grid gap-3 sm:grid-cols-2">
                     {contacts.map((c) => (
                       <div key={c.email} className="space-y-1">
                         <Label htmlFor={`contact-${c.email}`} className="block truncate text-xs font-normal" title={c.email}>
@@ -158,7 +159,7 @@ export function AccountProfileForm({
 
               <div className="flex items-center justify-end gap-3">
                 {state === "saved" && !dirty && (
-                  <span className="flex items-center gap-1 text-xs text-emerald-600 dark:text-emerald-400">
+                  <span className="flex items-center gap-1 text-xs text-success">
                     <Check className="size-3.5" /> Guardado
                   </span>
                 )}

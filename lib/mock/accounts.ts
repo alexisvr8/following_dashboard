@@ -16,7 +16,6 @@ export const mockAccounts: Account[] = [
     executionMinutesActual: 150,
     engagementPercent: null,
     lastActivityAt: daysAgo(2),
-    trackingStatus: "tasks_in_progress",
     lastNoteSummary: "Cliente confirmó renovación, pendiente firma de contrato.",
   },
   {
@@ -30,7 +29,6 @@ export const mockAccounts: Account[] = [
     executionMinutesActual: 90,
     engagementPercent: null,
     lastActivityAt: daysAgo(10),
-    trackingStatus: "tasks_in_progress",
     lastNoteSummary: "Esperando feedback del CFO sobre la propuesta ampliada.",
   },
   {
@@ -44,7 +42,6 @@ export const mockAccounts: Account[] = [
     executionMinutesActual: 55,
     engagementPercent: null,
     lastActivityAt: daysAgo(20),
-    trackingStatus: "tasks_priority",
     lastNoteSummary: "Sin respuesta en 3 semanas; última llamada fue tensa.",
   },
   {
@@ -58,7 +55,6 @@ export const mockAccounts: Account[] = [
     executionMinutesActual: 0,
     engagementPercent: null,
     lastActivityAt: null,
-    trackingStatus: "tasks_generated",
     lastNoteSummary: null,
   },
   {
@@ -72,7 +68,6 @@ export const mockAccounts: Account[] = [
     executionMinutesActual: 10,
     engagementPercent: null,
     lastActivityAt: daysAgo(5),
-    trackingStatus: "tasks_done",
     lastNoteSummary: "Primera llamada de descubrimiento realizada, agendando demo.",
   },
 ];

@@ -1,15 +1,18 @@
-import { Badge } from "@/components/ui/badge";
+import { Badge, StatusDot } from "@/components/ui/badge";
 import { computeChurnRisk } from "@/lib/utils/churn";
+import { cn } from "@/lib/utils";
 
 const LABEL = { green: "Activa", yellow: "Atención", red: "En riesgo" } as const;
+const TONE = { green: "success", yellow: "warning", red: "critical" } as const;
 
-const CLASSNAME = {
-  green: "bg-emerald-500/15 text-emerald-700 dark:text-emerald-400 border-transparent",
-  yellow: "bg-amber-500/15 text-amber-700 dark:text-amber-400 border-transparent",
-  red: "bg-red-500/15 text-red-700 dark:text-red-400 border-transparent",
-} as const;
-
-export function ChurnRiskBadge({ lastActivityAt }: { lastActivityAt: string | null }) {
+/** `size="sm"`: versión chica para listas densas (directorio de Cuentas). */
+export function ChurnRiskBadge({ lastActivityAt, size = "default" }: { lastActivityAt: string | null; size?: "default" | "sm" }) {
   const risk = computeChurnRisk(lastActivityAt);
-  return <Badge className={CLASSNAME[risk]}>{LABEL[risk]}</Badge>;
+  const sm = size === "sm";
+  return (
+    <Badge variant={TONE[risk]} className={cn(sm && "h-4 gap-1 rounded-sm px-1 text-[10px] leading-none tracking-normal")}>
+      <StatusDot tone={TONE[risk]} className={cn(sm && "size-1")} />
+      {LABEL[risk]}
+    </Badge>
+  );
 }

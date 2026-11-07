@@ -1,7 +1,6 @@
 import { randomUUID } from "crypto";
 import { mkdir, readFile, rename, rm, writeFile } from "fs/promises";
 import path from "path";
-import type { TrackingStatus } from "@/types/account";
 import { DATA_DIR, getState, setState, usingSupabase } from "@/lib/store/backend";
 import { supabaseAdmin } from "@/lib/supabase/admin";
 import type { MeetingDecision } from "@/lib/utils/gemini-notes-parser";
@@ -48,7 +47,8 @@ export interface ClientRecord {
   status: ClientStatus;
   contactEmails: string[];
   meetings: DiscoveredMeeting[];
-  trackingStatus: TrackingStatus | null;
+  /** @deprecated Legado del Tablero Seguimiento (eliminado): se conserva solo para no perder datos guardados. */
+  trackingStatus: string | null;
   doneTicketIds?: string[];
   /** Fecha en que se marcó cada ticket como hecho (los previos a esta feature no tienen). */
   doneTicketAt?: Record<string, string>;
@@ -58,14 +58,14 @@ export interface ClientRecord {
   profileUpdatedAt?: string;
   /** Texto corregido a mano de un accionable: ticket → texto. */
   actionableEdits?: Record<string, string>;
-  /** Accionables creados a mano; cuentan igual que los de la minuta (Tablero, Capacidad y mails). */
+  /** Accionables creados a mano; cuentan igual que los de la minuta (Cuentas, Capacidad y mails). */
   customActionables?: CustomActionable[];
   /** Accionables detectados que quité porque no correspondían. */
   removedTicketIds?: string[];
   /** Pedidos y compromisos detectados en mails: siguen aunque el mail salga de `activity.recentMails`. */
   mailActionables?: Record<string, MailItem>;
-  /** Card ubicada a mano en el Tablero; vale hasta el próximo tildado o hasta que entre algo nuevo. */
-  boardOverrides?: Record<string, { status: TrackingStatus; at: string }>;
+  /** @deprecated Legado del Tablero Seguimiento (eliminado): cards ubicadas a mano. Solo se conserva el dato. */
+  boardOverrides?: Record<string, { status: string; at: string }>;
   profile?: ClientProfile;
   /** Snapshot de la última sincronización Gmail/Calendar (`POST /api/clients/sync-activity`). */
   activity?: ClientActivity;
@@ -372,7 +372,7 @@ function backfillMeetings(meetings: DiscoveredMeeting[], result: DiscoveryResult
   }
 }
 
-/** Merge no destructivo: preserva status/name/trackingStatus, agrega meetings nuevos por id. */
+/** Merge no destructivo: preserva status/name, agrega meetings nuevos por id. */
 export async function mergeDiscovery(
   result: DiscoveryResult,
 ): Promise<{ file: ClientsFile; newClients: number }> {
@@ -429,7 +429,7 @@ export async function mergeDiscovery(
 
 export async function updateClient(
   id: string,
-  patch: Partial<Pick<ClientRecord, "status" | "name" | "trackingStatus">>,
+  patch: Partial<Pick<ClientRecord, "status" | "name">>,
 ): Promise<ClientRecord | null> {
   const m = await mutateClient(id, (client) => {
     Object.assign(client, patch);
@@ -464,21 +464,6 @@ export async function updateClientProfile(
     if (naming(profile) !== namingBefore) client.profileUpdatedAt = new Date().toISOString();
   });
   return m?.client ?? null;
-}
-
-export async function setBoardOverride(id: string, cardId: string, status: TrackingStatus): Promise<ClientRecord | null> {
-  const m = await mutateClient(id, (client) => {
-    client.boardOverrides = { ...client.boardOverrides, [cardId]: { status, at: new Date().toISOString() } };
-  });
-  return m?.client ?? null;
-}
-
-/** La card vuelve al estado automático. */
-export async function clearBoardOverride(id: string, cardId: string): Promise<void> {
-  await mutateClient(id, (client) => {
-    if (!client.boardOverrides?.[cardId]) return SKIP;
-    delete client.boardOverrides[cardId];
-  });
 }
 
 export type ActionableChange =

@@ -4,22 +4,40 @@ Dashboard personal de un solo usuario. Sin auth. Self-hosted (no Vercel).
 
 ## Stack
 Next.js 16 (App Router, TS) · Supabase (Postgres) · Tailwind v4 + shadcn/ui · pnpm
-Fuente: Inter (`--font-sans`, next/font/google, en `app/layout.tsx`).
+Fuentes (next/font/google, `app/layout.tsx`): Geist (`--font-sans`, UI) y JetBrains Mono (`--font-mono`: labels,
+cifras, fechas, horarios, badges).
+
+## Design system
+Fuente de verdad: `design/design.md` (colores = escala zinc del TEXTO; del YAML solo tipografía/radios/espaciado).
+Todo en tokens de `app/globals.css` (`.dark` = Titanium Zinc Dark; `:root` = zinc invertido para modo claro), sin
+colores en componentes: `background/surface/card/accent`, `foreground(-strong)/muted-foreground/subtle-foreground`,
+`border(-strong)/divider/row-divider/input`, semánticos `critical|warning|success` (+`-muted`), calendario
+`cal-client/other/task/lunch/flex`, `shadow-popover`/`shadow-highlight` (solo popovers/modales). Radios 4/6/8/12px.
+Utilidades `text-label-sm|md` y `tabular` (mono + cifras tabulares). Primitivas en `components/ui/` (`Badge` con
+variantes semánticas + `StatusDot`, `input.tsx` = `inputClass`).
 
 ## Navegación
 Nav horizontal centrada en el header sticky (`components/layout/{AppHeader,MainNav}.tsx`; en <md
-se vuelve menú desplegable `MobileNav`). Sin sidebar. 4 secciones (+ detalle `/cuentas/[id]`):
+se vuelve menú desplegable `MobileNav`). Sin sidebar. 4 secciones (`/cuentas/[id]` redirige a `/cuentas?id=`):
 - `/` Dashboard (**datos reales**, clientes `assigned`/`unassigned` de `.data/clients.json` vía
-  `clientsToBoard`). Orden: **Números** `KeyNumbers` → **Capacidad** `WeekPlanner` → **Seguimiento**
-  `FollowupAlerts` → **Cuentas** `AccountsSplitView` (client, buscador por nombre/dominio/ERP; cards ordenadas por
-  `lastMovement` de `followup-alerts.ts` [último mail, minuta o evento realizado], con títulos Hoy/Ayer/Esta semana/Anteriores).
+  `clientsToBoard`), ancho completo; en xl mide exactamente la pantalla (sin scroll de página: la jornada del calendario se reparte el alto disponible; solo la lista de Seguimiento scrollea). **Números** `KeyNumbers` arriba; debajo grilla 2/3 | 1/3 (xl, alineadas arriba; <xl Seguimiento abajo con tarjetas en 2–3 columnas): **Capacidad** `WeekPlanner` (barra de encabezado, 5 tarjetas resumen en una fila, calendario proporcional estilo Google Calendar (bloques según duración, solapes en carriles `layoutBlocks`, detalle al hover), tarjeta de agenda/espacios/leyenda) | **Seguimiento**
+  `FollowupAlerts` (alto de la fila, scroll interno solo en la lista; una tarjeta por cuenta, primero las que esperan respuesta y luego por días hábiles): cada acción (Responder / Enviar actualización / Hacer seguimiento) abre `FollowupPanel` (Dialog centrado, hilo | borrador; click afuera o Esc cierra):
+  hilo completo del último mail (`GET /api/clients/[id]/thread/[threadId]`, más nuevo primero) + `FollowupComposer`
+  `status` precalculado en `app/page.tsx` con `getDraft`.
+- `/cuentas` (`app/cuentas/page.tsx`, `?id=&tab=assigned|unassigned&borrador=status`): 3 columnas a una pantalla en `lg`
+  (se apilan en móvil). Izq. `AccountDirectory` (tabs Asignadas/No asignadas, filtro Todas/En riesgo/Atención por `computeChurnRisk`, buscador nombre/dominio/ERP, filas
+  ordenadas por `lastMovement` con títulos Hoy/Ayer/Esta semana/Anteriores, `lib/utils/movement.ts`); default = primera.
+  Centro + der. = `AccountWorkspace` (datos de `lib/server/account-view.ts` `loadAccountView`): una card con encabezado
+  `AccountProfileForm`, franja de engagement, un solo editor con selector "Mail post-reunión" (`meeting`) / "Mail de seguimiento" (`status`)
+  (altura según el contenido del mail, máx. 36dvh; abre en seguimiento con alerta o `?borrador=status`); ancho completo, columnas 320px / resto / 360px (2xl: 360 / resto / 420); derecha pestañas Accionables / Trazabilidad / Reuniones (`MeetingsList`: minuta de cada reunión) /
+  Participantes. `FollowupComposer`: Enviar, Regenerar (PATCH), Guardar (PUT), Borrador en Gmail, Copiar.
   Capacidad = `WeekPlanner` (planificador por día, meta = cerrar
   pendientes al viernes: veredicto core/flex/deficit, métricas (reuniones, libre normal + flex,
   pendientes, meta diaria), calendario vertical estilo Google Calendar: columna por día y eje de
   horas [reuniones Calendar, almuerzo, accionables proyectados, zonas flex; solapes en carriles,
   `layoutBlocks`]; click en el encabezado del día abre debajo agenda + chips de huecos libres; toggle
   Esta/Próxima `?semana=0|1` (default próxima si no queda jornada); botón Actualizar =
-  `router.refresh()`; ⚙ `WorkSettingsDialog`); `AccountCard` → `/cuentas/[id]`. Motor
+  `router.refresh()`; ⚙ `WorkSettingsDialog`); Motor
   `lib/utils/week-plan.ts`: ventana flexible `workStart–workEnd` (9–18) con horario normal
   `coreStart–coreEnd` (10–17:30); ocupado = eventos de Calendar (`listEventsBetween`, sin
   "disponible"/declinados) + almuerzo = eventos /almuerzo|lunch|comida/ del día (fallback
@@ -28,38 +46,20 @@ se vuelve menú desplegable `MobileNav`). Sin sidebar. 4 secciones (+ detalle `/
   huecos normales de toda la semana, 2ª pasada flex; resto = déficit. Reunión ↔ cuenta por
   dominio/email. Helpers `toMinutes`/`isOwnActionable` en `lib/utils/capacity.ts`. Settings en
   `.data/settings.json` (`lib/store/settings-store.ts`, `GET/PUT /api/settings`; 0.5h/accionable,
-  alias "[Alexis Vásquez R]"). Colores `--series-1/2` (validados dataviz) en `globals.css`.
+  alias "[Alexis Vásquez R]"). Colores de calendario `--cal-*` (tokens, ver Design system).
   Aviso con link a `/clientes` si hay pendientes de validar.
-- `/cuentas/[id]`: detalle de cuenta (`components/cuentas/*`). En `lg` entra en una pantalla (`100dvh` menos el header, scroll por
-  columna; en móvil se apila). `AccountWorkspace`: franja con engagement en vivo y métricas de la última reunión; izquierda borradores
-  (`#borradores`, `FollowupComposer` ocupa el alto, Enviar siempre visible); derecha pestañas Accionables (`LastChain` = reunión + mails
-  posteriores, accionables tildables) / Trazabilidad / Participantes / Reuniones, `ParticipantsList` (roles de
-  `lib/utils/participants.ts`: owner Xtract / referentes = dominio coincide con nombre de la
-  empresa / equipo Xtract = dominio del owner / otros; estrella = override manual en
-  `profile.referentOverrides`), historial, `AccountProfileForm` (header de la cuenta + panel desplegable superpuesto: nombre, nombre en correos,
-  cómo saludar a cada contacto `contactNames`, ERP, owner, notas → `profile`). Botones: último mail en Gmail y
-  `/tablero?open=<id>` (abre la card de esa cuenta).
-- `/tablero` Tablero Seguimiento: kanban con **una card abierta por cliente** (ver "Cards del Tablero" abajo)
-  (`components/tablero/{TrackingBoard,TrackingColumn,TrackingCard,TrackingDialog}.tsx`),
-  drag-and-drop propio con pointer events (sin HTML5 DnD ni librería): overlay en portal con
-  tilt por velocidad, placeholder, FLIP con Web Animations, autoscroll, Esc cancela, touch con
-  long-press. Orden dentro de columna solo local; `?open=<card o cuenta>` abre el Dialog (de una cuenta, su card abierta más reciente).
-  Buscador + filtro Todas/Hoy/Esta semana (local). Entra en una pantalla en `lg`, con scroll por columna. Columnas (`lib/tracking.ts`):
-  `tasks_priority` (Prioridad) → `tasks_generated` (Generadas) → `tasks_in_progress` (En curso) → `tasks_done` (Finalizadas).
-  **Datos reales**: solo clientes con `status: "assigned"` de `.data/clients.json`,
-  proyectados por `lib/utils/clients-to-board.ts` (accionables = `nextSteps` de la ÚLTIMA
-  minuta; ids prefijados con el id del cliente; tildarlos persiste en `doneTicketIds` vía
-  `TicketItem` → `PATCH /api/clients/[id]` y alimenta el engagement).
-  **Cards del Tablero** (`lib/utils/board-cards.ts` servidor, `board-status.ts` puro): `assignCards` recorre reuniones y mails por fecha: lo nuevo se suma a la
-  card en curso y solo abre otra si esa ya estaba finalizada cuando llegó (como máximo una abierta por cliente; reabrir una vieja le vuelve a sumar lo posterior).
-  `Ticket.sourceId/sourceTitle/...` = origen de cada punto; el Dialog agrupa por origen.
-  Estado automático (`resolveCardStatus`): todo tildado → Finalizadas; `priorityReason` (cliente espera respuesta ≥1 día hábil, o
-  `staleBusinessDays` sin movimiento ni tildes, salvo que lo último sea un mail nuestro) → Prioridad; algo tildado → En curso; si no, Generadas.
-  Mover a mano = `client.boardOverrides[cardId]` (`PATCH {boardCard}`), vale hasta el próximo tildado o hasta que entre algo nuevo. `client.trackingStatus` ya no se usa.
-  Finalizadas se muestran en una línea, ordenadas por cierre; las cerradas antes del lunes pasan a `ArchiveDialog` ("Ver archivo"). Se tilda desde la card o el Dialog.
-  **Puntos editables** (`ActionablesList` con `editable`, en Tablero y cuenta; `PATCH {actionable: {op: add|edit|remove}}`, `changeActionable`):
+- Detalle de cuenta (componentes `components/cuentas/*`, dentro de `/cuentas`): `LastChain` = reunión + mails posteriores,
+  accionables tildables; `ParticipantsList` (roles de `lib/utils/participants.ts`: owner Xtract / referentes = dominio coincide
+  con nombre de la empresa / equipo Xtract = dominio del owner / otros; estrella = override manual en `profile.referentOverrides`);
+  `AccountProfileForm` (panel desplegable: nombre, nombre en correos, `contactNames`, ERP, owner, notas → `profile`). Botones:
+  último mail en Gmail.
+  **Accionables** (datos reales, `lib/utils/clients-to-board.ts`): ids prefijados con el id del cliente; tildarlos persiste en
+  `doneTicketIds` vía `TicketItem` → `PATCH /api/clients/[id]` y alimenta el engagement. `Ticket.sourceId/sourceTitle/...` = origen.
+  **Tablero Seguimiento eliminado** (página, componentes, `board-cards`/`board-status`/`tracking`, `PATCH {boardCard|trackingStatus}`):
+  `client.trackingStatus` y `client.boardOverrides` quedan en `ClientRecord` como `@deprecated` solo para no perder datos guardados.
+  **Puntos editables** (`ActionablesList` con `editable`, en la cuenta; `PATCH {actionable: {op: add|edit|remove}}`, `changeActionable`):
   `client.customActionables` / `actionableEdits` / `removedTicketIds`, aplicados en `accountActionables`, `executedHistory` y `mailTickets`, por lo que llegan a
-  Capacidad, alertas y borradores (tocan `ticketsUpdatedAt`). Lo nuevo sin `[Dueño]` se guarda a nombre de `ownerAliases[0]`. `isAutoTicket` (follow-up y Responder) no se edita.
+  Capacidad, alertas y borradores (tocan `ticketsUpdatedAt`). Lo nuevo sin `[Dueño]` se guarda a nombre de `ownerAliases[0]`. `isAutoTicket` (`lib/utils/auto-ticket.ts`; follow-up y Responder) no se edita.
 - `/clientes`: validación de clientes descubiertos en mails de Gemini Notes
   (`components/clientes/{ClientsReview,ClientCandidateCard}.tsx`): botón de escaneo (60 días),
   tabs Por validar/Asignados/No asignados/Ignorados, nombre editable, y lista de reuniones sin
@@ -102,8 +102,8 @@ Esquema legado de Fase 1 (`0001_init.sql`, no lo usa el código actual):
   `is_assigned`, `time_score`/`difficulty_score` (clasificador
   de prioridad), `calendar_minutes_planned`/`execution_minutes_actual` (gauge),
   `last_activity_at` (→ churn-risk), `engagement_percent` (cache, derivado de tickets),
-  `tracking_status` (tasks_generated/tasks_in_progress/tasks_priority/tasks_done, ver
-  `lib/tracking.ts`) y `last_note_summary` (texto libre) para el Tablero Seguimiento.
+  `tracking_status` (tasks_generated/tasks_in_progress/tasks_priority/tasks_done;
+  ex Tablero Seguimiento, eliminado) y `last_note_summary` (texto libre).
 - **tickets**: accionables semanales por cuenta, `week_start_date`, `is_done` (→ % engagement),
   `meeting_id` (nullable, FK a `meetings`) para asociar el accionable a la reunión que lo generó.
 - **integrations_status**: estado de gmail/calendar/notion/xtract/gemini_notes.
@@ -144,7 +144,7 @@ tiempo/dificultad → quick_win/major_project/fill_in/thankless_task), no se per
   sin LLM: `Resumen`/`Próximos pasos`). Retry con backoff ante rate limit de Gmail. Merge no
   destructivo en `.data/clients.json` (`lib/store/clients-store.ts`); re-escaneo salta mails ya
   procesados.
-- `PATCH /api/clients/[id]` → `{status?, name?, trackingStatus?}`, `{ticketId, isDone}` o
+- `PATCH /api/clients/[id]` → `{status?, name?}`, `{ticketId, isDone}` o
   `{profile: {emailName?, erp?, ownerEmail?, notes?, referentOverrides?}, name?}`.
 - `POST /api/clients/sync-activity` (body opcional `{ids}`; default asignados+no asignados) →
   `lib/integrations/client-activity.ts`: por cliente guarda `activity` en `.data/clients.json`:
@@ -160,7 +160,7 @@ tiempo/dificultad → quick_win/major_project/fill_in/thankless_task), no se per
   lo cerrado con fecha de hasta 3 minutas previas en 28 días; si la nueva minuta re-lista un punto (`keywordSimilarity`) se unen conservando el estado
   (`repeatedClosed`); solo minutas que fueron "la última" desde `CARRY_OVER_SINCE` (2026-10-31). Usado por `clientsToBoard`, `week-plan`, alertas, sync y
   borrador. `doneTicketAt` (fecha de cierre) + `ticketsUpdatedAt` en `ClientRecord`.
-  UI `ActionablesList` (cuenta y Dialog del Tablero): tabs Pendientes (del último mail / última reunión /
+  UI `ActionablesList` (cuenta): tabs Pendientes (del último mail / última reunión /
   arrastrados) y Ejecutadas (con fecha; en la cuenta suma `executedHistory`, solo lectura, de reuniones ya no vigentes). Al tildar en la cuenta se hace
   `router.refresh()` y aparece link al borrador de seguimiento regenerado.
 - Accionables de mail (`lib/utils/mail-tickets.ts`, `kind` reply/request/commitment): último mail del cliente → "Responder a X"
@@ -178,7 +178,7 @@ tiempo/dificultad → quick_win/major_project/fill_in/thankless_task), no se per
   contra la fecha de la reunión); `status` parte de `latestInteraction`: último mail recibido del cliente
   o enviado por mí (no del equipo) si es posterior a la reunión; si no hay, accionables de la última reunión con lo tildado como avance. Con mail: responde en
   ese hilo y a sus participantes del lado cliente (`MailRef.recipients`, poblado en cada sync; fallback
-  asistentes de la reunión). Secciones: avances del tablero desde mi último mail posterior a la reunión (o desde la reunión) / en curso nuestro con arrastrados
+  asistentes de la reunión). Secciones: accionables finalizados desde mi último mail posterior a la reunión (o desde la reunión) / en curso nuestro con arrastrados
   marcados / conversado por mail desde la reunión (`mailTrace`: `relatedTicketIds`, sin mails resumen `isRecapMail`; nunca
   da por completado) / pedidos del cliente (solo si su mail es lo último) / pendiente del cliente / en conjunto /
   otros. El extracto del último mail va en `reviewNotes` (`lastTalkNote`). La trazabilidad excluye borradores (`-in:drafts`). Lo que requiere revisión va en `FollowupDraft.reviewNotes` (UI, nunca en el mail). En ambos tipos, si
@@ -206,6 +206,8 @@ tiempo/dificultad → quick_win/major_project/fill_in/thankless_task), no se per
 - `POST /api/cron/daily-followup` (header `x-cron-secret`, cron externo diario hábil): sync de
   asignados + alertas + 1 draft de actualización en Gmail por cuenta alertada y movimiento
   (dedupe `autoFor`); `?drafts=0` solo sincroniza.
+- `GET /api/clients/[id]/thread/[threadId]` → mensajes del hilo (`getThreadMessages` en `client-activity.ts`, solo lectura,
+  sin citas ni borradores); solo hilos ya asociados a la cuenta por la sincronización.
 - `GET /api/clients/[id]/last-mail` → 302 al último hilo de Gmail con el dominio/emails del
   cliente (excluye Gemini Notes); fallback a búsqueda en Gmail.
 - Cada `DiscoveredMeeting` guarda `attendees` (Calendar, sin salas); `ClientsFile.ownerEmail` =
@@ -250,5 +252,5 @@ sin proyecto Supabase todavía (tokens y meetings sincronizados viven en archivo
 memoria). Notion y Xtract (facturas, ventana de 90 días) siguen mock, pendientes de
 endpoints/API keys por cliente.
 UI: nav en header (sin sidebar) + dark mode + página `/conexiones` dedicada ya shippeados.
-Clientes reales: `/clientes` + Tablero sobre `.data/clients.json` (Gemini Notes, 60 días);
+Clientes reales: `/clientes` + Cuentas sobre `.data/clients.json` (Gemini Notes, 60 días);
 el Dashboard también usa datos reales. `executionMinutesActual` sigue en 0 (sin fuente).

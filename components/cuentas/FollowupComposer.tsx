@@ -1,10 +1,12 @@
 "use client";
 
-import { useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
-import { Check, Copy, ExternalLink, Loader2, Mail, RefreshCw, Send } from "lucide-react";
+import { Check, Copy, ExternalLink, Loader2, Mail, RefreshCw, Save, Send } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import { inputClass } from "@/components/ui/input";
+import { cn } from "@/lib/utils";
 import {
   Dialog,
   DialogContent,
@@ -16,10 +18,9 @@ import {
 import { Label } from "@/components/ui/label";
 import type { FollowupDraft, FollowupKind, ThreadRef } from "@/lib/store/clients-store";
 
-const inputClass =
-  "w-full rounded-lg border border-input bg-transparent px-3 text-sm outline-none transition-shadow placeholder:text-muted-foreground focus-visible:border-ring focus-visible:ring-3 focus-visible:ring-ring/50 dark:bg-input/30";
-
 const NEW_THREAD = "__new__";
+const BUTTONS_RESERVE = 76;
+const MIN_BODY_PX = 160;
 
 // Borrador de follow-up o seguimiento: se mantiene al día solo mientras no lo edites; editable,
 // copiable, creado como draft en Gmail o enviado (con confirmación) dentro del hilo elegido o como
@@ -33,7 +34,18 @@ export function FollowupComposer({
   generated,
   threads,
   lastSentAt,
+  showTitle = false,
+  fitViewport = false,
+  bodyMaxClass = "max-h-[36dvh]",
+  className,
 }: {
+  /** Muestra el título visible (vista Cuentas con dos borradores apilados, panel del Dashboard). */
+  showTitle?: boolean;
+  /** El mensaje crece con el texto y, si es largo, hasta el borde inferior de la pantalla (vista Cuentas). */
+  fitViewport?: boolean;
+  /** Tope de alto del mensaje cuando no se ajusta a la pantalla (crece con el texto hasta acá). */
+  bodyMaxClass?: string;
+  className?: string;
   kind: FollowupKind;
   clientId: string;
   title: string;
@@ -53,11 +65,32 @@ export function FollowupComposer({
   const [threadId, setThreadId] = useState<string>(
     initial.threadId === null ? NEW_THREAD : (initial.threadId ?? threads[0]?.threadId ?? NEW_THREAD),
   );
-  const [state, setState] = useState<"idle" | "drafting" | "sending" | "updating" | "copied">("idle");
+  const [state, setState] = useState<"idle" | "drafting" | "sending" | "updating" | "saving" | "copied">("idle");
   const [confirmingUpdate, setConfirmingUpdate] = useState(false);
   const [notice, setNotice] = useState<string | null>(null);
   const [confirming, setConfirming] = useState(false);
   const cancelSendRef = useRef<HTMLButtonElement>(null);
+  const bodyRef = useRef<HTMLTextAreaElement>(null);
+  // Tope del mensaje = lo que queda de pantalla debajo de él, menos la barra de botones.
+  useEffect(() => {
+    const el = bodyRef.current;
+    if (!fitViewport || !el) return;
+    const fit = () => {
+      const room = window.innerHeight - el.getBoundingClientRect().top - BUTTONS_RESERVE;
+      el.style.maxHeight = `${Math.max(MIN_BODY_PX, room)}px`;
+    };
+    fit();
+    window.addEventListener("resize", fit);
+    const ro = new ResizeObserver(fit);
+    ro.observe(document.body);
+    ro.observe(el); // pestaña oculta → visible
+    const card = el.closest("[data-slot=card]");
+    if (card) ro.observe(card); // se despliega "Revisar antes de enviar", etc.
+    return () => {
+      window.removeEventListener("resize", fit);
+      ro.disconnect();
+    };
+  }, [fitViewport]);
   const recipients = to.split(/[,;\s]+/).filter(Boolean);
   const ccRecipients = cc.split(/[,;\s]+/).filter(Boolean);
   const [sentNow, setSentNow] = useState(false);
@@ -183,6 +216,26 @@ export function FollowupComposer({
     }
   }
 
+  // Guarda la edición (PUT): se conserva hasta que cambien los accionables o llegue un mail.
+  async function save() {
+    setState("saving");
+    setError(null);
+    try {
+      const res = await fetch(`/api/clients/${encodeURIComponent(clientId)}/followup`, {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(payload()),
+      });
+      if (!res.ok) throw new Error();
+      setEdited(false);
+      setNotice(`Guardado a las ${new Date().toLocaleTimeString("es", { hour: "2-digit", minute: "2-digit" })}.`);
+    } catch {
+      setError("No se pudo guardar el borrador.");
+    } finally {
+      setState("idle");
+    }
+  }
+
   async function copy() {
     await navigator.clipboard.writeText(threadId === NEW_THREAD ? `${subject}\n\n${body}` : body);
     setState("copied");
@@ -190,9 +243,9 @@ export function FollowupComposer({
   }
 
   return (
-    <Card className="lg:h-full">
+    <Card className={cn("lg:h-full", className)}>
       <CardHeader>
-        <CardTitle className="sr-only">{title}</CardTitle>
+        <CardTitle className={showTitle ? "text-sm font-medium text-foreground-strong" : "sr-only"}>{title}</CardTitle>
         <p className="line-clamp-2 text-xs text-muted-foreground" title={hint}>
           {hint}
           {draftCreatedAt && ` Borrador creado el ${new Date(draftCreatedAt).toLocaleString("es")}.`}
@@ -201,12 +254,12 @@ export function FollowupComposer({
       </CardHeader>
       <CardContent className="flex min-h-0 flex-1 flex-col gap-3 [scrollbar-width:thin] lg:overflow-y-auto">
         {hasNews && (
-          <p className="rounded-md border border-primary/40 bg-primary/10 px-3 py-2 text-xs">
-            Hay novedades (mails o accionables) y no pisé tu edición. Usá Actualizar para incorporarlas.
+          <p className="rounded-md border border-border-strong bg-accent px-3 py-2 text-xs">
+            Hay novedades (mails o accionables) y no pisé tu edición. Usá Regenerar para incorporarlas.
           </p>
         )}
         {!!generated.reviewNotes?.length && (
-          <details className="shrink-0 rounded-md border border-amber-500/40 bg-amber-500/10 px-3 py-1.5 text-xs">
+          <details className="shrink-0 rounded-md border border-warning/25 bg-warning-muted px-3 py-1.5 text-xs">
             <summary className="cursor-pointer font-medium">
               Revisar antes de enviar ({generated.reviewNotes.length}) · no forma parte del mail
             </summary>
@@ -291,26 +344,27 @@ export function FollowupComposer({
           </div>
         )}
         </div>
-        <div className="flex min-h-[200px] flex-1 flex-col gap-1.5">
+        <div className="flex flex-col gap-1.5">
           <Label htmlFor={`${kind}-body`}>Mensaje</Label>
           <textarea
+            ref={bodyRef}
             id={`${kind}-body`}
             value={body}
             onChange={(e) => {
               setBody(e.target.value);
               setEdited(true);
             }}
-            rows={20}
-            className={`${inputClass} min-h-0 flex-1 py-2 font-mono text-xs leading-relaxed lg:resize-none`}
+            rows={8}
+            className={cn(inputClass, "field-sizing-content min-h-32 resize-y py-2 font-mono text-xs leading-relaxed", !fitViewport && bodyMaxClass)}
           />
         </div>
         {error && <p className="text-xs text-destructive">{error}</p>}
         {confirmingUpdate && (
           <div className="space-y-2 rounded-md border border-input px-3 py-2 text-xs">
-            <p>Actualizar reemplaza el texto por uno generado de nuevo: se pierde lo que editaste a mano.</p>
+            <p>Regenerar reemplaza el texto por uno generado de nuevo: se pierde lo que editaste a mano.</p>
             <div className="flex flex-wrap gap-2">
               <Button onClick={update}>
-                <RefreshCw /> Actualizar igual
+                <RefreshCw /> Regenerar igual
               </Button>
               <Button variant="ghost" onClick={() => setConfirmingUpdate(false)}>
                 Cancelar
@@ -320,7 +374,7 @@ export function FollowupComposer({
         )}
         {notice && <p className="text-xs text-muted-foreground">{notice}</p>}
         {sentNow && (
-          <p className="text-xs text-primary">Mail enviado. El borrador ya se generó de nuevo a partir de este envío.</p>
+          <p className="text-xs text-success">Mail enviado. El borrador ya se generó de nuevo a partir de este envío.</p>
         )}
         <div className="sticky bottom-0 z-10 flex shrink-0 flex-wrap items-center gap-2 bg-card pt-1">
         <Button onClick={() => setConfirming(true)} disabled={state === "sending" || confirming}>
@@ -334,7 +388,11 @@ export function FollowupComposer({
             title="Trae los mails nuevos de la cuenta y genera el mail de nuevo con los accionables actuales"
           >
             {state === "updating" ? <Loader2 className="animate-spin" /> : <RefreshCw />}
-            {state === "updating" ? "Actualizando…" : "Actualizar"}
+            {state === "updating" ? "Regenerando…" : "Regenerar"}
+          </Button>
+          <Button variant="outline" onClick={save} disabled={!edited || state === "saving"} title="Guarda tu edición del borrador">
+            {state === "saving" ? <Loader2 className="animate-spin" /> : <Save />}
+            Guardar
           </Button>
           <Button variant="outline" onClick={createDraft} disabled={state === "drafting"}>
             {state === "drafting" ? <Loader2 className="animate-spin" /> : <Mail />}

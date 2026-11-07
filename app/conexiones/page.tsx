@@ -7,7 +7,7 @@ import { GET as getGeminiNotesStatus } from "@/app/api/integrations/gemini-notes
 import type { IntegrationStatus } from "@/types/integration";
 
 // El estado depende de .data/google-tokens.json (archivo local, no cacheable):
-// forzamos render dinámico igual que /tablero.
+// forzamos render dinámico.
 export const dynamic = "force-dynamic";
 
 async function loadIntegrations(): Promise<IntegrationStatus[]> {
