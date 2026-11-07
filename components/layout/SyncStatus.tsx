@@ -25,7 +25,7 @@ function ago(iso: string, now: number): string {
 }
 
 // Indicador de la última sincronización automática. Cuando detecta una corrida nueva hace
-// `router.refresh()` para que Dashboard/Tablero/cuenta muestren los datos frescos sin recargar.
+// `router.refresh()` para que Dashboard y Cuentas muestren los datos frescos sin recargar.
 export function SyncStatus() {
   const router = useRouter();
   const [status, setStatus] = useState<Status | null>(null);
@@ -70,7 +70,7 @@ export function SyncStatus() {
       <span
         className={cn(
           "size-1.5 rounded-full",
-          failed ? "bg-destructive" : status.schedulerEnabled ? "bg-emerald-500" : "bg-muted-foreground/50",
+          failed ? "bg-destructive" : status.schedulerEnabled ? "bg-success" : "bg-subtle-foreground",
         )}
       />
       <RefreshCw className="size-3" aria-hidden />

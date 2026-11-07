@@ -6,7 +6,7 @@ import { SyncStatus } from "@/components/layout/SyncStatus";
 
 export function AppHeader() {
   return (
-    <header className="sticky top-0 z-40 border-b bg-background/80 backdrop-blur supports-backdrop-filter:bg-background/70">
+    <header className="sticky top-0 z-40 border-b bg-surface/85 backdrop-blur-md supports-backdrop-filter:bg-surface/70">
       <div className="grid h-14 grid-cols-[1fr_auto_1fr] items-center gap-4 px-6">
         <Link href="/" className="flex shrink-0 items-center gap-2 justify-self-start">
           <span className="flex size-7 items-center justify-center rounded-md bg-primary text-xs font-bold text-primary-foreground">

@@ -5,7 +5,7 @@ import { Check, CheckCircle2, Loader2, Pencil, Plus, Trash2, X } from "lucide-re
 import { Button } from "@/components/ui/button";
 import { TicketItem } from "@/components/dashboard/TicketItem";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
-import { isAutoTicket } from "@/lib/utils/board-status";
+import { isAutoTicket } from "@/lib/utils/auto-ticket";
 import type { ExecutedEntry } from "@/lib/utils/actionables";
 import type { Ticket } from "@/types/ticket";
 
@@ -28,7 +28,7 @@ function GroupTitle({ children }: { children: React.ReactNode }) {
 }
 
 const fieldClass =
-  "h-9 min-w-0 flex-1 rounded-lg border border-input bg-transparent px-3 text-sm outline-none transition-shadow placeholder:text-muted-foreground focus-visible:border-ring focus-visible:ring-3 focus-visible:ring-ring/50 dark:bg-input/30";
+  "h-9 min-w-0 flex-1 rounded-md border border-input bg-surface px-3 text-sm outline-none transition-shadow placeholder:text-subtle-foreground focus-visible:border-ring focus-visible:shadow-highlight";
 
 type State = Record<string, { isDone: boolean; doneAt: string | null }>;
 type Editable = { clientId: string; onChanged: () => void };
@@ -39,8 +39,8 @@ export function ActionablesList({
   onToggle,
   onSaved,
   emptyText = "No hay accionables.",
-  bySource = false,
   editable,
+  dense = false,
 }: {
   tickets: Ticket[];
   /** Cerradas de reuniones que ya no están vigentes: solo lectura. */
@@ -48,9 +48,9 @@ export function ActionablesList({
   onToggle?: (ticketId: string, isDone: boolean) => void;
   onSaved?: (ticketId: string, isDone: boolean) => void;
   emptyText?: string;
-  /** Agrupa por reunión o mail de origen, en lugar de por semana (card del Tablero). */
-  bySource?: boolean;
   editable?: Editable;
+  /** Filas compactas en una lista con divisores (vista Cuentas). */
+  dense?: boolean;
 }) {
   const [state, setState] = useState<State>({});
   // Cambios ya guardados, hasta que llegue el refresco del servidor.
@@ -86,10 +86,6 @@ export function ActionablesList({
     .filter((t) => t.isDone)
     .sort((a, b) => (b.doneAt ?? "").localeCompare(a.doneAt ?? ""));
   const groups = [...new Set(pendingMeeting.map((t) => t.weekStartDate))].sort().reverse();
-  const sources = [...new Set(pending.map((t) => t.sourceId))].sort((a, b) => {
-    const date = (id: string | undefined) => Date.parse(pending.find((t) => t.sourceId === id)?.sourceDate ?? "");
-    return date(b) - date(a);
-  });
 
   function toggle(id: string, isDone: boolean) {
     setState((prev) => ({
@@ -150,6 +146,8 @@ export function ActionablesList({
 
   if (!view.length && !history.length && !editable) return <p className="text-xs text-muted-foreground">{emptyText}</p>;
 
+  const box = dense ? "divide-y divide-row-divider overflow-hidden rounded-lg border bg-card" : "space-y-2";
+
   const actionsFor = (t: Ticket) => {
     if (!editable || isAutoTicket(t.id)) return undefined;
     const iconBtn = "rounded-md p-1 text-muted-foreground transition-colors hover:bg-muted hover:text-foreground";
@@ -209,7 +207,7 @@ export function ActionablesList({
         </Button>
       </form>
     ) : (
-      <TicketItem key={`${prefix}-${t.id}`} ticket={t} onToggle={toggle} onSaved={saved} meta={meta} actions={actionsFor(t)} />
+      <TicketItem key={`${prefix}-${t.id}`} ticket={t} onToggle={toggle} onSaved={saved} meta={meta} actions={actionsFor(t)} dense={dense} />
     );
 
   return (
@@ -220,38 +218,18 @@ export function ActionablesList({
       </TabsList>
 
       <TabsContent value="pending" className="space-y-4 pt-2">
-        {bySource ? (
-          sources.map((source) => {
-            const own = pending.filter((t) => t.sourceId === source);
-            const { sourceKind, sourceTitle, sourceDate } = own[0];
-            return (
-              <div key={source ?? "sin-origen"} className="space-y-2">
-                {sources.length > 1 && (
-                  <GroupTitle>
-                    {sourceKind === "mail" ? "Mail" : "Reunión"} · {sourceTitle}
-                    {sourceDate ? ` · ${fmtDay(sourceDate)}` : ""}
-                  </GroupTitle>
-                )}
-                {own.map((t) => item(t, "p"))}
-              </div>
-            );
-          })
-        ) : (
-          <>
-            {pendingMail.length > 0 && (
-              <div className="space-y-2">
-                <GroupTitle>De mails</GroupTitle>
-                {pendingMail.map((t) => item(t, "p"))}
-              </div>
-            )}
-            {groups.map((week) => (
-              <div key={week} className="space-y-2">
-                <GroupTitle>{weekLabel(week, latestWeek)}</GroupTitle>
-                {pendingMeeting.filter((t) => t.weekStartDate === week).map((t) => item(t, "p"))}
-              </div>
-            ))}
-          </>
+        {pendingMail.length > 0 && (
+          <div className="space-y-2">
+            <GroupTitle>De mails</GroupTitle>
+            <div className={box}>{pendingMail.map((t) => item(t, "p"))}</div>
+          </div>
         )}
+        {groups.map((week) => (
+          <div key={week} className="space-y-2">
+            <GroupTitle>{weekLabel(week, latestWeek)}</GroupTitle>
+            <div className={box}>{pendingMeeting.filter((t) => t.weekStartDate === week).map((t) => item(t, "p"))}</div>
+          </div>
+        ))}
         {!pending.length && (
           <p className="flex items-center gap-1.5 text-xs text-muted-foreground">
             <CheckCircle2 className="size-3.5 text-primary" /> {view.length ? "Todo finalizado." : emptyText}
@@ -275,12 +253,13 @@ export function ActionablesList({
       </TabsContent>
 
       <TabsContent value="done" className="space-y-2 pt-2">
-        {finished.map((t) => item(t, "d", t.doneAt ? fmtDay(t.doneAt) : "sin fecha"))}
+        {finished.length > 0 && <div className={box}>{finished.map((t) => item(t, "d", t.doneAt ? fmtDay(t.doneAt) : "sin fecha"))}</div>}
         {history.length > 0 && (
           <div className="space-y-2 pt-2">
             <GroupTitle>Reuniones anteriores</GroupTitle>
+            <div className={box}>
             {history.map((h) => (
-              <div key={h.id} className="flex items-center gap-3 rounded-md border bg-muted/30 px-3 py-2 text-sm">
+              <div key={h.id} className={dense ? "flex items-start gap-2.5 px-2.5 py-2 text-[13px] leading-snug" : "flex items-center gap-3 rounded-md border bg-surface px-3 py-2 text-sm"}>
                 <CheckCircle2 className="size-4 shrink-0 text-muted-foreground" />
                 <span className="min-w-0 text-muted-foreground">
                   {h.title}
@@ -289,6 +268,7 @@ export function ActionablesList({
                 <span className="ml-auto shrink-0 text-[11px] tabular-nums text-muted-foreground">{fmtDay(h.doneAt)}</span>
               </div>
             ))}
+            </div>
           </div>
         )}
         {!finished.length && !history.length && (

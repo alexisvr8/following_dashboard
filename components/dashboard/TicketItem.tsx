@@ -10,7 +10,10 @@ export function TicketItem({
   onSaved,
   meta,
   actions,
+  dense = false,
 }: {
+  /** Fila compacta para listas con divisores (vista Cuentas): texto chico, acciones al pasar el mouse. */
+  dense?: boolean;
   ticket: Ticket;
   onToggle?: (ticketId: string, isDone: boolean) => void;
   /** Tras persistir: fecha de cierre registrada por el servidor (null si se reabrió). */
@@ -40,6 +43,35 @@ export function TicketItem({
       const data = (await res.json().catch(() => ({}))) as { doneAt?: string | null };
       onSaved?.(ticket.id, value, data.doneAt ?? null);
     });
+  }
+
+  if (dense) {
+    return (
+      <label htmlFor={id} className="group flex items-start gap-2.5 px-2.5 py-2 text-[13px] leading-snug transition-colors hover:bg-surface">
+        <Checkbox id={id} checked={isDone} onCheckedChange={(v) => toggle(v === true)} className="mt-0.5" />
+        <span className="min-w-0 flex-1">
+          <span className={isDone ? "text-subtle-foreground line-through" : "text-foreground"}>{ticket.title}</span>
+          {ticket.description && (
+            <span className="mt-0.5 block truncate text-[11px] text-subtle-foreground" title={ticket.description}>
+              {ticket.description}
+            </span>
+          )}
+        </span>
+        {(meta || actions) && (
+          <span className="flex shrink-0 items-center gap-1">
+            {meta && <span className="text-label-sm text-subtle-foreground">{meta}</span>}
+            {actions && (
+              <span
+                onClick={(e) => e.preventDefault()}
+                className="opacity-0 transition-opacity group-hover:opacity-100 group-focus-within:opacity-100"
+              >
+                {actions}
+              </span>
+            )}
+          </span>
+        )}
+      </label>
+    );
   }
 
   return (

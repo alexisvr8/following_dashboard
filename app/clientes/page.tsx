@@ -12,7 +12,7 @@ export default async function ClientesPage() {
         <h1 className="text-lg font-semibold">Clientes</h1>
         <p className="text-sm text-muted-foreground">
           Clientes detectados en tus minutas de Gemini Notes. Marca cuáles tienes asignados:
-          solo los asignados aparecen en el Tablero Seguimiento.
+          solo los asignados aparecen en Cuentas.
         </p>
       </div>
       <ClientsReview file={file} />

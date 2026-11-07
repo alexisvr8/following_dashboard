@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useTransition } from "react";
+import { useEffect, useRef, useState, useTransition } from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { AlertTriangle, CheckCircle2, Clock3, RefreshCw, Settings2 } from "lucide-react";
@@ -15,23 +15,22 @@ import type { WorkSettings } from "@/lib/store/settings-store";
 const fmt = (h: number) => `${Number.isInteger(h) ? h : h.toFixed(1)}h`;
 const fmtMin = (m: number) => (m < 60 ? `${m}m` : fmt(Math.round((m / 60) * 10) / 10));
 
+// Muestra de color de cada categoría (leyenda y agenda).
 const BLOCK_CLASS: Record<BlockKind, string> = {
-  client: "bg-series-1",
-  other: "bg-foreground/35",
-  task: "bg-series-2",
-  lunch: "bg-[repeating-linear-gradient(135deg,var(--muted-foreground)_0_1.5px,transparent_1.5px_6px)] opacity-60",
+  client: "bg-cal-client",
+  other: "bg-cal-other",
+  task: "bg-cal-task",
+  lunch: "bg-[repeating-linear-gradient(135deg,var(--cal-lunch)_0_1.5px,transparent_1.5px_6px)]",
 };
 
-// Bloques del calendario: fondo tenue + borde de color, para que el texto se lea en ambos temas.
+// Bloques compactos: fondo tenue + borde izquierdo de color, legibles en ambos temas.
 const BLOCK_CARD: Record<BlockKind, string> = {
-  client: "border-series-1 bg-series-1/20",
-  other: "border-foreground/40 bg-foreground/10",
-  task: "border-series-2 bg-series-2/20",
+  client: "border-cal-client bg-cal-client/22",
+  other: "border-cal-other bg-cal-other/18",
+  task: "border-cal-task bg-cal-task/22",
   lunch:
-    "border-muted-foreground/50 bg-[repeating-linear-gradient(135deg,color-mix(in_oklab,var(--muted-foreground)_25%,transparent)_0_1.5px,transparent_1.5px_6px)]",
+    "border-cal-lunch/60 bg-[repeating-linear-gradient(135deg,color-mix(in_srgb,var(--cal-lunch)_25%,transparent)_0_1.5px,transparent_1.5px_6px)]",
 };
-
-const HOUR_PX = 60;
 
 const KIND_LABEL: Record<BlockKind, string> = {
   client: "Reunión con cliente",
@@ -40,8 +39,9 @@ const KIND_LABEL: Record<BlockKind, string> = {
   lunch: "Almuerzo",
 };
 
-// Planificador semanal por día: reuniones de Calendar + almuerzo real, huecos libres y
-// accionables proyectados en esos huecos. Meta: cerrar los pendientes antes del viernes.
+// Planificador semanal: encabezado, 5 tarjetas resumen, calendario proporcional y tarjeta de
+// agenda/huecos. En ≥1280px ocupa el alto que le da el Dashboard (sin scroll de página): la jornada
+// se reparte ese alto y cada bloque mide según su duración.
 export function WeekPlanner({ plan, settings }: { plan: WeekPlan; settings: WorkSettings }) {
   const router = useRouter();
   const [refreshing, startRefresh] = useTransition();
@@ -50,56 +50,46 @@ export function WeekPlanner({ plan, settings }: { plan: WeekPlan; settings: Work
   const [openDay, setOpenDay] = useState<string | null>(firstOpen);
   const t = plan.totals;
   const selectedDay = plan.days.find((d) => d.key === openDay);
-  const gridHeight = (Math.max(60, toMinutes(settings.workEnd) - toMinutes(settings.workStart)) / 60) * HOUR_PX;
-  const columns = `2.75rem repeat(${plan.days.length}, minmax(0, 1fr))`;
 
   return (
-    <Card size="sm">
-      <CardContent className="space-y-4">
-        {/* encabezado */}
-        <div className="flex flex-wrap items-center justify-between gap-3">
-          <div className="flex items-center gap-2 text-xs text-muted-foreground">
-            <span>Semana {plan.weekLabel}</span>
-            <div className="flex rounded-md bg-muted p-0.5">
-              {[0, 1].map((o) => (
-                <Link
-                  key={o}
-                  href={`/?semana=${o}`}
-                  scroll={false}
-                  className={cn(
-                    "rounded px-2 py-0.5 transition-all",
-                    plan.offset === o ? "bg-background font-medium text-foreground shadow-sm" : "hover:text-foreground",
-                  )}
-                >
-                  {o === 0 ? "Esta" : "Próxima"}
-                </Link>
-              ))}
-            </div>
-          </div>
-          <div className="flex items-center gap-1.5">
-            <Button
-              variant="outline"
-              size="sm"
-              onClick={() => startRefresh(() => router.refresh())}
-              disabled={refreshing}
-            >
-              <RefreshCw className={cn(refreshing && "animate-spin")} />
-              {refreshing ? "Actualizando" : "Actualizar"}
-            </Button>
-            <Button variant="outline" size="icon-sm" onClick={() => setSettingsOpen(true)} aria-label="Ajustar jornada">
-              <Settings2 />
-            </Button>
+    <div className="flex flex-col gap-3 xl:h-full xl:min-h-0">
+      {/* 1. Barra de encabezado */}
+      <div className="flex min-h-8 shrink-0 flex-wrap items-center justify-between gap-x-4 gap-y-2">
+        <div className="flex min-w-0 items-center gap-3">
+          <h2 className="text-label-sm uppercase text-subtle-foreground">Capacidad</h2>
+          <span className="truncate text-xs text-muted-foreground">Semana {plan.weekLabel}</span>
+          <div className="flex shrink-0 rounded-md border border-border bg-surface p-0.5 text-xs">
+            {[0, 1].map((o) => (
+              <Link
+                key={o}
+                href={`/?semana=${o}`}
+                scroll={false}
+                className={cn(
+                  "rounded-sm px-2 py-0.5 transition-colors",
+                  plan.offset === o ? "bg-accent font-medium text-foreground-strong" : "text-muted-foreground hover:text-foreground",
+                )}
+              >
+                {o === 0 ? "Esta" : "Próxima"}
+              </Link>
+            ))}
           </div>
         </div>
+        <div className="flex items-center gap-1.5">
+          <Button variant="outline" size="sm" onClick={() => startRefresh(() => router.refresh())} disabled={refreshing}>
+            <RefreshCw className={cn(refreshing && "animate-spin")} />
+            {refreshing ? "Actualizando" : "Actualizar"}
+          </Button>
+          <Button variant="outline" size="icon-sm" onClick={() => setSettingsOpen(true)} aria-label="Ajustar jornada">
+            <Settings2 />
+          </Button>
+        </div>
+      </div>
 
-        {/* veredicto + métricas */}
-        <div className="grid gap-2.5 sm:grid-cols-2 lg:grid-cols-[1.4fr_repeat(4,1fr)]">
+      {/* 2. Cinco tarjetas resumen: una sola fila, mismo ancho (scroll horizontal en pantallas chicas) */}
+      <div className="shrink-0 max-md:overflow-x-auto max-md:pb-1">
+        <div className="grid grid-cols-5 gap-2 max-md:min-w-[46rem]">
           <Verdict plan={plan} settings={settings} />
-          <Metric
-            label="Reuniones"
-            value={String(t.meetingCount)}
-            hint={`${fmt(t.meetingBusyHours)} · ${t.clientMeetingCount} con clientes`}
-          />
+          <Metric label="Reuniones" value={String(t.meetingCount)} hint={`${fmt(t.meetingBusyHours)} · ${t.clientMeetingCount} con clientes`} />
           <Metric
             label="Libre para accionables"
             value={fmt(t.freeCoreHours)}
@@ -116,63 +106,48 @@ export function WeekPlanner({ plan, settings }: { plan: WeekPlan; settings: Work
             hint={`${t.remainingDays} día${t.remainingDays === 1 ? "" : "s"} hasta el viernes`}
           />
         </div>
+      </div>
 
-        {/* días */}
-        <div className="max-md:overflow-x-auto">
-          <div className="pb-2 max-md:min-w-[38rem]">
-            <div className="grid" style={{ gridTemplateColumns: columns }}>
-              <div />
-              {plan.days.map((d) => (
-                <DayHeader
-                  key={d.key}
-                  day={d}
-                  open={openDay === d.key}
-                  onToggle={() => setOpenDay((o) => (o === d.key ? null : d.key))}
-                />
-              ))}
-            </div>
-            <div className="grid" style={{ gridTemplateColumns: columns, height: gridHeight }}>
-              <div className="relative text-[10px] tabular-nums text-muted-foreground">
-                {plan.hourTicks.map((tk) => (
-                  <span key={tk.label} className="absolute right-2 -translate-y-1/2" style={{ top: `${tk.at * 100}%` }}>
-                    {tk.label}:00
-                  </span>
-                ))}
-              </div>
-              {plan.days.map((d, i) => (
-                <DayColumn
-                  key={d.key}
-                  day={d}
-                  plan={plan}
-                  gridHeight={gridHeight}
-                  alignRight={i >= plan.days.length / 2}
-                />
-              ))}
-            </div>
-          </div>
+      {/* 3. Grilla semanal: toma el alto que queda */}
+      <Card size="sm" className="py-0 xl:min-h-0 xl:flex-1">
+        <div className="max-md:overflow-x-auto xl:h-full">
+          <WeekGrid
+            plan={plan}
+            settings={settings}
+            openDay={openDay}
+            onToggleDay={(k) => setOpenDay((o) => (o === k ? null : k))}
+          />
         </div>
+      </Card>
 
-        {selectedDay && <DayDetail day={selectedDay} />}
-
-        <div className="flex flex-wrap items-center gap-x-4 gap-y-1 text-[11px] text-muted-foreground">
-          {(["client", "other", "task", "lunch"] as const).map((k) => (
-            <span key={k} className="flex items-center gap-1.5">
-              <span className={cn("size-2.5 rounded-sm", BLOCK_CLASS[k])} />
-              {KIND_LABEL[k]}
+      {/* 4. Agenda del día + espacios para accionables + leyenda (compacta, siempre entera) */}
+      <Card size="sm" className="shrink-0">
+        <CardContent className="space-y-2.5">
+          {selectedDay ? (
+            <DayDetail day={selectedDay} />
+          ) : (
+            <p className="text-xs text-muted-foreground">Elegí un día en la grilla para ver su agenda y los espacios libres.</p>
+          )}
+          <div className="flex flex-wrap items-center gap-x-4 gap-y-1 border-t border-border pt-2 text-[11px] text-muted-foreground">
+            {(["client", "other", "task", "lunch"] as const).map((k) => (
+              <span key={k} className="flex items-center gap-1.5">
+                <span className={cn("size-2.5 rounded-sm", BLOCK_CLASS[k])} />
+                {KIND_LABEL[k]}
+              </span>
+            ))}
+            <span className="flex items-center gap-1.5">
+              <span className="size-2.5 rounded-sm border border-dashed border-cal-flex bg-surface" />
+              Horario flexible ({settings.workStart}–{settings.coreStart} · {settings.coreEnd}–{settings.workEnd})
             </span>
-          ))}
-          <span className="flex items-center gap-1.5">
-            <span className="size-2.5 rounded-sm bg-foreground/[0.06] ring-1 ring-foreground/15 ring-inset" />
-            Horario flexible ({settings.workStart}–{settings.coreStart} · {settings.coreEnd}–{settings.workEnd})
-          </span>
-          <span className="ml-auto">
-            {plan.source === "calendar" ? "Desde tu Google Calendar" : "Calendar no conectado"}
-          </span>
-        </div>
-      </CardContent>
+            <span className="ml-auto text-subtle-foreground">
+              {plan.source === "calendar" ? "Desde tu Google Calendar" : "Calendar no conectado"}
+            </span>
+          </div>
+        </CardContent>
+      </Card>
 
       <WorkSettingsDialog open={settingsOpen} onOpenChange={setSettingsOpen} settings={settings} />
-    </Card>
+    </div>
   );
 }
 
@@ -199,24 +174,25 @@ function Verdict({ plan, settings }: { plan: WeekPlan; settings: WorkSettings })
 
   return (
     <div
+      title={`${title} — ${hint}`}
       className={cn(
-        "flex items-start gap-2.5 rounded-lg p-3 sm:col-span-2 lg:col-span-1",
-        tone === "good" && "bg-emerald-500/10",
-        tone === "warn" && "bg-amber-500/10",
-        tone === "bad" && "bg-red-500/10",
+        "flex min-w-0 items-start gap-2 rounded-lg border px-2.5 py-2",
+        tone === "good" && "border-success/25 bg-success-muted",
+        tone === "warn" && "border-warning/25 bg-warning-muted",
+        tone === "bad" && "border-critical/25 bg-critical-muted",
       )}
     >
       <Icon
         className={cn(
           "mt-0.5 size-4 shrink-0",
-          tone === "good" && "text-emerald-600 dark:text-emerald-400",
-          tone === "warn" && "text-amber-600 dark:text-amber-400",
-          tone === "bad" && "text-red-600 dark:text-red-400",
+          tone === "good" && "text-success",
+          tone === "warn" && "text-warning",
+          tone === "bad" && "text-critical",
         )}
       />
       <div className="min-w-0">
-        <p className="text-sm font-semibold">{title}</p>
-        <p className="text-xs text-muted-foreground">{hint}</p>
+        <p className="truncate text-sm font-semibold">{title}</p>
+        <p className="truncate text-[11px] text-muted-foreground">{hint}</p>
       </div>
     </div>
   );
@@ -224,13 +200,15 @@ function Verdict({ plan, settings }: { plan: WeekPlan; settings: WorkSettings })
 
 function Metric({ label, value, hint }: { label: string; value: string; hint: string }) {
   return (
-    <div className="rounded-lg bg-muted/50 p-3">
-      <p className="truncate text-xs text-muted-foreground">{label}</p>
-      <p className="text-lg font-semibold leading-tight tabular-nums">{value}</p>
-      <p className="truncate text-[11px] text-muted-foreground" title={hint}>{hint}</p>
+    <div title={`${label}: ${value} — ${hint}`} className="min-w-0 rounded-lg border border-border bg-card px-2.5 py-2">
+      <p className="truncate text-label-sm uppercase text-subtle-foreground">{label}</p>
+      <p className="truncate font-mono text-base font-medium leading-tight text-foreground-strong tabular-nums">{value}</p>
+      <p className="truncate text-[11px] text-muted-foreground">{hint}</p>
     </div>
   );
 }
+
+const HOUR_PX = 60; // alto por hora cuando la página scrollea (<1280px)
 
 type LaidOutBlock = { block: PlanBlock; lane: number; lanes: number };
 
@@ -261,59 +239,95 @@ function layoutBlocks(blocks: PlanBlock[]): LaidOutBlock[] {
   return out;
 }
 
-function DayHeader({ day: d, open, onToggle }: { day: PlanDay; open: boolean; onToggle: () => void }) {
+/**
+ * Calendario estilo Google Calendar: columna de horas + un carril por día, bloques con alto
+ * proporcional a su duración. En ≥1280px la jornada se reparte el alto disponible (sin scroll).
+ */
+function WeekGrid({
+  plan,
+  settings,
+  openDay,
+  onToggleDay,
+}: {
+  plan: WeekPlan;
+  settings: WorkSettings;
+  openDay: string | null;
+  onToggleDay: (key: string) => void;
+}) {
+  const columns = `3rem repeat(${plan.days.length}, minmax(0, 1fr))`;
+  const hours = Math.max(1, (toMinutes(settings.workEnd) - toMinutes(settings.workStart)) / 60);
+  const bodyRef = useRef<HTMLDivElement>(null);
+  const [bodyHeight, setBodyHeight] = useState(hours * HOUR_PX);
+  useEffect(() => {
+    const el = bodyRef.current;
+    if (!el) return;
+    const ro = new ResizeObserver(() => setBodyHeight(el.clientHeight));
+    ro.observe(el);
+    return () => ro.disconnect();
+  }, []);
+
   return (
-    <button
-      type="button"
-      onClick={onToggle}
-      aria-expanded={open}
-      className={cn(
-        "min-w-0 rounded-t-lg px-2 py-1.5 text-left outline-none transition-colors hover:bg-muted/60 focus-visible:ring-2 focus-visible:ring-ring",
-        open && "bg-muted/60",
-        d.isPast && "opacity-55",
-      )}
-    >
-      <span className={cn("block truncate text-xs capitalize", d.isToday ? "font-semibold" : "font-medium")}>
-        {d.label}
-        {d.isToday && <span className="ml-1 text-[10px] font-normal text-muted-foreground">hoy</span>}
-      </span>
-      <span className="block truncate text-[10px] tabular-nums text-muted-foreground">
-        {d.meetingCount} reunion{d.meetingCount === 1 ? "" : "es"}
-        {!d.isPast && ` · ${fmt(d.freeCoreHours)} libre`}
-        {!d.isPast && d.freeFlexHours > 0 && ` +${fmt(d.freeFlexHours)}`}
-      </span>
-    </button>
+    <div className="flex flex-col max-md:min-w-[40rem] xl:h-full">
+      <div className="grid shrink-0" style={{ gridTemplateColumns: columns }}>
+        <div className="border-b border-border" />
+        {plan.days.map((d) => (
+          <DayHeader key={d.key} day={d} open={openDay === d.key} onToggle={() => onToggleDay(d.key)} />
+        ))}
+      </div>
+      <div
+        ref={bodyRef}
+        className="grid h-(--grid-h) xl:h-auto xl:min-h-0 xl:flex-1"
+        style={{ gridTemplateColumns: columns, ["--grid-h" as string]: `${hours * HOUR_PX}px` }}
+      >
+        <div className="relative text-label-sm text-subtle-foreground">
+          {plan.hourTicks.map((tk) => (
+            <span
+              key={tk.label}
+              className={cn(
+                "absolute right-1.5",
+                // la primera y la última hora quedan dentro del área (no se cortan)
+                tk.at <= 0 ? "translate-y-0.5" : tk.at >= 1 ? "-translate-y-full" : "-translate-y-1/2",
+              )}
+              style={{ top: `${tk.at * 100}%` }}
+            >
+              {tk.label}:00
+            </span>
+          ))}
+        </div>
+        {plan.days.map((d, i) => (
+          <DayColumn key={d.key} day={d} plan={plan} bodyHeight={bodyHeight} alignRight={i >= plan.days.length / 2} />
+        ))}
+      </div>
+    </div>
   );
 }
 
 function DayColumn({
   day: d,
   plan,
-  gridHeight,
+  bodyHeight,
   alignRight,
 }: {
   day: PlanDay;
   plan: WeekPlan;
-  gridHeight: number;
+  bodyHeight: number;
   alignRight: boolean;
 }) {
   const [hover, setHover] = useState<number | null>(null);
   const { coreFrom, coreTo } = plan.window;
 
   return (
-    <div className="relative border-l border-foreground/10 bg-foreground/[0.05] last:border-r">
-      <div
-        className="absolute inset-x-0 bg-card"
-        style={{ top: `${coreFrom * 100}%`, height: `${(coreTo - coreFrom) * 100}%` }}
-      />
+    <div className="relative border-l border-border bg-surface">
+      {/* horario normal sobre fondo card; el flexible queda en surface */}
+      <div className="absolute inset-x-0 bg-card" style={{ top: `${coreFrom * 100}%`, height: `${(coreTo - coreFrom) * 100}%` }} />
       {plan.hourTicks.map((tk) => (
-        <div key={tk.label} className="absolute inset-x-0 h-px bg-foreground/10" style={{ top: `${tk.at * 100}%` }} />
+        <div key={tk.label} className="absolute inset-x-0 h-px bg-row-divider" style={{ top: `${tk.at * 100}%` }} />
       ))}
       {layoutBlocks(d.blocks).map((item, i) => (
         <Block
           key={i}
           {...item}
-          gridHeight={gridHeight}
+          bodyHeight={bodyHeight}
           alignRight={alignRight}
           active={hover === i}
           onEnter={() => setHover(i)}
@@ -323,7 +337,7 @@ function DayColumn({
       {d.elapsed > 0 && (
         <div
           className="pointer-events-none absolute inset-x-0 top-0 z-10 bg-background/60"
-          style={{ height: `${d.elapsed * 100}%` }}
+          style={{ height: `${Math.min(1, d.elapsed) * 100}%` }}
         />
       )}
       {d.isToday && d.elapsed > 0 && d.elapsed < 1 && (
@@ -335,31 +349,46 @@ function DayColumn({
   );
 }
 
+function blockName(b: PlanBlock) {
+  return b.kind === "task" ? (b.accountName ?? b.title) : b.title;
+}
+
+function blockTooltip(b: PlanBlock): string {
+  return [
+    blockName(b),
+    `${b.startLabel}–${b.endLabel} · ${KIND_LABEL[b.kind]}${b.kind === "task" && b.soft ? " en horario flexible" : ""}`,
+    b.accountName && b.kind === "client" ? `Cuenta: ${b.accountName}` : null,
+  ]
+    .filter(Boolean)
+    .join("\n");
+}
+
+/** Bloque proporcional a su duración: título y, si hay alto, el horario debajo. Hover = detalle. */
 function Block({
   block: b,
   lane,
   lanes,
-  gridHeight,
+  bodyHeight,
   alignRight,
   active,
   onEnter,
   onLeave,
 }: LaidOutBlock & {
-  gridHeight: number;
+  bodyHeight: number;
   alignRight: boolean;
   active: boolean;
   onEnter: () => void;
   onLeave: () => void;
 }) {
-  const px = (b.to - b.from) * gridHeight;
+  const px = (b.to - b.from) * bodyHeight;
   const softTask = b.kind === "task" && b.soft;
   return (
     <div
-      className="absolute px-0.5 py-px"
+      className="absolute p-px"
       style={{
         top: `${b.from * 100}%`,
         height: `${(b.to - b.from) * 100}%`,
-        minHeight: 10,
+        minHeight: 8,
         left: `${(lane / lanes) * 100}%`,
         width: `${100 / lanes}%`,
       }}
@@ -367,23 +396,19 @@ function Block({
       onPointerLeave={onLeave}
     >
       {/* bg-card opaco debajo del tinte: las líneas de hora no atraviesan el texto */}
-      <div className="h-full overflow-hidden rounded-[4px] bg-card">
+      <div className="h-full overflow-hidden rounded-sm bg-card">
         <div
           className={cn(
-            "h-full border-l-[3px] px-1 text-[11px] leading-tight",
+            "h-full border-l-[3px] px-1.5 leading-tight",
             BLOCK_CARD[b.kind],
-            softTask && "border-dashed bg-series-2/10",
+            softTask && "border-dashed bg-cal-task/10",
             b.kind === "lunch" && "text-muted-foreground",
-            active && "brightness-110",
+            active && "brightness-125",
           )}
         >
-          {px >= 16 && (
-            <p className={cn("truncate font-medium", px >= 22 && "pt-0.5")}>
-              {b.kind === "task" ? (b.accountName ?? b.title) : b.title}
-            </p>
-          )}
-          {px >= 38 && (
-            <p className="truncate text-[10px] tabular-nums text-muted-foreground">
+          {px >= 14 && <p className={cn("truncate text-[11px] font-medium", px >= 20 && "pt-0.5")}>{blockName(b)}</p>}
+          {px >= 32 && (
+            <p className="truncate text-[10px] text-muted-foreground tabular">
               {b.startLabel}–{b.endLabel}
             </p>
           )}
@@ -392,7 +417,7 @@ function Block({
       {active && (
         <div
           className={cn(
-            "pointer-events-none absolute z-20 w-56 rounded-lg bg-popover p-2.5 text-left text-xs text-popover-foreground shadow-lg ring-1 ring-foreground/10",
+            "pointer-events-none absolute z-20 w-56 rounded-md border border-border-strong bg-popover p-2.5 text-left text-xs text-popover-foreground shadow-popover",
             b.from > 0.35 ? "bottom-full mb-1.5" : "top-full mt-1.5",
             alignRight ? "right-0" : "left-0",
           )}
@@ -409,26 +434,48 @@ function Block({
   );
 }
 
+function DayHeader({ day: d, open, onToggle }: { day: PlanDay; open: boolean; onToggle: () => void }) {
+  return (
+    <button
+      type="button"
+      onClick={onToggle}
+      aria-expanded={open}
+      className={cn(
+        "min-w-0 border-b border-l border-border px-2 py-1.5 text-left outline-none transition-colors hover:bg-accent/60 focus-visible:ring-2 focus-visible:ring-ring",
+        open && "bg-accent/60",
+        d.isPast && "opacity-55",
+      )}
+    >
+      <span className={cn("block truncate text-xs capitalize", d.isToday ? "font-semibold text-foreground-strong" : "font-medium")}>
+        {d.label}
+        {d.isToday && <span className="ml-1 text-[10px] font-normal text-muted-foreground">hoy</span>}
+      </span>
+      <span className="block truncate text-[10px] tabular text-muted-foreground">
+        {d.meetingCount} reunion{d.meetingCount === 1 ? "" : "es"}
+        {!d.isPast && ` · ${fmt(d.freeCoreHours)} libre`}
+        {!d.isPast && d.freeFlexHours > 0 && ` +${fmt(d.freeFlexHours)}`}
+      </span>
+    </button>
+  );
+}
+
+/** Agenda en columnas (no crece hacia abajo) + huecos como chips. */
 function DayDetail({ day: d }: { day: PlanDay }) {
   return (
-    <div className="grid gap-4 rounded-lg bg-muted/40 p-3 sm:grid-cols-2">
-      <div className="space-y-1.5">
-        <p className="text-[11px] font-medium text-muted-foreground">
+    <div className="grid gap-x-6 gap-y-2 lg:grid-cols-[minmax(0,3fr)_minmax(0,2fr)]">
+      <div className="min-w-0 space-y-1">
+        <p className="text-label-sm uppercase text-subtle-foreground">
           Agenda · <span className="capitalize">{d.label}</span>
         </p>
         {d.agenda.length ? (
-          <ul className="space-y-1">
+          <ul className="grid gap-x-4 gap-y-0.5 sm:grid-cols-2 2xl:grid-cols-3">
             {d.agenda.map((b, i) => (
-              <li key={i} className="flex items-center gap-2 text-xs">
-                <span className={cn("h-3.5 w-1 shrink-0 rounded-full", BLOCK_CLASS[b.kind])} />
-                <span className="w-[5.5rem] shrink-0 tabular-nums text-muted-foreground">
-                  {b.startLabel}–{b.endLabel}
-                </span>
+              <li key={i} className="flex min-w-0 items-center gap-2 text-xs" title={blockTooltip(b)}>
+                <span className={cn("h-3 w-1 shrink-0 rounded-full", BLOCK_CLASS[b.kind])} />
+                <span className="shrink-0 text-[11px] tabular text-muted-foreground">{b.startLabel}</span>
                 <span className="min-w-0 truncate">
                   {b.title}
-                  {b.accountName && b.kind === "client" && (
-                    <span className="text-muted-foreground"> · {b.accountName}</span>
-                  )}
+                  {b.accountName && b.kind === "client" && <span className="text-muted-foreground"> · {b.accountName}</span>}
                 </span>
               </li>
             ))}
@@ -437,11 +484,14 @@ function DayDetail({ day: d }: { day: PlanDay }) {
           <p className="text-xs text-muted-foreground">Sin reuniones.</p>
         )}
       </div>
-      <div className="space-y-1.5">
-        <p className="text-[11px] font-medium text-muted-foreground">
+      <div className="min-w-0 space-y-1">
+        <p className="text-label-sm uppercase text-subtle-foreground">
           Espacios para accionables
           {d.taskCount > 0 && (
-            <span className="font-normal"> · planificados ≈{d.taskCount} ({fmt(d.taskHours)})</span>
+            <span className="normal-case">
+              {" "}
+              · planificados ≈{d.taskCount} ({fmt(d.taskHours)})
+            </span>
           )}
         </p>
         {d.gaps.length ? (
@@ -450,8 +500,8 @@ function DayDetail({ day: d }: { day: PlanDay }) {
               <span
                 key={i}
                 className={cn(
-                  "rounded-md px-2 py-1 text-xs tabular-nums",
-                  g.flex ? "border border-dashed border-foreground/20 text-muted-foreground" : "bg-series-2/15",
+                  "rounded-md px-2 py-0.5 text-[11px] tabular",
+                  g.flex ? "border border-dashed border-cal-flex text-muted-foreground" : "border border-cal-task/30 bg-cal-task/10",
                 )}
                 title={g.flex ? "Horario flexible" : "Horario normal"}
               >

@@ -1,8 +1,5 @@
 import {
   changeActionable,
-  clearBoardOverride,
-  getClientsFile,
-  setBoardOverride,
   setTicketDone,
   updateClient,
   updateClientProfile,
@@ -11,20 +8,8 @@ import {
   type ClientStatus,
 } from "@/lib/store/clients-store";
 import { getSettings } from "@/lib/store/settings-store";
-import { TRACKING_COLUMNS } from "@/lib/tracking";
-import { clientsToBoard } from "@/lib/utils/clients-to-board";
-import type { TrackingStatus } from "@/types/account";
 
 const STATUSES: ClientStatus[] = ["pending", "assigned", "unassigned", "ignored"];
-
-/** Tildar o agregar un punto devuelve su card al estado automático, aunque se hubiera ubicado a mano. */
-async function releaseCard(clientId: string, ticketId: string) {
-  const { clients } = await getClientsFile();
-  const client = clients.find((c) => c.id === clientId);
-  if (!client) return;
-  const cardId = clientsToBoard([client]).tickets.find((t) => t.id === ticketId)?.cardId;
-  if (cardId) await clearBoardOverride(clientId, cardId);
-}
 
 export async function PATCH(
   request: Request,
@@ -34,23 +19,11 @@ export async function PATCH(
   const body = (await request.json()) as {
     status?: ClientStatus;
     name?: string;
-    trackingStatus?: TrackingStatus;
     ticketId?: string;
     isDone?: boolean;
     profile?: Partial<ClientProfile>;
-    boardCard?: { id?: string; status?: TrackingStatus };
     actionable?: ActionableChange;
   };
-
-  if (body.boardCard) {
-    const { id: cardId, status } = body.boardCard;
-    if (typeof cardId !== "string" || !TRACKING_COLUMNS.some((c) => c.status === status)) {
-      return Response.json({ error: "invalid_card" }, { status: 400 });
-    }
-    const client = await setBoardOverride(decodeURIComponent(id), cardId, status!);
-    if (!client) return Response.json({ error: "not_found" }, { status: 404 });
-    return Response.json({ id: client.id, cardId, status });
-  }
 
   if (body.actionable) {
     const change = body.actionable;
@@ -75,7 +48,6 @@ export async function PATCH(
     }
     const result = await changeActionable(decodeURIComponent(id), parsed);
     if (!result) return Response.json({ error: "not_found" }, { status: 404 });
-    if (parsed.op === "add") await releaseCard(result.client.id, result.ticketId);
     return Response.json({ id: result.client.id, ticketId: result.ticketId });
   }
 
@@ -110,7 +82,6 @@ export async function PATCH(
   if (typeof body.ticketId === "string" && typeof body.isDone === "boolean") {
     const client = await setTicketDone(decodeURIComponent(id), body.ticketId, body.isDone);
     if (!client) return Response.json({ error: "not_found" }, { status: 404 });
-    await releaseCard(client.id, body.ticketId);
     return Response.json({
       id: client.id,
       doneTicketIds: client.doneTicketIds,
@@ -121,9 +92,6 @@ export async function PATCH(
   const patch: Parameters<typeof updateClient>[1] = {};
   if (body.status && STATUSES.includes(body.status)) patch.status = body.status;
   if (typeof body.name === "string" && body.name.trim()) patch.name = body.name.trim();
-  if (body.trackingStatus && TRACKING_COLUMNS.some((c) => c.status === body.trackingStatus)) {
-    patch.trackingStatus = body.trackingStatus;
-  }
 
   const client = await updateClient(decodeURIComponent(id), patch);
   if (!client) return Response.json({ error: "not_found" }, { status: 404 });

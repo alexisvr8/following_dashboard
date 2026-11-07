@@ -4,11 +4,16 @@
 
 @custom-variant dark (&:is(.dark *));
 
+/* Design system: design/design.md (escala zinc del texto descriptivo; del YAML solo
+   tipografía, radios y espaciado). Ningún componente define colores propios: todo sale de acá. */
 @theme inline {
   --color-background: var(--background);
   --color-foreground: var(--foreground);
+  --color-foreground-strong: var(--foreground-strong);
+  --color-subtle-foreground: var(--subtle-foreground);
+  --color-surface: var(--surface);
   --font-sans: var(--font-sans);
-  --font-mono: var(--font-geist-mono);
+  --font-mono: var(--font-mono);
   --font-heading: var(--font-sans);
   --color-sidebar-ring: var(--sidebar-ring);
   --color-sidebar-border: var(--sidebar-border);
@@ -23,12 +28,24 @@
   --color-chart-3: var(--chart-3);
   --color-chart-2: var(--chart-2);
   --color-chart-1: var(--chart-1);
-  --color-series-1: var(--series-1);
-  --color-series-2: var(--series-2);
+  --color-cal-client: var(--cal-client);
+  --color-cal-other: var(--cal-other);
+  --color-cal-task: var(--cal-task);
+  --color-cal-lunch: var(--cal-lunch);
+  --color-cal-flex: var(--cal-flex);
   --color-ring: var(--ring);
   --color-input: var(--input);
   --color-border: var(--border);
+  --color-border-strong: var(--border-strong);
+  --color-divider: var(--divider);
+  --color-row-divider: var(--row-divider);
   --color-destructive: var(--destructive);
+  --color-critical: var(--critical);
+  --color-critical-muted: var(--critical-muted);
+  --color-warning: var(--warning);
+  --color-warning-muted: var(--warning-muted);
+  --color-success: var(--success);
+  --color-success-muted: var(--success-muted);
   --color-accent-foreground: var(--accent-foreground);
   --color-accent: var(--accent);
   --color-muted-foreground: var(--muted-foreground);
@@ -41,87 +58,128 @@
   --color-popover: var(--popover);
   --color-card-foreground: var(--card-foreground);
   --color-card: var(--card);
-  --radius-sm: calc(var(--radius) * 0.6);
-  --radius-md: calc(var(--radius) * 0.8);
-  --radius-lg: var(--radius);
-  --radius-xl: calc(var(--radius) * 1.4);
-  --radius-2xl: calc(var(--radius) * 1.8);
-  --radius-3xl: calc(var(--radius) * 2.2);
-  --radius-4xl: calc(var(--radius) * 2.6);
+  /* rounded (YAML): micro 4px · componente 6–8px · contenedor 8–12px */
+  --radius-xs: 0.125rem;
+  --radius-sm: 0.25rem;
+  --radius-md: 0.375rem;
+  --radius-lg: 0.5rem;
+  --radius-xl: 0.75rem;
+  --radius-2xl: 0.75rem;
+  --radius-3xl: 0.75rem;
+  --radius-4xl: 0.5rem;
+  /* Elevación: solo popovers/modales llevan sombra (Tier 3). */
+  --shadow-popover: var(--elevation-popover);
+  --shadow-highlight: var(--inset-highlight);
 }
 
+/* Modo claro: misma estructura en zinc invertido. */
 :root {
-  --background: oklch(1 0 0);
-  --foreground: oklch(0.145 0 0);
-  --card: oklch(1 0 0);
-  --card-foreground: oklch(0.145 0 0);
-  --popover: oklch(1 0 0);
-  --popover-foreground: oklch(0.145 0 0);
-  --primary: oklch(0.205 0 0);
-  --primary-foreground: oklch(0.985 0 0);
-  --secondary: oklch(0.97 0 0);
-  --secondary-foreground: oklch(0.205 0 0);
-  --muted: oklch(0.97 0 0);
-  --muted-foreground: oklch(0.556 0 0);
-  --accent: oklch(0.97 0 0);
-  --accent-foreground: oklch(0.205 0 0);
-  --destructive: oklch(0.577 0.245 27.325);
-  --border: oklch(0.922 0 0);
-  --input: oklch(0.922 0 0);
-  --ring: oklch(0.708 0 0);
-  --chart-1: oklch(0.87 0 0);
-  --chart-2: oklch(0.556 0 0);
-  --chart-3: oklch(0.439 0 0);
-  --chart-4: oklch(0.371 0 0);
-  --chart-5: oklch(0.269 0 0);
-  /* Series validadas (dataviz validator, light/dark): reuniones / accionables */
-  --series-1: #2a78d6;
-  --series-2: #eb6834;
-  --radius: 0.625rem;
-  --sidebar: oklch(0.985 0 0);
-  --sidebar-foreground: oklch(0.145 0 0);
-  --sidebar-primary: oklch(0.205 0 0);
-  --sidebar-primary-foreground: oklch(0.985 0 0);
-  --sidebar-accent: oklch(0.97 0 0);
-  --sidebar-accent-foreground: oklch(0.205 0 0);
-  --sidebar-border: oklch(0.922 0 0);
-  --sidebar-ring: oklch(0.708 0 0);
+  --radius: 0.5rem;
+  --background: #fafafa;
+  --surface: #f4f4f5;
+  --foreground: #18181b;
+  --foreground-strong: #09090b;
+  --subtle-foreground: #a1a1aa;
+  --card: #ffffff;
+  --card-foreground: #18181b;
+  --popover: #ffffff;
+  --popover-foreground: #18181b;
+  --primary: #09090b;
+  --primary-foreground: #fafafa;
+  --secondary: #f4f4f5;
+  --secondary-foreground: #18181b;
+  --muted: #f4f4f5;
+  --muted-foreground: #52525b;
+  --accent: #e4e4e7;
+  --accent-foreground: #09090b;
+  --border: #e4e4e7;
+  --border-strong: #d4d4d8;
+  --divider: #d4d4d8;
+  --row-divider: rgba(9, 9, 11, 0.06);
+  --input: #e4e4e7;
+  --ring: rgba(9, 9, 11, 0.4);
+  --critical: #e11d48;
+  --critical-muted: #fff1f2;
+  --warning: #d97706;
+  --warning-muted: #fffbeb;
+  --success: #059669;
+  --success-muted: #ecfdf5;
+  --destructive: var(--critical);
+  --chart-1: #d4d4d8;
+  --chart-2: #a1a1aa;
+  --chart-3: #71717a;
+  --chart-4: #52525b;
+  --chart-5: #3f3f46;
+  /* Calendario: tonos sobrios (acero / arena), distinguibles también sin color por forma. */
+  --cal-client: #4b99d2; /* azul de reuniones con cliente */
+  --cal-other: #71717a;
+  --cal-task: #eb6834; /* naranja de la versión original del calendario */
+  --cal-lunch: #a1a1aa;
+  --cal-flex: #a1a1aa;
+  --elevation-popover: 0 8px 24px rgba(9, 9, 11, 0.12);
+  --inset-highlight: inset 0 1px 0 0 rgba(255, 255, 255, 0.6);
+  --sidebar: #f4f4f5;
+  --sidebar-foreground: #18181b;
+  --sidebar-primary: #09090b;
+  --sidebar-primary-foreground: #fafafa;
+  --sidebar-accent: #e4e4e7;
+  --sidebar-accent-foreground: #09090b;
+  --sidebar-border: #e4e4e7;
+  --sidebar-ring: rgba(9, 9, 11, 0.4);
 }
 
+/* Modo oscuro = Titanium Zinc Dark (design/design.md, sección Colors). */
 .dark {
-  --background: oklch(0.145 0 0);
-  --foreground: oklch(0.985 0 0);
-  --card: oklch(0.205 0 0);
-  --card-foreground: oklch(0.985 0 0);
-  --popover: oklch(0.205 0 0);
-  --popover-foreground: oklch(0.985 0 0);
-  --primary: oklch(0.922 0 0);
-  --primary-foreground: oklch(0.205 0 0);
-  --secondary: oklch(0.269 0 0);
-  --secondary-foreground: oklch(0.985 0 0);
-  --muted: oklch(0.269 0 0);
-  --muted-foreground: oklch(0.708 0 0);
-  --accent: oklch(0.269 0 0);
-  --accent-foreground: oklch(0.985 0 0);
-  --destructive: oklch(0.704 0.191 22.216);
-  --border: oklch(1 0 0 / 10%);
-  --input: oklch(1 0 0 / 15%);
-  --ring: oklch(0.556 0 0);
-  --chart-1: oklch(0.87 0 0);
-  --chart-2: oklch(0.556 0 0);
-  --chart-3: oklch(0.439 0 0);
-  --chart-4: oklch(0.371 0 0);
-  --chart-5: oklch(0.269 0 0);
-  --series-1: #3987e5;
-  --series-2: #d95926;
-  --sidebar: oklch(0.205 0 0);
-  --sidebar-foreground: oklch(0.985 0 0);
-  --sidebar-primary: oklch(0.488 0.243 264.376);
-  --sidebar-primary-foreground: oklch(0.985 0 0);
-  --sidebar-accent: oklch(0.269 0 0);
-  --sidebar-accent-foreground: oklch(0.985 0 0);
-  --sidebar-border: oklch(1 0 0 / 10%);
-  --sidebar-ring: oklch(0.556 0 0);
+  --background: #09090b; /* Obsidian Ground */
+  --surface: #121214; /* Titanium Base */
+  --foreground: #f4f4f5; /* Off-White */
+  --foreground-strong: #ffffff; /* Pure White */
+  --subtle-foreground: #71717a; /* Titanium Muted */
+  --card: #18181b; /* Zinc Elevated */
+  --card-foreground: #f4f4f5;
+  --popover: #18181b;
+  --popover-foreground: #f4f4f5;
+  --primary: #ffffff;
+  --primary-foreground: #09090b;
+  --secondary: #18181b;
+  --secondary-foreground: #f4f4f5;
+  --muted: #27272a; /* Zinc Hover / Active */
+  --muted-foreground: #a1a1aa; /* Zinc Medium */
+  --accent: #27272a;
+  --accent-foreground: #ffffff;
+  --border: rgba(255, 255, 255, 0.08);
+  --border-strong: rgba(255, 255, 255, 0.16);
+  --divider: #3f3f46; /* Zinc Deep */
+  --row-divider: rgba(255, 255, 255, 0.04);
+  --input: #27272a;
+  --ring: rgba(255, 255, 255, 0.4);
+  --critical: #f43f5e; /* Critical Ruby */
+  --critical-muted: #4c0519;
+  --warning: #f59e0b; /* Attention Amber */
+  --warning-muted: #451a03;
+  --success: #10b981; /* Operational Emerald */
+  --success-muted: #022c22;
+  --destructive: var(--critical);
+  --chart-1: #f4f4f5;
+  --chart-2: #a1a1aa;
+  --chart-3: #71717a;
+  --chart-4: #3f3f46;
+  --chart-5: #27272a;
+  --cal-client: #4b99d2; /* azul de reuniones con cliente */
+  --cal-other: #71717a;
+  --cal-task: #d95926; /* naranja de la versión original del calendario */
+  --cal-lunch: #71717a;
+  --cal-flex: #52525b;
+  --elevation-popover: 0 8px 32px rgba(0, 0, 0, 0.6);
+  --inset-highlight: inset 0 1px 0 0 rgba(255, 255, 255, 0.06);
+  --sidebar: #121214;
+  --sidebar-foreground: #f4f4f5;
+  --sidebar-primary: #ffffff;
+  --sidebar-primary-foreground: #09090b;
+  --sidebar-accent: #27272a;
+  --sidebar-accent-foreground: #ffffff;
+  --sidebar-border: rgba(255, 255, 255, 0.08);
+  --sidebar-ring: rgba(255, 255, 255, 0.4);
 }
 
 @layer base {
@@ -130,8 +188,38 @@
   }
   body {
     @apply bg-background text-foreground;
+    -webkit-font-smoothing: antialiased;
+    -moz-osx-font-smoothing: grayscale;
   }
   html {
     @apply font-sans;
+    letter-spacing: -0.005em; /* body-md */
   }
+  h1,
+  h2,
+  h3 {
+    letter-spacing: -0.015em; /* headline-sm */
+  }
+}
+
+/* Telemetría (JetBrains Mono): label-sm 11px / label-md 13px, cifras tabulares. */
+@utility text-label-sm {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  line-height: 14px;
+  font-weight: 500;
+  letter-spacing: 0.02em;
+  font-variant-numeric: tabular-nums;
+}
+@utility text-label-md {
+  font-family: var(--font-mono);
+  font-size: 13px;
+  line-height: 16px;
+  font-weight: 500;
+  letter-spacing: -0.01em;
+  font-variant-numeric: tabular-nums;
+}
+@utility tabular {
+  font-family: var(--font-mono);
+  font-variant-numeric: tabular-nums;
 }

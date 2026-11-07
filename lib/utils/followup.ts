@@ -15,7 +15,7 @@ import { parseStep, type StepDue } from "@/lib/utils/gemini-notes-parser";
 
 // Borradores por reglas (sin LLM), recalculados con cada mail, reunión o accionable tildado.
 // Follow-up: hitos, decisiones y accionables para la próxima sesión (última minuta + arrastrados +
-// pedidos por mail). Seguimiento: avances del tablero desde mi último mail posterior a la reunión,
+// pedidos por mail). Seguimiento: accionables finalizados desde mi último mail posterior a la reunión,
 // partiendo de la última interacción. Se persisten solo al editarlos, crear el draft en Gmail o
 // enviarlos (`client.followups`). Lo que requiere revisión va en `reviewNotes`,
 // nunca en el cuerpo: los borradores automáticos llegan a Gmail sin pasar por la UI.
@@ -239,7 +239,7 @@ function greet(recipients: { email: string; name: string | null }[], client: Cli
   return client.profile?.emailName ? `Hola equipo de ${client.profile.emailName},` : "Hola equipo,";
 }
 
-/** Follow-up: hitos y decisiones de la reunión + accionables vigentes, al día con mails y tablero. */
+/** Follow-up: hitos y decisiones de la reunión + accionables vigentes, al día con mails y accionables tildados. */
 export function buildFollowup(
   client: ClientRecord,
   meeting: DiscoveredMeeting,
@@ -333,7 +333,7 @@ export function buildStatusUpdate(
     due: parseStep(a.step, a.meeting.date).due,
     side: stepSide(a.step, client, ownerEmail, settings),
   }));
-  // Avances = tildados en el tablero desde mi último mail posterior a la reunión (o desde la reunión).
+  // Avances = accionables tildados desde mi último mail posterior a la reunión (o desde la reunión).
   const lastMine = (client.activity?.recentMails ?? [])
     .filter((m) => m.direction === "me" && m.date > meeting.date)
     .reduce<MailRef | null>((last, m) => (!last || m.date > last.date ? m : last), null);
@@ -356,7 +356,7 @@ export function buildStatusUpdate(
   const anchorMail = interaction.kind === "mail" ? interaction.mail : null;
   const pending = steps.filter((s) => !s.done);
   // Trazabilidad: lo pendiente que ya se habló por mail va aparte. No se da por completado: eso lo
-  // define el tablero, porque la relación se detecta por palabras clave.
+  // define lo tildado, porque la relación se detecta por palabras clave.
   const trace = mailTrace(client, meeting);
   const related = pending.filter((s) => trace.has(s.id));
   const open = pending.filter((s) => !trace.has(s.id));

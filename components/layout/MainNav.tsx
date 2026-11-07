@@ -3,19 +3,19 @@
 import { useEffect, useRef, useState } from "react";
 import Link from "next/link";
 import { usePathname } from "next/navigation";
-import { KanbanSquare, LayoutDashboard, Menu, Plug, Users, X } from "lucide-react";
+import { Building2, LayoutDashboard, Menu, Plug, Users, X } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
 
 const NAV_ITEMS = [
   { href: "/", label: "Dashboard", icon: LayoutDashboard },
-  { href: "/tablero", label: "Tablero Seguimiento", icon: KanbanSquare },
+  { href: "/cuentas", label: "Cuentas", icon: Building2 },
   { href: "/clientes", label: "Clientes", icon: Users },
   { href: "/conexiones", label: "Conexiones", icon: Plug },
 ];
 
 function isActive(pathname: string, href: string) {
-  if (href === "/") return pathname === "/" || pathname.startsWith("/cuentas");
+  if (href === "/") return pathname === "/";
   return pathname === href || pathname.startsWith(`${href}/`);
 }
 
@@ -77,7 +77,7 @@ export function MobileNav() {
         {open ? <X className="size-4" /> : <Menu className="size-4" />}
       </Button>
       {open && (
-        <nav className="absolute top-full right-0 mt-2 w-56 origin-top-right animate-in fade-in-0 zoom-in-95 rounded-xl bg-popover p-1.5 shadow-lg ring-1 ring-foreground/10 duration-150">
+        <nav className="absolute top-full right-0 mt-2 w-56 origin-top-right animate-in fade-in-0 zoom-in-95 rounded-lg border border-border-strong bg-popover p-1.5 shadow-popover backdrop-blur-md duration-150">
           {NAV_ITEMS.map(({ href, label, icon: Icon }) => {
             const active = isActive(pathname, href);
             return (

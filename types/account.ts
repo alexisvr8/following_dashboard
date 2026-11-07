@@ -4,11 +4,6 @@ export type PriorityQuadrant =
   | "fill_in"
   | "thankless_task";
 
-export type TrackingStatus =
-  | "tasks_generated"
-  | "tasks_in_progress"
-  | "tasks_priority"
-  | "tasks_done";
 
 export interface Account {
   id: string;
@@ -21,7 +16,6 @@ export interface Account {
   executionMinutesActual: number;
   engagementPercent: number | null;
   lastActivityAt: string | null;
-  trackingStatus: TrackingStatus;
   lastNoteSummary: string | null;
   erp?: string | null;
   referentCount?: number;

@@ -1,5 +1,5 @@
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
-import { Badge } from "@/components/ui/badge";
+import { Badge, StatusDot } from "@/components/ui/badge";
 import type { IntegrationStatus } from "@/types/integration";
 
 const LABEL: Record<IntegrationStatus["integrationKey"], string> = {
@@ -16,6 +16,8 @@ const STATUS_LABEL: Record<IntegrationStatus["status"], string> = {
   error: "Error",
 };
 
+const STATUS_TONE = { connected: "success", error: "critical", not_configured: "outline" } as const;
+
 export function IntegrationStatusCard({ integration }: { integration: IntegrationStatus }) {
   return (
     <Card>
@@ -23,10 +25,11 @@ export function IntegrationStatusCard({ integration }: { integration: Integratio
         <CardTitle className="text-sm">{LABEL[integration.integrationKey]}</CardTitle>
       </CardHeader>
       <CardContent className="flex items-center justify-between text-xs text-muted-foreground">
-        <Badge variant={integration.status === "connected" ? "default" : "secondary"}>
+        <Badge variant={STATUS_TONE[integration.status]}>
+          {integration.status !== "not_configured" && <StatusDot tone={STATUS_TONE[integration.status] as "success" | "critical"} />}
           {STATUS_LABEL[integration.status]}
         </Badge>
-        <span>{integration.lastSyncedAt ? `Última sync: ${integration.lastSyncedAt}` : "Sin sincronizar"}</span>
+        <span className="tabular">{integration.lastSyncedAt ? `Última sync: ${integration.lastSyncedAt}` : "Sin sincronizar"}</span>
       </CardContent>
     </Card>
   );

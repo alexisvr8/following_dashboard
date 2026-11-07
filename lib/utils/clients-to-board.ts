@@ -4,7 +4,6 @@ import type { Meeting } from "@/types/meeting";
 import type { Ticket } from "@/types/ticket";
 import { computeEngagementPercent } from "@/lib/utils/engagement";
 import { computeParticipants } from "@/lib/utils/participants";
-import { assignCards } from "@/lib/utils/board-status";
 import { mailTickets, relatedMailNote } from "@/lib/utils/mail-tickets";
 import { accountActionables } from "@/lib/utils/actionables";
 import { lastMovement } from "@/lib/utils/followup-alerts";
@@ -18,9 +17,9 @@ function mondayOf(isoDate: string): string {
   return d.toISOString().slice(0, 10);
 }
 
-// Proyecta clientes de `.data/clients.json` a los tipos de Dashboard/Tablero.
+// Proyecta clientes de `.data/clients.json` a los tipos de Dashboard/Cuentas.
 // - ids de meeting/ticket con prefijo del cliente: una misma reunión puede tener 2 clientes.
-// - Tickets = accionables vigentes (ver actionables.ts), agrupados en cards del Tablero (`assignCards`);
+// - Tickets = accionables vigentes (ver actionables.ts);
 //   engagement = % de esos tickets marcados como hechos.
 // - calendarMinutesPlanned = minutos en reuniones de los últimos 30 días (Calendar).
 //   executionMinutesActual queda en 0: no hay fuente de tiempo de ejecución real todavía.
@@ -100,7 +99,6 @@ export function clientsToBoard(
         origin: "mail",
       });
     }
-    assignCards(client.id, clientTickets);
     tickets.push(...clientTickets);
     const movement = lastMovement(client, now);
 
@@ -131,7 +129,6 @@ export function clientsToBoard(
       lastActivityAt: latest?.date ?? null,
       lastMovementAt: movement?.at ?? null,
       lastMovementLabel: movement?.label ?? null,
-      trackingStatus: client.trackingStatus ?? "tasks_generated",
       lastNoteSummary: latest?.summary ?? null,
       erp: client.profile?.erp ?? null,
       referentCount: computeParticipants(client, ownerEmail).filter((p) => p.role === "referent").length,

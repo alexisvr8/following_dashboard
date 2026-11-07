@@ -48,7 +48,7 @@ export function LastChain({
                     {formatShortDate(m.date)} · {daysAgo(m.date)}
                   </span>
                 </summary>
-                <div className="mt-1.5 space-y-1 rounded-md bg-muted/40 p-2.5">
+                <div className="mt-1.5 space-y-1 rounded-md border border-border bg-surface p-2.5">
                   <p className="whitespace-pre-line text-muted-foreground">{m.excerpt || "Sin texto."}</p>
                   <a
                     href={`https://mail.google.com/mail/#all/${m.threadId}`}

@@ -7,15 +7,19 @@ const buttonVariants = cva(
   {
     variants: {
       variant: {
-        default: "bg-primary text-primary-foreground hover:bg-primary/80",
+        // design.md › Buttons: primario blanco/obsidiana con luminiscencia sutil al hover.
+        default:
+          "bg-primary font-semibold text-primary-foreground hover:bg-primary/90 hover:shadow-[0_0_12px_color-mix(in_srgb,var(--primary)_15%,transparent)]",
+        // Secundario: superficie card + micro-borde; hover #27272a y borde más claro.
         outline:
-          "border-border bg-background hover:bg-muted hover:text-foreground aria-expanded:bg-muted aria-expanded:text-foreground dark:border-input dark:bg-input/30 dark:hover:bg-input/50",
+          "border-border bg-card text-foreground hover:border-border-strong hover:bg-accent hover:text-accent-foreground aria-expanded:bg-accent aria-expanded:text-accent-foreground",
         secondary:
-          "bg-secondary text-secondary-foreground hover:bg-[color-mix(in_oklch,var(--secondary),var(--foreground)_5%)] aria-expanded:bg-secondary aria-expanded:text-secondary-foreground",
+          "border-border bg-card text-secondary-foreground hover:border-border-strong hover:bg-accent aria-expanded:bg-accent",
+        // Ghost: texto secundario; hover a superficie card y texto blanco.
         ghost:
-          "hover:bg-muted hover:text-foreground aria-expanded:bg-muted aria-expanded:text-foreground dark:hover:bg-muted/50",
+          "text-muted-foreground hover:bg-card hover:text-foreground-strong aria-expanded:bg-card aria-expanded:text-foreground-strong",
         destructive:
-          "bg-destructive/10 text-destructive hover:bg-destructive/20 focus-visible:border-destructive/40 focus-visible:ring-destructive/20 dark:bg-destructive/20 dark:hover:bg-destructive/30 dark:focus-visible:ring-destructive/40",
+          "border-critical/30 bg-critical-muted text-critical hover:border-critical/60 focus-visible:border-critical/40 focus-visible:ring-critical/20",
         link: "text-primary underline-offset-4 hover:underline",
       },
       size: {

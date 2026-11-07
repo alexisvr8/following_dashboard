@@ -68,8 +68,8 @@ export function ActivityPanel({
         {error && <p className="text-xs text-destructive">{error}</p>}
 
         {missingNotes && (
-          <div className="flex gap-2 rounded-md border border-amber-500/40 bg-amber-500/10 p-3 text-xs">
-            <AlertTriangle className="size-4 shrink-0 text-amber-600" />
+          <div className="flex gap-2 rounded-md border border-warning/25 bg-warning-muted p-3 text-xs">
+            <AlertTriangle className="size-4 shrink-0 text-warning" />
             <p>
               La última reunión en Calendar (<b>{cal.title}</b>, {formatShortDate(cal.date)}) no tiene minuta de
               Gemini. Los accionables mostrados son de la minuta anterior.
@@ -130,7 +130,7 @@ function MailItem({
   const mine = mail.direction === "me" || mail.direction === "team";
   const badge = mail.direction === "me" ? "Vos" : mail.direction === "team" ? "Equipo" : "Cliente";
   return (
-    <div className={`space-y-1.5 rounded-md border p-3 ${highlight ? "" : "bg-muted/30"}`}>
+    <div className={`space-y-1.5 rounded-md border p-3 ${highlight ? "" : "bg-surface"}`}>
       <div className="flex items-start justify-between gap-2">
         <div className="min-w-0">
           <p className="flex items-center gap-1.5 truncate font-medium">

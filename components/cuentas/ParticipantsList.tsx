@@ -79,23 +79,24 @@ export function ParticipantsList({
                 <h4 className="text-xs font-medium">{label}</h4>
                 <span className="text-[11px] text-muted-foreground">{hint}</span>
               </div>
-              <ul className="grid gap-2 sm:grid-cols-2">
+              {/* Una fila por participante: nombre y mail completos (envuelven en vez de cortarse). */}
+              <ul className="divide-y divide-row-divider overflow-hidden rounded-lg border bg-card">
                 {list.map((p) => (
-                  <li key={p.email} className="flex items-center gap-3 rounded-lg border px-3 py-2">
+                  <li key={p.email} className="flex items-start gap-2.5 px-2.5 py-2 transition-colors hover:bg-surface">
                     <span
                       className={cn(
-                        "flex size-8 shrink-0 items-center justify-center rounded-full text-xs font-semibold",
+                        "mt-0.5 flex size-7 shrink-0 items-center justify-center rounded-full text-[11px] font-semibold",
                         role === "owner" && "bg-primary text-primary-foreground",
-                        role === "referent" && "bg-amber-500/15 text-amber-700 dark:text-amber-400",
+                        role === "referent" && "bg-warning-muted text-warning",
                         (role === "team" || role === "external") && "bg-muted text-muted-foreground",
                       )}
                     >
                       {initials(p)}
                     </span>
                     <div className="min-w-0 flex-1">
-                      <p className="truncate text-sm font-medium">{displayName(p)}</p>
-                      <p className="truncate text-xs text-muted-foreground" title={p.email}>{p.email}</p>
-                      <p className="text-[11px] text-muted-foreground">
+                      <p className="text-[13px] font-medium leading-snug break-words text-foreground">{displayName(p)}</p>
+                      <p className="text-xs leading-snug break-all text-muted-foreground">{p.email}</p>
+                      <p className="mt-0.5 text-[11px] text-subtle-foreground">
                         {p.meetingCount
                           ? `${p.meetingCount} ${p.meetingCount === 1 ? "reunión" : "reuniones"} · última ${formatShortDate(p.lastSeenAt!)}`
                           : "Sin asistencia registrada"}
@@ -106,11 +107,11 @@ export function ParticipantsList({
                       <button
                         type="button"
                         onClick={() => toggleReferent(p)}
-                        className="rounded-md p-1 text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
+                        className="shrink-0 rounded-md p-1 text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
                         aria-label={role === "referent" ? "Quitar como referente" : "Marcar como referente"}
                         title={role === "referent" ? "Quitar como referente" : "Marcar como referente"}
                       >
-                        <Star className={cn("size-4", role === "referent" && "fill-amber-400 text-amber-500")} />
+                        <Star className={cn("size-4", role === "referent" && "fill-warning text-warning")} />
                       </button>
                     )}
                   </li>
