@@ -2,6 +2,7 @@
 
 import { useState } from "react";
 import Link from "next/link";
+import { useParams } from "next/navigation";
 import { Search, X } from "lucide-react";
 import { Badge, StatusDot } from "@/components/ui/badge";
 import { computeChurnRisk } from "@/lib/utils/churn";
@@ -21,6 +22,15 @@ export type DirectoryRow = {
   pendingActionables: number;
 };
 
+type Tab = "assigned" | "unassigned";
+const safeDecode = (s: string) => {
+  try {
+    return decodeURIComponent(s);
+  } catch {
+    return s;
+  }
+};
+
 type RiskFilter = "all" | "red" | "yellow";
 const RISK_FILTERS: { value: RiskFilter; label: string; tone?: "critical" | "warning" }[] = [
   { value: "all", label: "Todas" },
@@ -33,17 +43,21 @@ const sortRows = (rows: DirectoryRow[]) => rows.slice().sort((a, b) => byMovemen
 
 // Directorio compacto de cuentas: tabs Asignadas/No asignadas, buscador por nombre/dominio/ERP y
 // títulos Hoy/Ayer/Esta semana/Anteriores según el último movimiento.
-export function AccountDirectory({
-  rows,
-  selectedId,
-  tab,
-}: {
-  rows: DirectoryRow[];
-  selectedId: string | null;
-  tab: "assigned" | "unassigned";
-}) {
+// Vive en el layout de /cuentas: la cuenta abierta sale de la URL (`/cuentas/[id]`), así la selección
+// se marca apenas se hace click, sin esperar al servidor.
+export function AccountDirectory({ rows }: { rows: DirectoryRow[] }) {
+  const params = useParams<{ id?: string }>();
+  const selectedId = params.id ? safeDecode(params.id) : null;
+  const tabOf = (id: string | null): Tab =>
+    rows.find((r) => r.account.id === id)?.account.isAssigned === false ? "unassigned" : "assigned";
   const [query, setQuery] = useState("");
-  const [current, setCurrent] = useState(tab);
+  const [current, setCurrent] = useState<Tab>(() => tabOf(selectedId));
+  // Si se abre una cuenta de la otra pestaña (link externo, alerta), el directorio la sigue.
+  const [lastSelected, setLastSelected] = useState(selectedId);
+  if (lastSelected !== selectedId) {
+    setLastSelected(selectedId);
+    setCurrent(tabOf(selectedId));
+  }
   const q = norm(query.trim());
   const visible = sortRows(q ? rows.filter((r) => norm(`${r.account.name} ${r.account.id} ${r.account.erp ?? ""}`).includes(q)) : rows);
   const assigned = visible.filter((r) => r.account.isAssigned);
@@ -61,7 +75,7 @@ export function AccountDirectory({
 
   return (
     <div className="flex min-h-0 flex-col gap-2.5 rounded-xl border border-border bg-surface p-3">
-      <Tabs value={current} onValueChange={(v) => setCurrent(v as typeof tab)}>
+      <Tabs value={current} onValueChange={(v) => setCurrent(v as Tab)}>
         <TabsList className="w-full">
           <TabsTrigger value="assigned">
             Asignadas <span className="tabular text-[11px]">{assigned.length}</span>
@@ -132,7 +146,7 @@ export function AccountDirectory({
                     <span aria-hidden className="h-px flex-1 bg-divider" />
                   </h3>
                 )}
-                <Row row={row} tab={current} active={row.account.id === selectedId} />
+                <Row row={row} active={row.account.id === selectedId} />
               </li>
             );
           })}
@@ -142,11 +156,11 @@ export function AccountDirectory({
   );
 }
 
-function Row({ row, tab, active }: { row: DirectoryRow; tab: string; active: boolean }) {
+function Row({ row, active }: { row: DirectoryRow; active: boolean }) {
   const { account: a, latestMeeting } = row;
   return (
     <Link
-      href={`/cuentas?id=${encodeURIComponent(a.id)}&tab=${tab}`}
+      href={`/cuentas/${encodeURIComponent(a.id)}`}
       scroll={false}
       aria-current={active ? "page" : undefined}
       className={cn(

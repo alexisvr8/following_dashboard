@@ -138,7 +138,7 @@ export function AccountWorkspace({
                 />
                 {changes > 0 && (
                   <Link
-                    href={`/cuentas?id=${encodeURIComponent(clientId)}&borrador=status#borradores`}
+                    href={`/cuentas/${encodeURIComponent(clientId)}?borrador=status#borradores`}
                     scroll
                     className="flex items-center justify-between gap-2 rounded-md border border-border-strong bg-surface px-3 py-2 text-xs font-medium text-foreground-strong hover:bg-accent"
                   >

@@ -268,6 +268,16 @@ export async function getClientsFile(): Promise<ClientsFile> {
   };
 }
 
+/** Una sola cuenta + `ownerEmail`, sin traer el resto de las filas (vista de detalle). */
+export async function getClient(id: string): Promise<{ client: ClientRecord | null; ownerEmail: string | null }> {
+  if (!usingSupabase()) {
+    const file = await readLocalFile();
+    return { client: file.clients.find((c) => c.id === id) ?? null, ownerEmail: file.ownerEmail ?? null };
+  }
+  const [rows, meta] = await Promise.all([fetchRows([id]), getState<ClientsMeta>("clients_meta")]);
+  return { client: rows[0]?.data ?? null, ownerEmail: meta?.ownerEmail ?? null };
+}
+
 /** Devolverlo desde un mutador = no hubo cambios, no se escribe. */
 const SKIP: unique symbol = Symbol("skip");
 type Mutator<R> = (client: ClientRecord) => R | typeof SKIP;

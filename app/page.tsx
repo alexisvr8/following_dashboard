@@ -1,3 +1,4 @@
+import { Suspense } from "react";
 import Link from "next/link";
 import { WeekPlanner } from "@/components/dashboard/WeekPlanner";
 import { KeyNumbers } from "@/components/dashboard/KeyNumbers";
@@ -5,29 +6,36 @@ import { FollowupAlerts } from "@/components/dashboard/FollowupAlerts";
 import type { FollowupPanelData } from "@/components/dashboard/FollowupPanel";
 import { computeAlerts } from "@/lib/utils/followup-alerts";
 import { listEventsBetween } from "@/lib/integrations/calendar";
-import { getClientsFile } from "@/lib/store/clients-store";
-import { getSettings } from "@/lib/store/settings-store";
-import { computeWeekPlan, hasWorkLeftThisWeek, planWeekBounds } from "@/lib/utils/week-plan";
+import { getClientsFileCached, getSettingsCached } from "@/lib/server/cached-data";
+import type { WorkSettings } from "@/lib/store/settings-store";
+import { computeWeekPlan, hasWorkLeftThisWeek, planWeekBounds, type WeekPlan } from "@/lib/utils/week-plan";
 import { clientsToBoard } from "@/lib/utils/clients-to-board";
 import { getDraft } from "@/lib/utils/followup";
+import type { Account } from "@/types/account";
+import type { Ticket } from "@/types/ticket";
 
-// Datos reales: clientes validados en /clientes (asignados + no asignados) desde
-// `.data/clients.json`, leídos en cada request. Las cuentas viven en /cuentas.
+// Datos reales: clientes validados en /clientes (asignados + no asignados), leídos en cada request.
+// Supabase (clientes + settings) va en paralelo; Google Calendar (lo más lento) no bloquea: Números y
+// Capacidad llegan por streaming (Suspense) y Seguimiento se muestra apenas están los clientes.
 export const dynamic = "force-dynamic";
 
 export default async function Home({ searchParams }: { searchParams: Promise<{ semana?: string }> }) {
-  const { semana } = await searchParams;
-  const { clients, ownerEmail } = await getClientsFile();
+  const [{ semana }, { clients, ownerEmail }, settings] = await Promise.all([
+    searchParams,
+    getClientsFileCached(),
+    getSettingsCached(),
+  ]);
   const validated = clients.filter((c) => c.status === "assigned" || c.status === "unassigned");
   const pendingCount = clients.filter((c) => c.status === "pending").length;
   const { accounts, tickets } = clientsToBoard(validated, new Date(), ownerEmail ?? null);
-  const settings = await getSettings();
   // Fin de semana / jornada terminada → por defecto se planifica la semana siguiente.
   const now = new Date();
   const offset = semana === "0" || semana === "1" ? Number(semana) : hasWorkLeftThisWeek(now, settings) ? 0 : 1;
   const { start, end } = planWeekBounds(now, offset);
-  const weekEvents = await listEventsBetween(start, end).catch(() => null);
-  const plan = computeWeekPlan(clients, settings, weekEvents, offset, now);
+  // Sin await: la promesa la consumen Números y Capacidad dentro de sus Suspense.
+  const planPromise = listEventsBetween(start, end)
+    .catch(() => null)
+    .then((weekEvents) => computeWeekPlan(clients, settings, weekEvents, offset, now));
   const alerts = computeAlerts(clients, settings, now);
   const lastSyncAt =
     clients.map((c) => c.activity?.syncedAt).filter((x): x is string => !!x).sort().at(-1) ?? null;
@@ -69,12 +77,16 @@ export default async function Home({ searchParams }: { searchParams: Promise<{ s
         <>
           <section className="shrink-0 space-y-2">
             <h2 className="text-label-sm uppercase text-subtle-foreground">Números</h2>
-            <KeyNumbers plan={plan} accounts={accounts} tickets={tickets} />
+            <Suspense fallback={<div className="h-24 animate-pulse rounded-xl border border-border bg-card" />}>
+              <Numbers plan={planPromise} accounts={accounts} tickets={tickets} />
+            </Suspense>
           </section>
 
           <div className="grid gap-6 xl:min-h-0 xl:flex-1 xl:grid-cols-[minmax(0,2fr)_minmax(0,1fr)] xl:grid-rows-[minmax(0,1fr)]">
             <section className="min-w-0 xl:min-h-0">
-              <WeekPlanner plan={plan} settings={settings} />
+              <Suspense fallback={<div className="h-full min-h-96 animate-pulse rounded-xl border border-border bg-card" />}>
+                <Capacity plan={planPromise} settings={settings} />
+              </Suspense>
             </section>
 
             <section className="min-w-0 xl:min-h-0">
@@ -98,4 +110,12 @@ export default async function Home({ searchParams }: { searchParams: Promise<{ s
       )}
     </div>
   );
+}
+
+async function Numbers({ plan, accounts, tickets }: { plan: Promise<WeekPlan>; accounts: Account[]; tickets: Ticket[] }) {
+  return <KeyNumbers plan={await plan} accounts={accounts} tickets={tickets} />;
+}
+
+async function Capacity({ plan, settings }: { plan: Promise<WeekPlan>; settings: WorkSettings }) {
+  return <WeekPlanner plan={await plan} settings={settings} />;
 }
