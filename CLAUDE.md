@@ -18,13 +18,13 @@ variantes semánticas + `StatusDot`, `input.tsx` = `inputClass`).
 
 ## Navegación
 Nav horizontal centrada en el header sticky (`components/layout/{AppHeader,MainNav}.tsx`; en <md
-se vuelve menú desplegable `MobileNav`). Sin sidebar. 4 secciones (`/cuentas/[id]` redirige a `/cuentas?id=`):
+se vuelve menú desplegable `MobileNav`). Sin sidebar. 4 secciones. Navegación rápida: Router Cache `staleTimes.dynamic=120` (`next.config.ts`; `router.refresh()` lo invalida), lecturas deduplicadas por request en `lib/server/cached-data.ts` (`cache()` de React), Dashboard con Supabase en paralelo y Números/Capacidad por streaming (`Suspense`, Calendar no bloquea):
 - `/` Dashboard (**datos reales**, clientes `assigned`/`unassigned` de `.data/clients.json` vía
   `clientsToBoard`), ancho completo; en xl mide exactamente la pantalla (sin scroll de página: la jornada del calendario se reparte el alto disponible; solo la lista de Seguimiento scrollea). **Números** `KeyNumbers` arriba; debajo grilla 2/3 | 1/3 (xl, alineadas arriba; <xl Seguimiento abajo con tarjetas en 2–3 columnas): **Capacidad** `WeekPlanner` (barra de encabezado, 5 tarjetas resumen en una fila, calendario proporcional estilo Google Calendar (bloques según duración, solapes en carriles `layoutBlocks`, detalle al hover), tarjeta de agenda/espacios/leyenda) | **Seguimiento**
   `FollowupAlerts` (alto de la fila, scroll interno solo en la lista; una tarjeta por cuenta, primero las que esperan respuesta y luego por días hábiles): cada acción (Responder / Enviar actualización / Hacer seguimiento) abre `FollowupPanel` (Dialog centrado, hilo | borrador; click afuera o Esc cierra):
   hilo completo del último mail (`GET /api/clients/[id]/thread/[threadId]`, más nuevo primero) + `FollowupComposer`
   `status` precalculado en `app/page.tsx` con `getDraft`.
-- `/cuentas` (`app/cuentas/page.tsx`, `?id=&tab=assigned|unassigned&borrador=status`): 3 columnas a una pantalla en `lg`
+- `/cuentas/[id]` (`?borrador=status`; `app/cuentas/page.tsx` solo redirige: `?id=` de links viejos → `/cuentas/[id]`, sin id → primera cuenta de `?tab=`). `app/cuentas/layout.tsx` = directorio (todas las cuentas, no se re-renderiza al cambiar de cuenta); `[id]/page.tsx` = workspace leyendo solo esa fila (`getClient`), `[id]/loading.tsx` = esqueleto: 3 columnas a una pantalla en `lg`
   (se apilan en móvil). Izq. `AccountDirectory` (tabs Asignadas/No asignadas, filtro Todas/En riesgo/Atención por `computeChurnRisk`, buscador nombre/dominio/ERP, filas
   ordenadas por `lastMovement` con títulos Hoy/Ayer/Esta semana/Anteriores, `lib/utils/movement.ts`); default = primera.
   Centro + der. = `AccountWorkspace` (datos de `lib/server/account-view.ts` `loadAccountView`): una card con encabezado

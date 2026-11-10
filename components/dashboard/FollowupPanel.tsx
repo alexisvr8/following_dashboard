@@ -45,7 +45,7 @@ export function FollowupPanel({
             </span>{" "}
             ·{" "}
             <Link
-              href={`/cuentas?id=${encodeURIComponent(alert.clientId)}&borrador=status#borradores`}
+              href={`/cuentas/${encodeURIComponent(alert.clientId)}?borrador=status#borradores`}
               className="inline-flex items-center gap-1 font-medium text-foreground-strong no-underline hover:underline"
             >
               Abrir cuenta <ArrowRight className="size-3" />
