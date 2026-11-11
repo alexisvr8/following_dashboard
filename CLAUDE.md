@@ -78,7 +78,7 @@ pnpm install · pnpm dev · pnpm build · pnpm lint · pnpm migrate:supabase · 
 ## Persistencia (Supabase o archivo) — resumen
 `lib/store/backend.ts`: `usingSupabase()` (`STORE_BACKEND=supabase|file`; vacío = supabase si hay
 `SUPABASE_SERVICE_ROLE_KEY`), `getState/setState(key)` sobre `app_state` (o `.data/*.json`). Cliente servidor
-`lib/supabase/admin.ts` (service_role, sin cookies: sirve en el scheduler). Esquema vigente
+`lib/supabase/admin.ts` (service_role, sin cookies: sirve en el scheduler; `fetch` con reintentos `lib/supabase/fetch-retry.ts`: 52x/502–504/timeouts/red, 3 reintentos 0,5/1,5/3,5 s, 15 s por intento, error JSON corto en vez del HTML de Cloudflare). Esquema vigente
 `supabase/migrations/0002_app_store.sql`: `clients` (una fila por cliente: `id`, `seq` = orden, `status`/`name`/`domain`
 sueltos, `data jsonb` = `ClientRecord`, `version` para control optimista) y `app_state` (`clients_meta`,
 `clients_unmatched`, `settings`, `sync_status`, `google_tokens`, `notion_tokens`). RLS sin políticas: solo service_role.
