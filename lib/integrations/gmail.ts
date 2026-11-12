@@ -71,39 +71,97 @@ const encodeHeader = (s: string) =>
 const escapeHtml = (s: string) =>
   s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
 
-// "- Status: Hecho|Pendiente (dd/mm)" al final de un punto → "Status:" en negrita; "Hecho" en negrita verde (Gmail
-// conserva estilos inline). Funciona también si lo escribís a mano en el editor.
-const STATUS_RE = /\s[—-]\s*Status:\s*(Hecho|Pendiente)(\s*\([^)]*\))?\s*$/i;
-const DONE_GREEN = "#188038";
+// "- Status: Hecho|En curso|Pendiente (dd/mm)" al final de un punto → "Status:" en negrita y el valor en negrita con
+// color; la fecha va después, sin color. Gmail/Outlook descartan <style> y clases: todo inline. Funciona también si lo
+// escribís a mano en el editor.
+const STATUS_RE = /\s[—-]\s*Status:\s*(Hecho|En curso|Pendiente)(\s*\([^)]*\))?\s*$/i;
+const STATUS_COLOR: Record<string, string> = { hecho: "#188038", "en curso": "#E37400", pendiente: "#D93025" };
+const STATUS_LABEL: Record<string, string> = { hecho: "Hecho", "en curso": "En curso", pendiente: "Pendiente" };
+
+const MAIL_STYLE = "font-family:Arial,Helvetica,sans-serif;font-size:14px;line-height:1.5;color:#202124;";
+const P_STYLE = "margin:0 0 12px 0;";
+/** Párrafo precedido por 2+ líneas en blanco (cierre, "Saludos"): un espacio más. */
+const P_GAP_STYLE = "margin:24px 0 12px 0;";
+const H_STYLE = "margin:18px 0 6px 0;";
+/** Subtítulo pegado a otro título ("Accionables…" → "De nuestro lado"): sin el salto grande. */
+const SUBH_STYLE = "margin:6px 0 6px 0;";
+const UL_STYLE = "margin:0 0 12px 0;padding-left:22px;";
+const LI_STYLE = "margin:0 0 6px 0;";
+
+/** Viñetas del borrador: "• " (pendiente / lista) y "✓ " (ya hecho) van igual, como lista. */
+const BULLET_RE = /^\s*[•✓]\s+(.*)$/;
+/** Título de sección: línea corta que termina en ":" ("Decisiones acordadas:"). */
+const isHeading = (line: string) => line.length <= 90 && /:\s*$/.test(line) && !BULLET_RE.test(line);
 
 function formatLine(line: string): string {
   const m = line.match(STATUS_RE);
   if (!m) return escapeHtml(line);
   const head = escapeHtml(line.slice(0, m.index));
-  const done = /^hecho$/i.test(m[1]);
-  const value = done ? `<b style="color:${DONE_GREEN}">Hecho</b>` : "Pendiente";
-  return `${head} - <b>Status:</b> ${value}${m[2] ? escapeHtml(m[2]) : ""}`;
+  const key = m[1].toLowerCase();
+  const date = m[2] ? ` ${escapeHtml(m[2].trim())}` : "";
+  return `${head} - <strong>Status:</strong> <strong style="color:${STATUS_COLOR[key]}">${STATUS_LABEL[key]}</strong>${date}`;
 }
 
-/** Texto del borrador → HTML como el del redactor de Gmail: cada línea un div, "• " en listas reales. */
+/**
+ * Texto del borrador → HTML compacto con estilos inline: cada línea un <p>, títulos en negrita y subrayados + ":", viñetas
+ * (• y ✓) en <ul>. Las líneas en blanco solo separan bloques: no generan <br> ni párrafos vacíos.
+ */
 export function bodyToHtml(body: string): string {
   const out: string[] = [];
   let list: string[] = [];
+  let prevHeading = false;
+  let blanks = 0;
   const flush = () => {
-    if (list.length) out.push(`<ul>${list.map((l) => `<li>${l}</li>`).join("")}</ul>`);
+    if (list.length) out.push(`<ul style="${UL_STYLE}">${list.map((l) => `<li style="${LI_STYLE}">${l}</li>`).join("")}</ul>`);
     list = [];
   };
-  for (const line of body.replace(/\r/g, "").split("\n")) {
-    const bullet = line.match(/^\s*•\s+(.*)$/);
+  for (const raw of body.replace(/\r/g, "").split("\n")) {
+    const line = raw.replace(/\s+$/, "");
+    if (!line.trim()) {
+      blanks++;
+      continue;
+    }
+    const gap = blanks >= 2;
+    blanks = 0;
+    const bullet = line.match(BULLET_RE);
     if (bullet) {
-      list.push(formatLine(bullet[1]));
+      if (bullet[1].trim()) list.push(formatLine(bullet[1].trim()));
+      prevHeading = false;
       continue;
     }
     flush();
-    out.push(line.trim() ? `<div>${formatLine(line)}</div>` : "<div><br></div>");
+    if (isHeading(line.trim())) {
+      const title = escapeHtml(line.trim().replace(/\s*:\s*$/, ""));
+      out.push(
+        `<p style="${prevHeading ? SUBH_STYLE : H_STYLE}"><strong><span style="text-decoration:underline">${title}</span>:</strong></p>`,
+      );
+      prevHeading = true;
+    } else {
+      out.push(`<p style="${gap ? P_GAP_STYLE : P_STYLE}">${formatLine(line.trim())}</p>`);
+      prevHeading = false;
+    }
   }
   flush();
-  return out.join("");
+  return normalizeHtml(out.join(""));
+}
+
+/** Red de seguridad: sin <br> repetidos ni párrafos/divs vacíos (p. ej. si el texto trae HTML pegado). */
+export function normalizeHtml(html: string): string {
+  return html
+    .replace(/(<br\s*\/?>\s*){2,}/gi, "<br>")
+    .replace(/<(p|div)(\s[^>]*)?>\s*(<br\s*\/?>|&nbsp;|\s)*\s*<\/\1>/gi, "")
+    .trim();
+}
+
+/** Texto plano del mail: viñetas con "- ", una línea en blanco entre secciones (dos antes del cierre), sin espacios al final. */
+export function bodyToPlain(body: string): string {
+  return body
+    .replace(/\r/g, "")
+    .split("\n")
+    .map((l) => l.replace(/^\s*[•✓]\s+/, "- ").replace(/\s+$/, ""))
+    .join("\n")
+    .replace(/\n{4,}/g, "\n\n\n")
+    .trim();
 }
 
 /**
@@ -127,10 +185,12 @@ export function buildMimeMessage(input: {
     Buffer.from(content, "utf-8").toString("base64").replace(/(.{76})/g, "$1\r\n"),
   ];
   const signature = input.signatureHtml?.trim();
-  const plain = signature ? `${input.body}\n\n-- \n${stripHtml(signature).trim()}` : input.body;
-  const html = `<div dir="ltr">${bodyToHtml(input.body)}${
+  const text = bodyToPlain(input.body);
+  const plain = signature ? `${text}\n\n-- \n${stripHtml(signature).trim()}` : text;
+  const html = `<div dir="ltr" style="${MAIL_STYLE}">${bodyToHtml(input.body)}${
     // Sin la clase `gmail_signature`: con ella Gmail la trata como firma repetida y la esconde tras "…".
-    signature ? `<div><br></div><div dir="ltr">${signature}</div>` : ""
+    // El último <p> ("Saludos") ya deja 12px: la firma va pegada, sin <br> extra.
+    signature ? `<div dir="ltr">${signature}</div>` : ""
   }</div>`;
   return [
     `To: ${input.to.join(", ")}`,

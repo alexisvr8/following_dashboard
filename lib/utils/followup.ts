@@ -54,6 +54,19 @@ export function ownerTag(step: string): string {
   return ` (${names.length > 1 ? `${names.slice(0, -1).join(", ")} y ${names.at(-1)}` : names[0]})`;
 }
 
+/** Responsables sin paréntesis ("Gonzalo y Alexis"); "[El grupo]" / "[Todos]" → "Equipo". */
+function groupTag(step: string): string {
+  const owners = step.match(/^\s*\[([^\]]+)\]/)?.[1].split(",").map((o) => o.trim()).filter(Boolean) ?? [];
+  if (owners.length && owners.every(isGroupOwner)) return "Equipo";
+  return ownerTag(step).replace(/^ \((.*)\)$/, "$1");
+}
+
+/** "Carga de documentos: Gonzalo cargó…" → "Carga de documentos" (el detalle va en lo charlado). */
+const milestoneTitle = (m: string) => {
+  const i = m.indexOf(":");
+  return i > 0 && i <= 70 ? m.slice(0, i).trim() : m.trim();
+};
+
 const senderNames = (client: ClientRecord) =>
   new Map(
     (client.activity?.recentMails ?? client.activity?.recentInbound ?? [])
@@ -309,55 +322,63 @@ export function buildFollowup(
   );
   const trace = mailTrace(client, meeting);
   const interaction = latestInteraction(client, meeting);
-  const steps: { text: string; side: StepSide; done: boolean; doneAt: string | null }[] = actionables.map((a) => ({
+  // `owner` = responsables según la minuta (" (Gonzalo)"); vacío si no se dijo.
+  const steps: { text: string; owner: string; side: StepSide; done: boolean; doneAt: string | null }[] = actionables.map((a) => ({
     text:
       `${formatStep(a.step)}${a.done ? "" : dueSuffix(agreedDue(client, a.id, a.step, a.meeting.date, settings.workDays), now)}` +
       (!a.done && trace.has(a.id) ? ` (conversado por mail el ${fmtShort(trace.get(a.id)!.date)})` : "") +
-      (!a.done && a.carried ? ` [acordado el ${fmtShort(a.meeting.date)}]` : "") +
-      ownerTag(a.step),
+      (!a.done && a.carried ? ` [acordado el ${fmtShort(a.meeting.date)}]` : ""),
+    owner: groupTag(a.step),
     side: overrideSide(client, a.id, stepSide(a.step, client, ownerEmail, settings)),
     done: a.done,
     doneAt: a.doneAt,
   }));
   const requests = openRequests(client, interaction).map((r) => ({
     text: `${r.title} (consulta por mail)`,
+    owner: "",
     side: "team" as StepSide,
     done: false,
     doneAt: null,
   }));
   const open = [...steps.filter((s) => !s.done), ...requests];
-  const bullets = (items: typeof steps) =>
-    items.map((s) =>
-      s.done ? `✓ ${s.text}${doneStatus(s.doneAt)}` : `• ${s.text}${STATUS_PENDING}`,
-    );
-  const group = (title: string, items: typeof steps) => (items.length ? ["", title, ...bullets(items)] : []);
+  // Lado Xtract: todo a mi nombre. Lado cliente (incluye compartidos y sin lado claro): el responsable de la
+  // minuta o "Equipo" (todos los participantes) si no se dijo.
+  const me = firstName(settings.ownerAliases[0] ?? "Alexis");
+  const ours = open.filter((s) => s.side === "me" || s.side === "team");
+  const theirs = open.filter((s) => !(s.side === "me" || s.side === "team"));
   const agreed = (meeting.decisions ?? []).filter((d) => d.agreed).map((d) => `• ${d.text}`);
-  const pending = (meeting.decisions ?? []).filter((d) => !d.agreed).map((d) => `• ${d.text}`);
-  const milestones = (meeting.milestones ?? []).map((m) => `• ${m}`);
+  const pending = (meeting.decisions ?? []).filter((d) => !d.agreed).map((d) => `• Por definir: ${d.text}`);
+  const milestones = (meeting.milestones ?? []).map((m) => `• ${milestoneTitle(m)}`);
+  const talked = [...(meeting.summary ? [meeting.summary] : []), ...agreed, ...pending];
 
+  // Un solo referente: se le habla a él; dos o más: en plural.
+  const one = recipients.length === 1;
   const when = meetingWhen(meeting.date, now);
+  const section = (title: string, rows: string[]) => (rows.length ? ["", title, ...rows] : []);
   const lines = [
     greet(recipients, client),
     "",
-    `Muchas gracias por la reunión ${when.text}${when.recent ? "" : ","} y por el tiempo dedicado. Les comparto lo que vimos y cómo seguimos.`,
+    `Gracias por el espacio ${when.text}${when.recent ? "" : ","} y por ${one ? "tu" : "su"} tiempo y disposición. ${one ? "Te" : "Les"} comparto un resumen y los próximos pasos.`,
+    // Orden: puntos importantes → lo charlado → accionables del cliente → de Xtract → lo ya avanzado.
+    ...section("Puntos importantes:", milestones),
+    ...section("Lo que charlamos:", talked),
+    ...section(
+      `Accionables de ${companyName(client)}:`,
+      theirs.map((s) => `• ${s.text} (${s.owner || "Equipo"})${STATUS_PENDING}`),
+    ),
+    ...section("Accionables de Xtract:", ours.map((s) => `• ${s.text} (${me})${STATUS_PENDING}`)),
+    ...section(
+      "Ya avanzamos con:",
+      steps.filter((s) => s.done).map((s) => `✓ ${s.text}${s.owner ? ` (${s.owner})` : ""}${doneStatus(s.doneAt)}`),
+    ),
+    // Dos líneas en blanco = un espacio más antes del cierre y antes de "Saludos" (ver `bodyToHtml`).
+    "",
+    "",
+    `Quedo a disposición por si ${one ? "tienes" : "tienen"} alguna consulta o por si me faltó agregar algo más.`,
+    "",
+    "",
+    "Saludos",
   ];
-  // Orden: puntos importantes charlados → resumen → decisiones → accionables.
-  if (milestones.length) lines.push("", "Puntos importantes que vimos:", ...milestones);
-  if (meeting.summary) lines.push("", "Resumen:", meeting.summary);
-  if (agreed.length) lines.push("", "Decisiones acordadas:", ...agreed);
-  if (pending.length) lines.push("", "Quedó por definir:", ...pending);
-  if (open.length) {
-    lines.push(
-      "",
-      "Accionables para la próxima sesión:",
-      ...group("De nuestro lado:", open.filter((s) => s.side === "me" || s.side === "team")),
-      ...group("De su lado:", open.filter((s) => s.side === "client")),
-      ...group("En conjunto:", open.filter((s) => s.side === "shared")),
-      ...group("Otros:", open.filter((s) => s.side === "unknown")),
-    );
-  }
-  lines.push(...group("Ya avanzamos con:", steps.filter((s) => s.done)));
-  lines.push("", "Si algo no quedó bien reflejado, avísenme y lo corregimos.", "", "Saludos");
 
   const reviewNotes = lastTalkNote(interaction);
   if (!meeting.summary) reviewNotes.push("La minuta no trae resumen: agregalo si hace falta.");
