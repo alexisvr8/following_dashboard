@@ -2,7 +2,8 @@
 
 import { useEffect, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
-import { Check, Copy, ExternalLink, Loader2, Mail, RefreshCw, Save, Send } from "lucide-react";
+import { AlertTriangle, Check, CheckCircle2, Copy, ExternalLink, Loader2, Mail, RefreshCw, Save, Send } from "lucide-react";
+import { Progress } from "@/components/ui/progress";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { inputClass } from "@/components/ui/input";
@@ -93,7 +94,6 @@ export function FollowupComposer({
   }, [fitViewport]);
   const recipients = to.split(/[,;\s]+/).filter(Boolean);
   const ccRecipients = cc.split(/[,;\s]+/).filter(Boolean);
-  const [sentNow, setSentNow] = useState(false);
   // Novedades (mails, reuniones, accionables): se aplican solas salvo que estés editando.
   const [seenBody, setSeenBody] = useState(initial.body);
   const [edited, setEdited] = useState(false);
@@ -114,7 +114,16 @@ export function FollowupComposer({
     threadId === NEW_THREAD
       ? `mail nuevo: “${subject}”`
       : `el hilo “${threads.find((t) => t.threadId === threadId)?.subject ?? initial.subject}”`;
-  const [gmailUrl, setGmailUrl] = useState<string | null>(null);
+  const [result, setResult] = useState<{
+    kind: "draft" | "sent";
+    url: string;
+    /** true = quedó en el hilo elegido; false = Gmail lo dejó fuera; null = mail nuevo. */
+    inThread: boolean | null;
+    where: string;
+    to: string[];
+    /** Se actualizó el borrador que ya existía (no se creó otro). */
+    updated?: boolean;
+  } | null>(null);
   const [error, setError] = useState<string | null>(null);
   const draftCreatedAt = initial.draftCreatedAt;
 
@@ -131,6 +140,8 @@ export function FollowupComposer({
   async function send() {
     setState("sending");
     setError(null);
+    setResult(null);
+    const where = threadLabel;
     setConfirming(false);
     const res = await fetch(`/api/clients/${encodeURIComponent(clientId)}/followup`, {
       method: "POST",
@@ -149,17 +160,18 @@ export function FollowupComposer({
       );
       return;
     }
-    setSentNow(true);
     setEdited(false);
     setSeenBody(""); // fuerza a tomar el borrador nuevo: el texto enviado no queda listo para reenviar
     setHasNews(false);
-    setGmailUrl(data.gmailUrl);
+    setResult({ kind: "sent", url: data.gmailUrl, inThread: data.inThread ?? null, where, to: data.to ?? [] });
     router.refresh();
   }
 
   async function createDraft() {
     setState("drafting");
     setError(null);
+    setResult(null);
+    const where = threadLabel;
     const res = await fetch(`/api/clients/${encodeURIComponent(clientId)}/followup`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
@@ -177,7 +189,7 @@ export function FollowupComposer({
       );
       return;
     }
-    setGmailUrl(data.gmailUrl);
+    setResult({ kind: "draft", url: data.gmailUrl, inThread: data.inThread ?? null, where, to: data.to ?? [], updated: !!data.updated });
     router.refresh();
   }
 
@@ -202,7 +214,7 @@ export function FollowupComposer({
       setSeenBody(draft.body);
       setEdited(false);
       setHasNews(false);
-      setSentNow(false);
+      setResult(null);
       setNotice(
         synced
           ? `Actualizado a las ${new Date().toLocaleTimeString("es", { hour: "2-digit", minute: "2-digit" })}.`
@@ -373,8 +385,19 @@ export function FollowupComposer({
           </div>
         )}
         {notice && <p className="text-xs text-muted-foreground">{notice}</p>}
-        {sentNow && (
-          <p className="text-xs text-success">Mail enviado. El borrador ya se generó de nuevo a partir de este envío.</p>
+        {(state === "sending" || state === "drafting") && (
+          <ActionProgress label={state === "sending" ? "Enviando el mail…" : "Creando el borrador en Gmail…"} />
+        )}
+        {result && <ResultBox result={result} onClose={() => setResult(null)} />}
+        {!result && state !== "drafting" && initial.gmailDraftId && initial.gmailBody && initial.gmailBody !== body && (
+          <div className="flex flex-wrap items-center gap-2 rounded-md border border-warning/30 bg-warning-muted px-3 py-2 text-xs text-foreground">
+            <span className="min-w-0 flex-1">
+              El borrador que está en Gmail no tiene los últimos cambios (avances o edición). Actualizalo para que quede igual a este.
+            </span>
+            <Button size="sm" variant="outline" onClick={createDraft}>
+              <RefreshCw /> Actualizar borrador en Gmail
+            </Button>
+          </div>
         )}
         <div className="sticky bottom-0 z-10 flex shrink-0 flex-wrap items-center gap-2 bg-card pt-1">
         <Button onClick={() => setConfirming(true)} disabled={state === "sending" || confirming}>
@@ -396,21 +419,11 @@ export function FollowupComposer({
           </Button>
           <Button variant="outline" onClick={createDraft} disabled={state === "drafting"}>
             {state === "drafting" ? <Loader2 className="animate-spin" /> : <Mail />}
-            Borrador en Gmail
+            {initial.gmailDraftId ? "Actualizar en Gmail" : "Borrador en Gmail"}
           </Button>
           <Button variant="outline" onClick={copy}>
             {state === "copied" ? <Check /> : <Copy />} {state === "copied" ? "Copiado" : "Copiar"}
           </Button>
-          {gmailUrl && (
-            <a
-              href={gmailUrl}
-              target="_blank"
-              rel="noopener noreferrer"
-              className="inline-flex items-center gap-1 text-xs text-primary hover:underline"
-            >
-              {sentNow ? "Ver en Gmail" : "Abrir en Gmail para enviar"} <ExternalLink className="size-3" />
-            </a>
-          )}
         </div>
       </CardContent>
       {/* Evita envíos por error: el foco arranca en Cancelar, así un Enter no dispara el mail. */}
@@ -447,5 +460,70 @@ export function FollowupComposer({
         </DialogContent>
       </Dialog>
     </Card>
+  );
+}
+
+/** Barra de progreso mientras Gmail responde: avanza sola hasta ~90% y desaparece al terminar. */
+function ActionProgress({ label }: { label: string }) {
+  const [value, setValue] = useState(8);
+  useEffect(() => {
+    const id = setInterval(() => setValue((v) => (v < 90 ? v + Math.max(1, (90 - v) / 8) : v)), 250);
+    return () => clearInterval(id);
+  }, []);
+  return (
+    <div className="space-y-1.5 rounded-md border border-border bg-surface px-3 py-2" role="status" aria-live="polite">
+      <p className="flex items-center gap-1.5 text-xs text-muted-foreground">
+        <Loader2 className="size-3.5 animate-spin" /> {label}
+      </p>
+      <Progress value={Math.round(value)} aria-label={label} />
+    </div>
+  );
+}
+
+function ResultBox({
+  result,
+  onClose,
+}: {
+  result: { kind: "draft" | "sent"; url: string; inThread: boolean | null; where: string; to: string[]; updated?: boolean };
+  onClose: () => void;
+}) {
+  const sent = result.kind === "sent";
+  const outOfThread = result.inThread === false;
+  return (
+    <div
+      role="status"
+      className={cn(
+        "flex flex-wrap items-start gap-x-3 gap-y-2 rounded-md border px-3 py-2.5 text-xs",
+        outOfThread ? "border-warning/30 bg-warning-muted" : "border-success/30 bg-success-muted",
+      )}
+    >
+      {outOfThread ? (
+        <AlertTriangle className="mt-0.5 size-4 shrink-0 text-warning" />
+      ) : (
+        <CheckCircle2 className="mt-0.5 size-4 shrink-0 text-success" />
+      )}
+      <div className="min-w-0 flex-1 space-y-0.5 text-foreground">
+        <p className="font-medium">
+          {sent ? "Mail enviado correctamente." : result.updated ? "Borrador actualizado en Gmail (el mismo, sin duplicar)." : "Borrador creado en Gmail."}
+        </p>
+        <p className="text-muted-foreground">
+          {result.inThread === true
+            ? `Quedó dentro de la cadena: ${result.where}.`
+            : result.inThread === false
+              ? `Gmail lo dejó fuera del hilo elegido (${result.where}). Revisalo antes de enviarlo.`
+              : `Va como ${result.where}.`}
+          {sent && result.to.length > 0 && ` Para: ${result.to.join(", ")}.`}
+          {sent && " El borrador de la cuenta se regenera a partir de este envío."}
+        </p>
+      </div>
+      <div className="flex shrink-0 items-center gap-1.5">
+        <Button size="sm" variant={sent ? "outline" : "default"} render={<a href={result.url} target="_blank" rel="noopener noreferrer" />}>
+          {sent ? "Ver en Gmail" : "Abrir borrador"} <ExternalLink />
+        </Button>
+        <Button size="sm" variant="ghost" onClick={onClose}>
+          Cerrar
+        </Button>
+      </div>
+    </div>
   );
 }

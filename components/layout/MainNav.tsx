@@ -3,12 +3,13 @@
 import { useEffect, useRef, useState } from "react";
 import Link from "next/link";
 import { usePathname } from "next/navigation";
-import { Building2, LayoutDashboard, Menu, Plug, Users, X } from "lucide-react";
+import { Building2, LayoutDashboard, Menu, Plug, SquareKanban, Users, X } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
 
 const NAV_ITEMS = [
   { href: "/", label: "Dashboard", icon: LayoutDashboard },
+  { href: "/accionables", label: "Accionables", icon: SquareKanban },
   { href: "/cuentas", label: "Cuentas", icon: Building2 },
   { href: "/clientes", label: "Clientes", icon: Users },
   { href: "/conexiones", label: "Conexiones", icon: Plug },

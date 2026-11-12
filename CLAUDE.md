@@ -18,7 +18,7 @@ variantes semánticas + `StatusDot`, `input.tsx` = `inputClass`).
 
 ## Navegación
 Nav horizontal centrada en el header sticky (`components/layout/{AppHeader,MainNav}.tsx`; en <md
-se vuelve menú desplegable `MobileNav`). Sin sidebar. 4 secciones. Navegación rápida: Router Cache `staleTimes.dynamic=120` (`next.config.ts`; `router.refresh()` lo invalida), lecturas deduplicadas por request en `lib/server/cached-data.ts` (`cache()` de React), Dashboard con Supabase en paralelo y Números/Capacidad por streaming (`Suspense`, Calendar no bloquea):
+se vuelve menú desplegable `MobileNav`). Sin sidebar. 5 secciones. Navegación rápida: Router Cache `staleTimes.dynamic=120` (`next.config.ts`; `router.refresh()` lo invalida), lecturas deduplicadas por request en `lib/server/cached-data.ts` (`cache()` de React), Dashboard con Supabase en paralelo y Números/Capacidad por streaming (`Suspense`, Calendar no bloquea):
 - `/` Dashboard (**datos reales**, clientes `assigned`/`unassigned` de `.data/clients.json` vía
   `clientsToBoard`), ancho completo; en xl mide exactamente la pantalla (sin scroll de página: la jornada del calendario se reparte el alto disponible; solo la lista de Seguimiento scrollea). **Números** `KeyNumbers` arriba; debajo grilla 2/3 | 1/3 (xl, alineadas arriba; <xl Seguimiento abajo con tarjetas en 2–3 columnas): **Capacidad** `WeekPlanner` (barra de encabezado, 5 tarjetas resumen en una fila, calendario proporcional estilo Google Calendar (bloques según duración, solapes en carriles `layoutBlocks`, detalle al hover), tarjeta de agenda/espacios/leyenda) | **Seguimiento**
   `FollowupAlerts` (alto de la fila, scroll interno solo en la lista; una tarjeta por cuenta, primero las que esperan respuesta y luego por días hábiles): cada acción (Responder / Enviar actualización / Hacer seguimiento) abre `FollowupPanel` (Dialog centrado, hilo | borrador; click afuera o Esc cierra):
@@ -41,9 +41,10 @@ se vuelve menú desplegable `MobileNav`). Sin sidebar. 4 secciones. Navegación 
   `lib/utils/week-plan.ts`: ventana flexible `workStart–workEnd` (9–18) con horario normal
   `coreStart–coreEnd` (10–17:30); ocupado = eventos de Calendar (`listEventsBetween`, sin
   "disponible"/declinados) + almuerzo = eventos /almuerzo|lunch|comida/ del día (fallback
-  `lunchStart`/`lunchMinutes` marcado "estimado"); accionables propios pendientes de la última
-  reunión × h/accionable, greedy por urgencia (cuenta con reunión próxima primero): 1ª pasada
-  huecos normales de toda la semana, 2ª pasada flex; resto = déficit. Reunión ↔ cuenta por
+  `lunchStart`/`lunchMinutes` marcado "estimado"); accionables propios pendientes (`plannedItems`, uno por
+  uno, por fecha de entrega y prioridad) × estimación (manual o h/accionable): 1ª pasada huecos normales de toda la
+  semana, 2ª pasada flex; resto = déficit; `atRisk` = termina después de su límite o no entra y vence en la semana
+  (`totals.atRiskCount`). Bloques seguidos de la misma cuenta se unen (`itemIds`). Reunión ↔ cuenta por
   dominio/email. Helpers `toMinutes`/`isOwnActionable` en `lib/utils/capacity.ts`. Settings en
   `.data/settings.json` (`lib/store/settings-store.ts`, `GET/PUT /api/settings`; 0.5h/accionable,
   alias "[Alexis Vásquez R]"). Colores de calendario `--cal-*` (tokens, ver Design system).
@@ -60,6 +61,38 @@ se vuelve menú desplegable `MobileNav`). Sin sidebar. 4 secciones. Navegación 
   **Puntos editables** (`ActionablesList` con `editable`, en la cuenta; `PATCH {actionable: {op: add|edit|remove}}`, `changeActionable`):
   `client.customActionables` / `actionableEdits` / `removedTicketIds`, aplicados en `accountActionables`, `executedHistory` y `mailTickets`, por lo que llegan a
   Capacidad, alertas y borradores (tocan `ticketsUpdatedAt`). Lo nuevo sin `[Dueño]` se guarda a nombre de `ownerAliases[0]`. `isAutoTicket` (`lib/utils/auto-ticket.ts`; follow-up y Responder) no se edita.
+- `/accionables` (`components/accionables/{ActionablesBoard,ActionablePanel}.tsx`, helpers `format.ts`): vistas Tablero (5 columnas
+  Vencido / Hoy / Esta semana / Próxima semana / Más adelante) y Lista (secciones por plazo), toggle guardado en cookie
+  `accionables_view` (la lee la página). Sin agrupar por cuenta (la card la muestra). Contadores (vencidos, para hoy, me deben, sin hueco), filtros Debo (default) / Me deben / Todo, cuenta, búsqueda,
+  "Solo arrastrados" + aviso de arrastrados vencidos, leyenda de tipos de fecha. Card fija: franja de prioridad, cuenta + origen
+  (Reunión/Mail dd/mm), título corto + detalle (`splitTitle`: "Título: detalle" de Gemini; mails → "Pedido de X" /
+  "Responder a X" / "Compromiso tuyo"; saludos sueltos se descartan, `isGreetingOnly`), plazo relativo con ícono del tipo
+  (acordada / meta interna / manual), estimación, Debo / Me deben · responsable. Click → detalle en modal centrado: texto original, origen,
+  plazo (+1 día háb., +1 semana, fecha, Restaurar), estimación, Marcar hecho, No corresponde (`actionable remove`, no en
+  automáticos), Reclamar (me deben → `/cuentas/[id]?borrador=status`), Abrir cuenta. Fecha/estimación →
+  `PATCH /api/clients/[id]` `{plan: {ticketId, due?: "AAAA-MM-DD"|null, estimateMinutes?: number|null}}` (`setActionablePlan`,
+  `client.actionableDue` / `actionableEstimate`; la fecha toca `ticketsUpdatedAt`). Datos = `computeWeekPlan(...).items`.
+  **Plazos** (`lib/utils/deadlines.ts`, `plannedItems`): pendientes de asignados (minuta, propios, follow-up, mails); fecha =
+  manual → acordada (`parseDue` contra el día de la reunión/mail) → meta interna `settings.targetBusinessDays` (3) hábiles,
+  vencido a `limitBusinessDays` (4); Responder / Enviar follow-up = 1 día hábil. Debo = `isOwnActionable`, resto me deben.
+  `agreedDue` = lo único que puede ir al mail (nunca la meta interna). `accountMatcher`/`nextMeetings` = reunión ↔ cuenta.
+  **Transcripción** (`lib/utils/transcript.ts`): la pestaña "Transcripción" del Doc (viene en el export de texto) → turnos
+  (`parseTranscript`, une fragmentos del mismo hablante/minuto) → `extractSuggestions`: frases de entrega ("te paso", "les
+  envío", "te confirmo", "quedamos en") o pedidos ("¿me podrías pasar…?"), sin acciones en vivo, despedidas, verbos en pasado
+  ni lo que Gemini ya listó; máx. 8 por reunión. Se guardan en `meeting.transcript` (al descubrir la minuta y por
+  `backfillTranscripts`, reuniones ≤30 días, tandas de 25, en `runSync` y `/api/clients/discover`). `pendingSuggestions`
+  (deadlines.ts, reuniones ≤21 días): lado al leer (compromiso mío → debo; de otro → me deben; pedido de nuestro lado
+  [yo / equipo / asistente con dominio propio] → me deben), fecha dicha en la frase o la respuesta corta del otro. UI
+  `SuggestionsDialog` (botón "De la reunión (N)" en la barra de /accionables → modal; no ocupa el tablero): Aceptar (texto editable → accionable propio `[dueño] texto` + fecha) / Descartar →
+  `PATCH {suggestion: {suggestionId, action, title?, due?}}` (`resolveSuggestion`, `client.suggestions`).
+  **Aprendizaje**: correcciones `settings.corrections` (`applyCorrections` al ingerir minutas/transcripciones;
+  `POST|DELETE /api/settings/corrections` aplica a todo lo guardado con `applyCorrectionEverywhere`; el modal ofrece
+  "corregir siempre" al editar, `correctionCandidate`; administrador `CorrectionsDialog`); roles `settings.people`
+  (`personKey` → me/team/client/partner; los usan `isOwnActionable`, `ownerSide` de los mails y las sugerencias; se eligen
+  por responsable en el modal); lado manual `client.actionableSide` (`plan.side`, manda en Capacidad, alertas y mails);
+  descartes: sugerencias parecidas (≥0.7) a una descartada no vuelven, y un paso parecido a uno quitado ("No corresponde")
+  en una minuta posterior tampoco (`accountActionables`); estimación aprendida = la manual del accionable más parecido
+  (≥0.5, cualquier cuenta). Modal: Editar título / detalle / responsables (minuta o propio) o texto (mail) → `actionable edit`.
 - `/clientes`: validación de clientes descubiertos en mails de Gemini Notes
   (`components/clientes/{ClientsReview,ClientCandidateCard}.tsx`): botón de escaneo (60 días),
   tabs Por validar/Asignados/No asignados/Ignorados, nombre editable, y lista de reuniones sin
@@ -172,7 +205,7 @@ tiempo/dificultad → quick_win/major_project/fill_in/thankless_task), no se per
   `no_progress` / `awaiting_client` (sin mails ni reuniones ≥ `settings.staleBusinessDays`
   (default 2) días hábiles con accionables abiertos).
 - Borradores (`lib/utils/followup.ts`, `getDraft(kind)`), por reglas y sin placeholders en el cuerpo:
-  `meeting` = resumen, hitos, decisiones (acordadas / por definir) y accionables vigentes para la próxima
+  `meeting` = agradecimiento por la reunión y el tiempo, puntos importantes (hitos), resumen, decisiones (acordadas / por definir) y accionables vigentes para la próxima
   sesión (arrastrados + consultas por mail; "Ya avanzamos con" = tildados) por
   lado (`stepSide`: me/team/client/shared/unknown) con fecha objetivo (`parseStep`/`parseDue`, resuelta
   contra la fecha de la reunión); `status` parte de `latestInteraction`: último mail recibido del cliente
@@ -194,6 +227,10 @@ tiempo/dificultad → quick_win/major_project/fill_in/thankless_task), no se per
   mails de ese `threadId` en `recentMails`, salvo yo y quienes ya están en `to` (`replyAllCc`). Editable
   en `FollowupComposer` (campo Cc) y persiste en `client.followups[...].cc`; viaja a Gmail como header
   `Cc` (`buildMimeMessage`/`createThreadDraft`/`sendThreadMail`).
+- Fechas (`parseDue` en `gemini-notes-parser.ts`, días hábiles `settings.workDays`): dd/mm, "12 de noviembre", pasado mañana,
+  mañana, "para hoy"/"hoy mismo" (el "hoy" suelto no cuenta), día de semana (+ "de la semana que viene"), "en N días (hábiles)",
+  "en N semanas", semana próxima (último hábil), esta semana / fin de semana (viernes), fin de mes (último hábil). Siempre contra
+  la fecha de la reunión; lo que cae en no laborable pasa al siguiente hábil (`rollToWorkday`, `addBusinessDays`). Sin fecha → `null`.
 - Minutas (`lib/utils/gemini-notes-parser.ts`): `summary` + `milestones` (temas del Resumen) + `decisions`
   + `nextSteps`. `backfillMeetingNotes` (`gemini-mail.ts`, en `runSync` y `/api/clients/discover`) reprocesa
   por tandas de 25 las minutas con `milestones === undefined`, sin tocar `nextSteps` (los ids dependen del índice).
@@ -201,11 +238,14 @@ tiempo/dificultad → quick_win/major_project/fill_in/thankless_task), no se per
   `client.followups[followupKey(kind, id)]` / crea draft en Gmail (`createThreadDraft`: dentro del
   hilo elegido con Re:/In-Reply-To, o mail nuevo). Con `send: true` envía de verdad (`sendThreadMail`, solo desde el
   botón Enviar con confirmación; descarta el draft previo y refresca la actividad). El cron nunca envía. MIME
-  (`buildMimeMessage`): multipart/alternative + HTML estilo Gmail + firma de la cuenta (`sendAs`). UI: tabs en `/cuentas/[id]`
-  (`?borrador=status#borradores`), `FollowupComposer` (hilo, Para, editar, Copiar, Actualizar, Enviar).
-- `POST /api/cron/daily-followup` (header `x-cron-secret`, cron externo diario hábil): sync de
-  asignados + alertas + 1 draft de actualización en Gmail por cuenta alertada y movimiento
-  (dedupe `autoFor`); `?drafts=0` solo sincroniza.
+  (`buildMimeMessage`): multipart/alternative + HTML estilo Gmail + firma de la cuenta (`sendAs`, sin clase `gmail_signature`
+  para que Gmail no la esconda tras "…"). Arranque relativo (`meetingWhen`: "del día de hoy" / "de ayer" / "del lunes" hasta 3 días, después la fecha); cierre
+  "Saludos". Cada punto termina en "(Nombre) - Status: Hecho (dd/mm)" (✓) o "(Nombre) - Status: Pendiente": responsables
+  por nombre de pila (`ownerTag`; "La empresa"/"El grupo" enteros), un solo guion (`STATUS_DONE`/`STATUS_PENDING`); `bodyToHtml` pone "Status:" en negrita y "Hecho" en negrita verde. UI: tabs en `/cuentas/[id]`
+  (`?borrador=status#borradores`), `FollowupComposer` (hilo, Para, editar, Copiar, Actualizar, Enviar; barra de progreso al enviar / crear borrador y
+  recuadro de resultado con "Abrir borrador" / "Ver en Gmail"; la API devuelve `inThread` para validar que quedó en el hilo).
+- `POST /api/cron/daily-followup` (header `x-cron-secret`, cron externo): `runSync` con el mail semanal de objetivos
+  (`?drafts=0` solo sincroniza).
 - `GET /api/clients/[id]/thread/[threadId]` → mensajes del hilo (`getThreadMessages` en `client-activity.ts`, solo lectura,
   sin citas ni borradores); solo hilos ya asociados a la cuenta por la sincronización.
 - `GET /api/clients/[id]/last-mail` → 302 al último hilo de Gmail con el dominio/emails del
@@ -228,17 +268,40 @@ automático de emails (el envío es manual, desde `/cuentas/[id]`).
 
 ## Sincronización automática (scheduler interno + cron externo opcional)
 `lib/jobs/sync-job.ts` `runSync({drafts, trigger})`: minutas nuevas (`discoverGeminiMeetings(7d)` incremental +
-`mergeDiscovery`) → `syncClientsActivity` (asignados + no asignados) → `computeAlerts` → si `drafts`,
-borradores en Gmail (dedupe `autoFor`). Candado en `globalThis.__syncRunning` (corrida simultánea ⇒ `skipped`).
+`mergeDiscovery`) → transcripciones (`backfillTranscripts`) → `syncClientsActivity` (asignados + no asignados) →
+**minuta automática** (`createMeetingDrafts`, si `settings.autoMeetingDrafts` [default true]: última reunión ≤48 h de cada
+asignado, sin borrador/envío previo, sin follow-up tildado ni mail mío posterior → borrador `meeting` en el hilo más reciente,
+`autoFor` = id de reunión, en cada corrida) → `computeAlerts` → si `drafts` (lunes), **mail semanal de objetivos**
+(`createWeeklyDrafts` + `buildWeeklyPlan`: por cuenta asignada con pendientes, completado en los últimos 7 días + objetivos de
+nuestro lado [incl. consultas/compromisos por mail] / de su lado / en conjunto / otros, fechas solo acordadas; clave
+`followups["week:<lunes>"]` (`weekKey`), actualiza el mismo borrador si se corre de nuevo; `syncStatus.lastWeeklyDraftsAt`).
+Los borradores en Gmail se actualizan en vez de duplicarse (`createThreadDraft(input, replaceDraftId)` → `drafts.update`;
+`FollowupDraft.gmailBody` = texto que quedó en Gmail: el composer avisa "no tiene los últimos cambios" y ofrece actualizarlo). Candado en `globalThis.__syncRunning` (corrida simultánea ⇒ `skipped`).
 Estado en `.data/sync-status.json` (`lib/store/sync-status-store.ts`).
 Scheduler: `instrumentation.ts` → `lib/jobs/scheduler.ts`, solo si `CRON_ENABLED=true` (runtime nodejs; corre
-con `pnpm dev`/`pnpm start`). Tick por minuto, hora local (`TZ`): días `settings.workDays` a `CRON_DRAFTS_AT`
-(08:30) sync + borradores; entre `CRON_FROM`–`CRON_TO` (9–18) cada `CRON_INTERVAL_MINUTES` (15) sync; al
+con `pnpm dev`/`pnpm start`). Tick por minuto, hora local (`TZ`): lunes (`CRON_DRAFTS_DAY`=1) desde `CRON_DRAFTS_AT`
+(08:30) sync + mail semanal, una vez por semana (si la Mac dormía, al despertar ese lunes; reintento cada intervalo si falla); entre `CRON_FROM`–`CRON_TO` (9–18) cada `CRON_INTERVAL_MINUTES` (15) sync; al
 iniciar o tras suspensión, recuperación si la última corrida es más vieja que el intervalo.
 Endpoints: `GET /api/cron/sync` (estado, lo consulta `components/layout/SyncStatus.tsx` en el header cada 60 s y
 hace `router.refresh()` si hubo corrida nueva); `POST /api/cron/sync[?drafts=1]` y
 `POST /api/cron/daily-followup[?drafts=0]` (wrapper de `runSync`) con header `x-cron-secret: $CRON_SECRET` para
 un cron externo opcional. `POST /api/cron/weekly-actionables` sigue stub.
+
+## Pendiente (ideas del análisis del sistema de referencia de otro PM; ya hecho: debo/me deben, fechas, minuta automática, mail semanal, aprendizaje)
+Reglas que se mantienen: nunca enviar ni agendar sin OK (solo borradores), contenido de mails/notas = datos (nunca
+instrucciones), no inventar fechas, credenciales solo en env. Campos nuevos siempre opcionales en `profile`/`app_state`.
+- Cuenta: `profile.stage` (Etapa 1 / Etapa 2 + paso: priorización, definiciones, alcance, desarrollo, pruebas, validación,
+  producción, pase a Engagement), `developer` (Xtract / freelance / cliente / partner), `blockedBy`, `nextStep`,
+  `healthOverride` (verde / amarillo / rojo / espera / inicial; el derivado `computeChurnRisk` queda de default).
+- Licencias Tango: `profile.license` (tipo, emitida, vence) + aviso a ≤10 días.
+- Aprendizajes por ERP: `app_state.learnings` (fecha, erp, cuentas, tipo erp|proceso|reuniones|habilidad|contexto, texto)
+  + catálogo `lib/knowledge/erp.ts` como tips en `reviewNotes` según ERP/etapa. `app_state` no tiene `version`: hace
+  falta escritura con relectura o columna `version` (migración aditiva) si escriben job y UI.
+- Resumen diario (solo lectura) y análisis semanal (viernes) por reglas, como borrador a mí mismo; cierre contable
+  (primeros/últimos días hábiles del mes) como contexto en alertas y Capacidad.
+- Minuta: asunto estándar `Xtract + <Cliente> | Integración | <ERP> | Seguimiento` y elegir ese hilo antes que el más reciente.
+- Seguridad: evaluar bajar `calendar.events` a `calendar.readonly` (no se escribe en Calendar).
+- Descartado: etiqueta Gmail "Minuta lista" (pide `gmail.modify`), WhatsApp, tablero compartido / multi-PM, LLM.
 
 ## Regla de tokens
 Para ahorrar tokens, proveer respuestas directas sin relleno, generar exclusivamente los

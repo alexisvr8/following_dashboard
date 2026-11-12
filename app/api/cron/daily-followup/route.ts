@@ -2,7 +2,7 @@ import { runSync } from "@/lib/jobs/sync-job";
 
 // Cron diario (externo, días hábiles): minutas nuevas + actividad de clientes + alertas y, por cada
 // cuenta alertada, UN borrador de actualización en Gmail por movimiento — nunca envía.
-// `?drafts=0` solo sincroniza. Equivale a `POST /api/cron/sync?drafts=1` (ver `lib/jobs/sync-job.ts`).
+// (`drafts` = borrador semanal de objetivos por cuenta) `?drafts=0` solo sincroniza. Equivale a `POST /api/cron/sync?drafts=1` (ver `lib/jobs/sync-job.ts`).
 export async function POST(req: Request) {
   if (req.headers.get("x-cron-secret") !== process.env.CRON_SECRET) {
     return Response.json({ error: "unauthorized" }, { status: 401 });

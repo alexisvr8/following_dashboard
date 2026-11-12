@@ -1,5 +1,7 @@
 import {
   changeActionable,
+  resolveSuggestion,
+  setActionablePlan,
   setTicketDone,
   updateClient,
   updateClientProfile,
@@ -23,7 +25,45 @@ export async function PATCH(
     isDone?: boolean;
     profile?: Partial<ClientProfile>;
     actionable?: ActionableChange;
+    plan?: { ticketId?: unknown; due?: unknown; estimateMinutes?: unknown; side?: unknown };
+    suggestion?: { suggestionId?: unknown; action?: unknown; title?: unknown; due?: unknown };
   };
+
+  // Sugerencia de la transcripción: aceptar (crea accionable propio) o descartar (enseña a no repetirla).
+  if (body.suggestion && typeof body.suggestion === "object") {
+    const { suggestionId, action, title, due } = body.suggestion;
+    const validDue = due == null || (typeof due === "string" && /^\d{4}-\d{2}-\d{2}$/.test(due));
+    if (typeof suggestionId !== "string" || (action !== "accept" && action !== "dismiss") || !validDue) {
+      return Response.json({ error: "invalid_suggestion" }, { status: 400 });
+    }
+    const result = await resolveSuggestion(decodeURIComponent(id), {
+      suggestionId,
+      action,
+      title: typeof title === "string" ? title : undefined,
+      due: (due as string | null | undefined) ?? null,
+    });
+    if (!result) return Response.json({ error: "not_found" }, { status: 404 });
+    return Response.json({ id: result.client.id, ticketId: result.ticketId });
+  }
+
+  // Fecha de entrega / estimación manual de un accionable (vista Seguimiento).
+  if (body.plan && typeof body.plan === "object") {
+    const { ticketId, due, estimateMinutes, side } = body.plan;
+    const validSide = side === undefined || side === null || side === "debo" || side === "me_deben";
+    const validDue = due === null || (typeof due === "string" && /^\d{4}-\d{2}-\d{2}$/.test(due) && !Number.isNaN(Date.parse(due)));
+    const validEst = estimateMinutes === null || (typeof estimateMinutes === "number" && estimateMinutes >= 5 && estimateMinutes <= 480);
+    if (typeof ticketId !== "string" || (due !== undefined && !validDue) || (estimateMinutes !== undefined && !validEst) || !validSide) {
+      return Response.json({ error: "invalid_plan" }, { status: 400 });
+    }
+    const client = await setActionablePlan(decodeURIComponent(id), {
+      ticketId,
+      ...(due !== undefined && { due: due as string | null }),
+      ...(estimateMinutes !== undefined && { estimateMinutes: estimateMinutes === null ? null : Math.round(estimateMinutes as number) }),
+      ...(side !== undefined && { side: side as "debo" | "me_deben" | null }),
+    });
+    if (!client) return Response.json({ error: "not_found" }, { status: 404 });
+    return Response.json({ id: client.id, due: client.actionableDue?.[ticketId] ?? null, estimateMinutes: client.actionableEstimate?.[ticketId] ?? null });
+  }
 
   if (body.actionable) {
     const change = body.actionable;
