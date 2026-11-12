@@ -44,7 +44,8 @@ export function accountPending(client: ClientRecord, settings: WorkSettings, now
   let pendingClient = 0;
   for (const a of accountActionables(client)) {
     if (a.done) continue;
-    if (isOwnActionable(a.step, settings)) pendingOwn++;
+    const side = client.actionableSide?.[a.id];
+    if (side ? side === "debo" : isOwnActionable(a.step, settings)) pendingOwn++;
     else pendingClient++;
   }
   if (latest && now.getTime() - Date.parse(latest.date) <= 14 * 86_400_000 && !done.has(followupTicketId(client.id, latest.id))) {

@@ -1,9 +1,8 @@
-import { followupTicketId, type ClientRecord } from "@/lib/store/clients-store";
+import type { ClientRecord } from "@/lib/store/clients-store";
 import type { WorkSettings } from "@/lib/store/settings-store";
 import type { CalendarEventLite } from "@/lib/integrations/calendar";
-import { isOwnActionable, toMinutes } from "@/lib/utils/capacity";
-import { mailTickets } from "@/lib/utils/mail-tickets";
-import { accountActionables } from "@/lib/utils/actionables";
+import { toMinutes } from "@/lib/utils/capacity";
+import { accountMatcher, plannedItems, type PlannedItem } from "@/lib/utils/deadlines";
 
 // Planificador semanal (meta: cerrar los accionables pendientes antes del viernes).
 // Por día: ventana flexible [workStart, workEnd] con un horario normal [coreStart, coreEnd].
@@ -25,6 +24,8 @@ export interface PlanBlock {
   accountName?: string;
   /** almuerzo sin evento en Calendar / accionable en horario flexible */
   soft?: boolean;
+  /** Accionables proyectados en el bloque (kind "task"). */
+  itemIds?: string[];
 }
 
 export interface FreeGap {
@@ -81,10 +82,13 @@ export interface WeekPlan {
     utilization: number;
     finishLabel: string | null;
     verdict: Verdict;
+    /** Accionables propios que no llegan a su fecha límite con los huecos de la semana. */
+    atRiskCount: number;
   };
+  /** Todos los pendientes con plazo (debo y me deben), ordenados por fecha de entrega. */
+  items: PlannedItem[];
 }
 
-const FREEMAIL = /^(gmail|googlemail|hotmail|outlook|live|msn|yahoo|icloud|proton|protonmail)\./;
 const LUNCH = /\b(almuerzo|lunch|comida)\b/i;
 const MIN = 60_000;
 const HOUR = 3_600_000;
@@ -94,6 +98,13 @@ const hhmm = (ms: number) =>
 const dayLabel = (d: Date) => d.toLocaleDateString("es", { weekday: "short", day: "numeric" }).replace(".", "");
 
 type Interval = [number, number];
+
+/** "Acme: Enviar set · Validar (+2)" para el detalle al pasar el mouse. */
+function taskTitle(account: string, ids: string[], items: PlannedItem[]): string {
+  const titles = ids.map((id) => items.find((i) => i.id === id)?.title ?? "").filter(Boolean);
+  const shown = titles.slice(0, 3).map((t) => (t.length > 60 ? `${t.slice(0, 57)}…` : t));
+  return `${account}: ${shown.join(" · ")}${titles.length > 3 ? ` (+${titles.length - 3})` : ""}`;
+}
 
 function union(intervals: Interval[]): Interval[] {
   const sorted = intervals.filter(([a, b]) => b > a).sort((x, y) => x[0] - y[0]);
@@ -157,14 +168,7 @@ export function computeWeekPlan(
   const span = Math.max(1, weMin - wsMin) * MIN;
   const assigned = clients.filter((c) => c.status === "assigned");
 
-  const matchers = assigned.map((c) => ({
-    id: c.id,
-    name: c.name,
-    emails: new Set(c.contactEmails.map((e) => e.toLowerCase())),
-    domain: FREEMAIL.test(c.domain) ? null : c.domain,
-  }));
-  const accountOf = (e: CalendarEventLite) =>
-    matchers.find((m) => e.attendees.some((a) => m.emails.has(a) || (m.domain && a.endsWith(`@${m.domain}`))));
+  const accountOf = accountMatcher(assigned);
 
   type Slot = { from: number; to: number; flex: boolean; used: number };
   type DayCtx = PlanDay & { ws: number; slots: Slot[] };
@@ -280,25 +284,14 @@ export function computeWeekPlan(
     });
   }
 
-  // ---- accionables pendientes (cola por urgencia) ----
-  const hpaMs = settings.hoursPerActionable * HOUR;
-  const queue = assigned
-    .map((c) => {
-      const latest = [...c.meetings].sort((a, b) => b.date.localeCompare(a.date))[0];
-      const done = new Set(c.doneTicketIds ?? []);
-      let pending = 0;
-      for (const a of accountActionables(c)) if (!a.done && isOwnActionable(a.step, settings)) pending++;
-      // Follow-up pendiente solo cuenta si la reunión es reciente (≤14 días).
-      if (latest && Date.now() - Date.parse(latest.date) <= 14 * 86_400_000 && !done.has(followupTicketId(c.id, latest.id))) {
-        pending++;
-      }
-      for (const t of mailTickets(c)) if (!done.has(t.id)) pending++;
-      return { id: c.id, name: c.name, pending, left: pending * hpaMs, next: nextMeeting.get(c.id) ?? Infinity };
-    })
-    .filter((a) => a.pending > 0)
-    .sort((a, b) => a.next - b.next || b.pending - a.pending);
+  // ---- accionables pendientes: uno por uno, por fecha de entrega (deadlines.ts) ----
+  const items = plannedItems(clients, settings, now, new Map([...nextMeeting].map(([id, at]) => [id, new Date(at).toISOString()])));
+  const queue = items
+    .filter((i) => i.side === "debo")
+    .map((i) => ({ item: i, left: Math.max(MIN, i.estimateMinutes * MIN), finishAt: null as number | null }));
+  const allTasks = [...queue];
 
-  const pendingCount = queue.reduce((s, a) => s + a.pending, 0);
+  const pendingCount = queue.length;
   const pendingMs = queue.reduce((s, a) => s + a.left, 0);
   let flexUsedMs = 0;
   let finish: number | null = null;
@@ -311,33 +304,56 @@ export function computeWeekPlan(
         if (slot.flex !== flexPass) continue;
         let cursor = slot.from + slot.used;
         while (cursor < slot.to && queue.length) {
-          const acc = queue[0];
-          const take = Math.min(acc.left, slot.to - cursor);
+          const task = queue[0];
+          const take = Math.min(task.left, slot.to - cursor);
           if (take < MIN) break;
-          day.blocks.push({
-            kind: "task",
-            from: frac(cursor),
-            to: frac(cursor + take),
-            startLabel: hhmm(cursor),
-            endLabel: hhmm(cursor + take),
-            title: `Accionables · ${acc.name}`,
-            accountName: acc.name,
-            soft: flexPass,
-          });
+          const prev = day.blocks.at(-1);
+          // Accionables seguidos de la misma cuenta van en un solo bloque.
+          if (prev?.kind === "task" && prev.accountName === task.item.clientName && Math.abs(prev.to - frac(cursor)) < 1e-6 && prev.soft === flexPass) {
+            prev.to = frac(cursor + take);
+            prev.endLabel = hhmm(cursor + take);
+            if (!prev.itemIds?.includes(task.item.id)) {
+              prev.itemIds = [...(prev.itemIds ?? []), task.item.id];
+              prev.title = taskTitle(task.item.clientName, prev.itemIds, items);
+            }
+          } else {
+            day.blocks.push({
+              kind: "task",
+              from: frac(cursor),
+              to: frac(cursor + take),
+              startLabel: hhmm(cursor),
+              endLabel: hhmm(cursor + take),
+              title: taskTitle(task.item.clientName, [task.item.id], items),
+              accountName: task.item.clientName,
+              soft: flexPass,
+              itemIds: [task.item.id],
+            });
+          }
           day.taskHours += take / HOUR;
           if (flexPass) flexUsedMs += take;
-          acc.left -= take;
+          task.left -= take;
           cursor += take;
           slot.used += take;
           finish = Math.max(finish ?? 0, cursor);
-          if (acc.left < MIN) queue.shift();
+          if (task.left < MIN) {
+            task.finishAt = cursor;
+            queue.shift();
+          }
         }
       }
     }
   }
 
+  // En riesgo: lo planificado después de su fecha límite, o lo que no entró y vence dentro de la semana.
+  const weekEnd = start.getTime() + 7 * 86_400_000;
+  for (const t of allTasks) {
+    const limit = Date.parse(t.item.limit);
+    t.item.atRisk = t.finishAt != null ? t.finishAt > limit : limit < weekEnd;
+  }
+  const atRiskCount = allTasks.filter((t) => t.item.atRisk).length;
+
   for (const day of days) {
-    day.taskCount = Math.round((day.taskHours * HOUR) / Math.max(hpaMs, MIN));
+    day.taskCount = new Set(day.blocks.flatMap((b) => b.itemIds ?? [])).size;
     day.taskHours = r1(day.taskHours);
     day.blocks.sort((a, b) => a.from - b.from);
   }
@@ -390,6 +406,8 @@ export function computeWeekPlan(
       utilization: capacityMs ? Math.round(((busyMeetingMs + pendingMs) / capacityMs) * 100) : 0,
       finishLabel: finish && !unscheduledMs ? dayLabel(new Date(finish)) : null,
       verdict,
+      atRiskCount,
     },
+    items,
   };
 }

@@ -2,6 +2,8 @@ import { google, type gmail_v1, type calendar_v3 } from "googleapis";
 import { getAuthorizedClient } from "./google-client";
 import { getDocText } from "./drive";
 import { parseGeminiNotes } from "@/lib/utils/gemini-notes-parser";
+import { applyCorrections, extractSuggestions, type TranscriptSuggestion } from "@/lib/utils/transcript";
+import { getSettings } from "@/lib/store/settings-store";
 import type {
   ClientsFile,
   DiscoveredClient,
@@ -202,6 +204,35 @@ export async function backfillMeetingNotes(file: ClientsFile) {
   return updates.filter((u) => u !== null);
 }
 
+const TRANSCRIPT_DAYS = 30;
+
+/**
+ * Sugerencias de la transcripción para minutas recientes (≤30 días) de clientes validados que aún no se
+ * procesaron (`transcript === undefined`), por tandas. Sin acceso al Doc → `[]` (no se reintenta).
+ */
+export async function backfillTranscripts(file: ClientsFile) {
+  const { corrections } = await getSettings();
+  const since = Date.now() - TRANSCRIPT_DAYS * 86_400_000;
+  const seen = new Set<string>();
+  const pending = file.clients
+    .filter((c) => c.status === "assigned" || c.status === "unassigned")
+    .flatMap((c) => c.meetings)
+    .filter((m) => m.docId && m.transcript === undefined && Date.parse(m.date) >= since && !seen.has(m.id) && seen.add(m.id))
+    .sort((a, b) => b.date.localeCompare(a.date))
+    .slice(0, BACKFILL_PER_RUN);
+
+  const updates = await mapLimit(pending, CONCURRENCY, async (m) => {
+    try {
+      const doc = applyCorrections(await withRetry(() => getDocText(m.docId!)), corrections);
+      return { meetingId: m.id, transcript: extractSuggestions(m.id, doc, m.nextSteps) };
+    } catch (error) {
+      const code = (error as { code?: number; status?: number }).code ?? (error as { status?: number }).status;
+      return code === 403 || code === 404 ? { meetingId: m.id, transcript: [] as TranscriptSuggestion[] } : null;
+    }
+  });
+  return updates.filter((u) => u !== null);
+}
+
 export interface DiscoveryStats {
   scanned: number;
   skipped: number;
@@ -223,6 +254,7 @@ export async function discoverGeminiMeetings(
   const profile = await withRetry(() => gmail.users.getProfile({ userId: "me" }));
   const ownerEmail = profile.data.emailAddress?.toLowerCase() ?? null;
   const ownDomain = ownerEmail?.split("@")[1] ?? "";
+  const { corrections } = await getSettings();
 
   const [allIds, events] = await Promise.all([
     listGeminiMessageIds(gmail, days),
@@ -277,13 +309,16 @@ export async function discoverGeminiMeetings(
     }
 
     let notesText = body;
+    let fromDoc = false;
     if (docId) {
       try {
         notesText = await withRetry(() => getDocText(docId));
+        fromDoc = true;
       } catch {
         // Sin acceso al Doc (p. ej. creado por otro organizador): usamos el body del mail.
       }
     }
+    notesText = applyCorrections(notesText, corrections);
     const parsed = parseGeminiNotes(notesText);
     const meeting: DiscoveredMeeting = {
       id,
@@ -294,6 +329,7 @@ export async function discoverGeminiMeetings(
       nextSteps: parsed.nextSteps,
       milestones: parsed.milestones,
       decisions: parsed.decisions,
+      transcript: fromDoc ? extractSuggestions(id, notesText, parsed.nextSteps) : [],
       durationMinutes: event ? eventMinutes(event) : null,
       attendees: event ? eventAttendees(event) : [],
     };

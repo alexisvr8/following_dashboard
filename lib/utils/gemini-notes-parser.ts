@@ -53,46 +53,125 @@ function dateFrom(day: number, month: number, base: Date): Date {
   return candidate < base ? new Date(base.getFullYear() + 1, month, day, 23, 59, 59) : candidate;
 }
 
-/** Fecha objetivo mencionada en un próximo paso, resuelta contra la fecha de la reunión. */
-export function parseDue(text: string, meetingDate: string): StepDue | null {
+export const DEFAULT_WORK_DAYS = [1, 2, 3, 4, 5];
+
+/** Si cae en día no laborable, pasa al siguiente día hábil (fin de día). */
+export function rollToWorkday(d: Date, workDays: number[] = DEFAULT_WORK_DAYS): Date {
+  const out = addDays(d, 0);
+  for (let i = 0; i < 7 && workDays.length && !workDays.includes(out.getDay()); i++) out.setDate(out.getDate() + 1);
+  return out;
+}
+
+/** `n` días hábiles después de `d` (n = 0 → el mismo día, o el siguiente hábil). Fin de día. */
+export function addBusinessDays(d: Date, n: number, workDays: number[] = DEFAULT_WORK_DAYS): Date {
+  const out = rollToWorkday(d, workDays);
+  for (let left = n; left > 0 && workDays.length; ) {
+    out.setDate(out.getDate() + 1);
+    if (workDays.includes(out.getDay())) left--;
+  }
+  return out;
+}
+
+/** Último día hábil de la semana (lun–dom) que contiene `d`. */
+function lastWorkdayOfWeek(d: Date, workDays: number[]): Date {
+  const sunday = addDays(d, (7 - d.getDay()) % 7);
+  for (let i = 0; i < 7; i++) {
+    const x = addDays(sunday, -i);
+    if (workDays.includes(x.getDay())) return x;
+  }
+  return sunday;
+}
+
+function lastWorkdayOfMonth(d: Date, workDays: number[]): Date {
+  const last = new Date(d.getFullYear(), d.getMonth() + 1, 0, 23, 59, 59);
+  for (let i = 0; i < 7; i++) {
+    const x = addDays(last, -i);
+    if (workDays.includes(x.getDay())) return x;
+  }
+  return last;
+}
+
+const NUMBER_WORDS: Record<string, number> = {
+  un: 1, una: 1, uno: 1, dos: 2, tres: 3, cuatro: 4, cinco: 5, seis: 6, siete: 7, ocho: 8, nueve: 9, diez: 10, quince: 15,
+};
+const NUM = `(\\d{1,2}|${Object.keys(NUMBER_WORDS).join("|")})`;
+const toNum = (s: string) => NUMBER_WORDS[s] ?? Number(s);
+const NEXT_WEEK = /\b(semana proxima|proxima semana|semana que viene|semana siguiente|next week)\b/;
+
+/**
+ * Fecha objetivo mencionada en un próximo paso, resuelta contra la fecha de la REUNIÓN (lo que se dijo
+ * ese día), no contra hoy. Las fechas que caen en día no laborable pasan al siguiente día hábil.
+ * Sin una fecha dicha devuelve `null`: nunca se inventa (la meta interna la pone `deadlines.ts`).
+ */
+export function parseDue(text: string, meetingDate: string, workDays: number[] = DEFAULT_WORK_DAYS): StepDue | null {
   const base = new Date(meetingDate);
   const t = stripAccents(text.toLowerCase());
+  const day = (d: Date): StepDue => {
+    const r = rollToWorkday(d, workDays);
+    return { label: dayLabel(r), until: r };
+  };
 
-  if (/\b(semana proxima|proxima semana|semana que viene|semana siguiente)\b/.test(t)) {
-    const monday = addDays(base, ((8 - base.getDay()) % 7) || 7);
-    return { label: `semana del ${ddmm(monday)}`, until: addDays(monday, 6) };
-  }
   const numeric = t.match(/(?<![\d/])(\d{1,2})\/(\d{1,2})(?![\d/])/);
   if (numeric && +numeric[1] >= 1 && +numeric[1] <= 31 && +numeric[2] >= 1 && +numeric[2] <= 12) {
-    const d = dateFrom(+numeric[1], +numeric[2] - 1, base);
-    return { label: ddmm(d), until: d };
+    return day(dateFrom(+numeric[1], +numeric[2] - 1, base));
   }
   const named = t.match(new RegExp(`\\b(\\d{1,2}) de (${MONTHS.join("|")})\\b`));
-  if (named) {
-    const d = dateFrom(+named[1], MONTHS.indexOf(named[2]), base);
-    return { label: ddmm(d), until: d };
-  }
-  const weekday = t.match(/\b(?:el|este|proximo|dia|para el|hasta el|antes del)\s+(lunes|martes|miercoles|jueves|viernes|sabado|domingo)\b/);
-  if (weekday) {
-    const d = addDays(base, ((WEEKDAYS.indexOf(weekday[1]) - base.getDay() + 7) % 7) || 7);
-    return { label: dayLabel(d), until: d };
-  }
+  if (named) return day(dateFrom(+named[1], MONTHS.indexOf(named[2]), base));
+  if (/\bpasado manana\b/.test(t)) return day(addDays(base, 2));
   // "mañana" como día, no como momento del día ("el lunes por la mañana").
-  if (/(?<!(por|de|a|en) la )\bmanana\b/.test(t)) {
-    const d = addDays(base, 1);
+  // "el día de mañana" = algún día (modismo), no mañana.
+  if ((/(?<!(por|de|a|en) la )\bmanana\b/.test(t) && !/\bel dia (de )?manana\b/.test(t)) || /\btomorrow\b/.test(t)) {
+    return day(addDays(base, 1));
+  }
+  // "hoy" suelto suele ser contexto ("lo que hoy falla"): solo cuenta como plazo explícito.
+  if (/\b(para hoy|hoy mismo|en el dia de hoy|antes del fin del dia|today|eod)\b/.test(t)) return day(addDays(base, 0));
+
+  // "el viernes pasado" es pasado: no es un plazo.
+  const weekday = t.match(/\b(?:el|este|proximo|dia|para el|hasta el|antes del)\s+(lunes|martes|miercoles|jueves|viernes|sabado|domingo)\b(?!\s+pasado)/);
+  if (weekday) {
+    const target = WEEKDAYS.indexOf(weekday[1]);
+    if (NEXT_WEEK.test(t)) {
+      // "el viernes de la semana que viene": ese día de la semana siguiente a la reunión.
+      const monday = addDays(base, ((8 - base.getDay()) % 7) || 7);
+      return day(addDays(monday, (target + 6) % 7));
+    }
+    return day(addDays(base, ((target - base.getDay() + 7) % 7) || 7));
+  }
+
+  const businessDays = t.match(new RegExp(`\\b(?:en|dentro de|en los proximos)\\s+${NUM}\\s+dias? (?:habiles|laborables)\\b`));
+  if (businessDays) {
+    const d = addBusinessDays(base, toNum(businessDays[1]), workDays);
     return { label: dayLabel(d), until: d };
+  }
+  const days = t.match(new RegExp(`\\b(?:en|dentro de|en los proximos)\\s+${NUM}\\s+dias?\\b`));
+  if (days) return day(addDays(base, toNum(days[1])));
+  const weeks = t.match(new RegExp(`\\b(?:en|dentro de)\\s+${NUM}\\s+semanas?\\b`));
+  if (weeks) return day(addDays(base, 7 * toNum(weeks[1])));
+
+  if (NEXT_WEEK.test(t)) {
+    const monday = addDays(base, ((8 - base.getDay()) % 7) || 7);
+    const end = lastWorkdayOfWeek(monday, workDays);
+    return { label: `semana del ${ddmm(monday)}`, until: end };
+  }
+  if (/\b(esta semana|en la semana|fin de (la )?semana|antes del fin de semana|this week)\b/.test(t)) {
+    const end = lastWorkdayOfWeek(base, workDays);
+    return { label: dayLabel(end), until: end < base ? rollToWorkday(base, workDays) : end };
+  }
+  if (/\b(fin de mes|fines de mes|final de mes|fin del mes|cierre de mes|end of (the )?month)\b/.test(t)) {
+    const end = lastWorkdayOfMonth(base, workDays);
+    return { label: dayLabel(end), until: end };
   }
   return null;
 }
 
 /** "[Ana Pérez, Luis] Enviar X: detalle" → dueños, texto y fecha objetivo. */
-export function parseStep(step: string, meetingDate: string): ParsedStep {
+export function parseStep(step: string, meetingDate: string, workDays?: number[]): ParsedStep {
   const m = step.match(/^\s*\[([^\]]+)\]\s*(.+)$/);
   const text = (m ? m[2] : step).trim();
   return {
     owners: m ? m[1].split(",").map((o) => o.trim()).filter(Boolean) : [],
     text,
-    due: parseDue(text, meetingDate),
+    due: parseDue(text, meetingDate, workDays),
   };
 }
 

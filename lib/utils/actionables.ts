@@ -48,7 +48,19 @@ export function accountActionables(client: ClientRecord): Actionable[] {
     return { id, meeting: m, step: edits[id] ?? step, carried, done: done.has(id), doneAt: at[id] ?? null };
   };
 
-  const out = latest.nextSteps.map((s, i) => make(latest, s, i, false)).filter((a) => !removed.has(a.id));
+  // "No corresponde" enseña: si una minuta posterior vuelve a listar algo que quité, tampoco se muestra.
+  const removedTexts = client.meetings.flatMap((m) =>
+    m.nextSteps.flatMap((s, i) => {
+      const id = stepTicketId(client.id, m.id, i);
+      return removed.has(id) ? [{ meetingId: m.id, date: m.date, text: edits[id] ?? s }] : [];
+    }),
+  );
+  const learnedRemoved = (m: DiscoveredMeeting, step: string) =>
+    removedTexts.some((r) => r.meetingId !== m.id && r.date < m.date && keywordSimilarity(r.text, step) >= DUPLICATE);
+
+  const out = latest.nextSteps
+    .map((s, i) => make(latest, s, i, false))
+    .filter((a) => !removed.has(a.id) && !learnedRemoved(latest, a.step));
   const cutoff = Date.parse(latest.date) - CARRY_DAYS * 86_400_000;
   for (let k = 1; k < sorted.length; k++) {
     const m = sorted[k];
@@ -57,7 +69,7 @@ export function accountActionables(client: ClientRecord): Actionable[] {
     if (Date.parse(sorted[k - 1].date) < CARRY_OVER_SINCE) break;
     m.nextSteps.forEach((step, i) => {
       const a = make(m, step, i, true);
-      if (removed.has(a.id)) return;
+      if (removed.has(a.id) || learnedRemoved(m, a.step)) return;
       const twin = out.find((o) => keywordSimilarity(o.step, a.step) >= DUPLICATE);
       if (twin) {
         // Toma el id del cerrado: reabrirlo lo devuelve a pendiente sin perder nada.

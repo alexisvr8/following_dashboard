@@ -12,6 +12,10 @@ export interface SyncStatus {
   failed: number;
   alerts: number;
   draftsCreated: number;
+  /** Borradores de minuta creados solos tras una reunión nueva. */
+  meetingDrafts?: number;
+  /** Última vez que se generaron los borradores semanales de objetivos (lunes 08:30). */
+  lastWeeklyDraftsAt?: string | null;
   durationMs: number;
   error: string | null;
 }

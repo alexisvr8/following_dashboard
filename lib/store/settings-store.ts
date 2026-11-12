@@ -1,5 +1,15 @@
 import { getState, setState } from "@/lib/store/backend";
 
+export type PersonRole = "me" | "team" | "client" | "partner";
+export interface Correction {
+  from: string;
+  to: string;
+}
+
+/** Clave de `settings.people`: nombre sin acentos, minúsculas y espacios simples. */
+export const personKey = (name: string) =>
+  name.toLowerCase().normalize("NFD").replace(/[\u0300-\u036f]/g, "").replace(/\s+/g, " ").trim();
+
 // Jornada laboral y supuestos de capacidad. `app_state.settings` (o `.data/settings.json`).
 export interface WorkSettings {
   /** "HH:MM" ventana extendida (lo más temprano que arrancás / lo más tarde que terminás). */
@@ -21,6 +31,16 @@ export interface WorkSettings {
   includeGroupTasks: boolean;
   /** Días hábiles sin avance/actualización con el cliente antes de alertar (default 2). */
   staleBusinessDays: number;
+  /** Meta interna de un accionable sin fecha dicha en la reunión: N días hábiles desde la reunión/mail (default 3). */
+  targetBusinessDays: number;
+  /** Desde ahí pasa a "Vencido" (default 4). */
+  limitBusinessDays: number;
+  /** Correcciones aprendidas ("Extract" → "Xtract"): se aplican a minutas, transcripciones y accionables. */
+  corrections: Correction[];
+  /** Crear solo el borrador de minuta en Gmail apenas llega la minuta de Gemini (nunca se envía). */
+  autoMeetingDrafts: boolean;
+  /** Rol aprendido por persona (clave `personKey`): decide debo / me deben y de qué lado va en los mails. */
+  people: Record<string, PersonRole>;
 }
 
 export const DEFAULT_SETTINGS: WorkSettings = {
@@ -35,6 +55,11 @@ export const DEFAULT_SETTINGS: WorkSettings = {
   ownerAliases: ["Alexis Vásquez R"],
   includeGroupTasks: true,
   staleBusinessDays: 2,
+  targetBusinessDays: 3,
+  limitBusinessDays: 4,
+  corrections: [],
+  people: {},
+  autoMeetingDrafts: true,
 };
 
 export async function getSettings(): Promise<WorkSettings> {
@@ -65,6 +90,31 @@ export async function updateSettings(patch: Partial<WorkSettings>): Promise<Work
   if (typeof patch.includeGroupTasks === "boolean") next.includeGroupTasks = patch.includeGroupTasks;
   if (typeof patch.staleBusinessDays === "number" && patch.staleBusinessDays >= 1 && patch.staleBusinessDays <= 15) {
     next.staleBusinessDays = Math.round(patch.staleBusinessDays);
+  }
+  if (typeof patch.targetBusinessDays === "number" && patch.targetBusinessDays >= 1 && patch.targetBusinessDays <= 10) {
+    next.targetBusinessDays = Math.round(patch.targetBusinessDays);
+  }
+  if (typeof patch.limitBusinessDays === "number" && patch.limitBusinessDays >= 1 && patch.limitBusinessDays <= 15) {
+    next.limitBusinessDays = Math.round(patch.limitBusinessDays);
+  }
+  if (next.limitBusinessDays < next.targetBusinessDays) next.limitBusinessDays = next.targetBusinessDays;
+  if (Array.isArray(patch.corrections)) {
+    const seen = new Set<string>();
+    next.corrections = patch.corrections
+      .filter((c) => c && typeof c.from === "string" && typeof c.to === "string" && c.from.trim() && c.from.trim() !== c.to.trim())
+      .map((c) => ({ from: c.from.trim().slice(0, 80), to: c.to.trim().slice(0, 80) }))
+      .filter((c) => !seen.has(c.from.toLowerCase()) && seen.add(c.from.toLowerCase()))
+      .slice(0, 300);
+  }
+  if (typeof patch.autoMeetingDrafts === "boolean") next.autoMeetingDrafts = patch.autoMeetingDrafts;
+  if (patch.people && typeof patch.people === "object") {
+    const ROLES: PersonRole[] = ["me", "team", "client", "partner"];
+    next.people = Object.fromEntries(
+      Object.entries(patch.people)
+        .filter(([k, v]) => k.trim() && ROLES.includes(v))
+        .map(([k, v]) => [personKey(k), v])
+        .slice(0, 500),
+    );
   }
   await setState("settings", next);
   return next;

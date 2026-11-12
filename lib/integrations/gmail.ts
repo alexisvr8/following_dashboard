@@ -71,6 +71,20 @@ const encodeHeader = (s: string) =>
 const escapeHtml = (s: string) =>
   s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
 
+// "- Status: Hecho|Pendiente (dd/mm)" al final de un punto → "Status:" en negrita; "Hecho" en negrita verde (Gmail
+// conserva estilos inline). Funciona también si lo escribís a mano en el editor.
+const STATUS_RE = /\s[—-]\s*Status:\s*(Hecho|Pendiente)(\s*\([^)]*\))?\s*$/i;
+const DONE_GREEN = "#188038";
+
+function formatLine(line: string): string {
+  const m = line.match(STATUS_RE);
+  if (!m) return escapeHtml(line);
+  const head = escapeHtml(line.slice(0, m.index));
+  const done = /^hecho$/i.test(m[1]);
+  const value = done ? `<b style="color:${DONE_GREEN}">Hecho</b>` : "Pendiente";
+  return `${head} - <b>Status:</b> ${value}${m[2] ? escapeHtml(m[2]) : ""}`;
+}
+
 /** Texto del borrador → HTML como el del redactor de Gmail: cada línea un div, "• " en listas reales. */
 export function bodyToHtml(body: string): string {
   const out: string[] = [];
@@ -82,11 +96,11 @@ export function bodyToHtml(body: string): string {
   for (const line of body.replace(/\r/g, "").split("\n")) {
     const bullet = line.match(/^\s*•\s+(.*)$/);
     if (bullet) {
-      list.push(escapeHtml(bullet[1]));
+      list.push(formatLine(bullet[1]));
       continue;
     }
     flush();
-    out.push(line.trim() ? `<div>${escapeHtml(line)}</div>` : "<div><br></div>");
+    out.push(line.trim() ? `<div>${formatLine(line)}</div>` : "<div><br></div>");
   }
   flush();
   return out.join("");
@@ -115,7 +129,8 @@ export function buildMimeMessage(input: {
   const signature = input.signatureHtml?.trim();
   const plain = signature ? `${input.body}\n\n-- \n${stripHtml(signature).trim()}` : input.body;
   const html = `<div dir="ltr">${bodyToHtml(input.body)}${
-    signature ? `<div><br></div><div dir="ltr" class="gmail_signature">${signature}</div>` : ""
+    // Sin la clase `gmail_signature`: con ella Gmail la trata como firma repetida y la esconde tras "…".
+    signature ? `<div><br></div><div dir="ltr">${signature}</div>` : ""
   }</div>`;
   return [
     `To: ${input.to.join(", ")}`,
@@ -171,26 +186,38 @@ async function composeRaw(gmail: gmail_v1.Gmail, input: MailInput): Promise<stri
   return Buffer.from(mime, "utf-8").toString("base64url");
 }
 
-/** Crea un draft en Gmail (no envía). */
+/**
+ * Crea un draft en Gmail (no envía). Con `replaceDraftId` actualiza ese borrador (mismo mail, contenido nuevo)
+ * en vez de dejar dos; si ya no existe (lo enviaste o borraste en Gmail) crea uno nuevo.
+ */
 export async function createThreadDraft(
   input: MailInput,
-): Promise<{ draftId: string; messageId: string; threadId: string | null; account: string | null }> {
+  replaceDraftId?: string,
+): Promise<{ draftId: string; messageId: string; threadId: string | null; account: string | null; updated: boolean }> {
   const auth = await getAuthorizedClient();
   if (!auth) throw new Error("google_not_connected");
   const gmail = google.gmail({ version: "v1", auth });
   const raw = await composeRaw(gmail, input);
-  const [draft, profile] = await Promise.all([
-    gmail.users.drafts.create({
-      userId: "me",
-      requestBody: { message: { raw, ...(input.threadId ? { threadId: input.threadId } : {}) } },
-    }),
-    gmail.users.getProfile({ userId: "me" }),
-  ]);
+  const requestBody = { message: { raw, ...(input.threadId ? { threadId: input.threadId } : {}) } };
+  const profile = gmail.users.getProfile({ userId: "me" });
+  let draft: gmail_v1.Schema$Draft | null = null;
+  let updated = false;
+  if (replaceDraftId) {
+    try {
+      draft = (await gmail.users.drafts.update({ userId: "me", id: replaceDraftId, requestBody })).data;
+      updated = true;
+    } catch (error) {
+      const code = (error as { code?: number }).code;
+      if (code !== 404 && code !== 400) throw error;
+    }
+  }
+  draft ??= (await gmail.users.drafts.create({ userId: "me", requestBody })).data;
   return {
-    draftId: draft.data.id!,
-    messageId: draft.data.message?.id ?? "",
-    threadId: draft.data.message?.threadId ?? input.threadId,
-    account: profile.data.emailAddress ?? null,
+    draftId: draft.id!,
+    messageId: draft.message?.id ?? "",
+    threadId: draft.message?.threadId ?? input.threadId,
+    account: (await profile).data.emailAddress ?? null,
+    updated,
   };
 }
 

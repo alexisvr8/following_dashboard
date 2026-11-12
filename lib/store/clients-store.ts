@@ -4,6 +4,8 @@ import path from "path";
 import { DATA_DIR, getState, setState, usingSupabase } from "@/lib/store/backend";
 import { supabaseAdmin } from "@/lib/supabase/admin";
 import type { MeetingDecision } from "@/lib/utils/gemini-notes-parser";
+import { applyCorrections, type TranscriptSuggestion } from "@/lib/utils/transcript";
+import type { Correction } from "@/lib/store/settings-store";
 import { collectMailItems, mailTicketId, type MailItem } from "@/lib/utils/mail-items";
 
 export { mailTicketId };
@@ -30,6 +32,8 @@ export interface DiscoveredMeeting {
   /** Temas tratados, del Resumen de la minuta. `undefined` = minuta aún sin reprocesar. */
   milestones?: string[];
   decisions?: MeetingDecision[];
+  /** Compromisos/pedidos de la transcripción. `undefined` = aún sin procesar. */
+  transcript?: TranscriptSuggestion[];
 }
 
 export interface CustomActionable {
@@ -60,6 +64,14 @@ export interface ClientRecord {
   actionableEdits?: Record<string, string>;
   /** Accionables creados a mano; cuentan igual que los de la minuta (Cuentas, Capacidad y mails). */
   customActionables?: CustomActionable[];
+  /** Fecha de entrega puesta a mano (AAAA-MM-DD): manda sobre la detectada en la minuta y la meta interna. */
+  actionableDue?: Record<string, string>;
+  /** Minutos estimados puestos a mano (si falta, `settings.hoursPerActionable`). */
+  actionableEstimate?: Record<string, number>;
+  /** Lado corregido a mano (manda sobre el detectado). */
+  actionableSide?: Record<string, "debo" | "me_deben">;
+  /** Sugerencias de la transcripción ya resueltas (aceptada → accionable propio; descartada → enseña). */
+  suggestions?: Record<string, { state: "accepted" | "dismissed"; at: string; text: string; ticketId?: string }>;
   /** Accionables detectados que quité porque no correspondían. */
   removedTicketIds?: string[];
   /** Pedidos y compromisos detectados en mails: siguen aunque el mail salga de `activity.recentMails`. */
@@ -133,6 +145,8 @@ export interface FollowupDraft {
   gmailMessageId?: string;
   threadId?: string | null;
   draftCreatedAt?: string;
+  /** Texto que quedó en el borrador de Gmail (para avisar cuando hay avances que todavía no tiene). */
+  gmailBody?: string;
   /** Cuándo se envió desde la app; el próximo borrador se genera de cero con el estado actual. */
   sentAt?: string;
   /** Si lo generó el cron de seguimiento: fecha del último movimiento que lo disparó (dedupe). */
@@ -519,6 +533,43 @@ export async function changeActionable(id: string, change: ActionableChange): Pr
   return m ? { client: m.client, ticketId: m.result } : null;
 }
 
+export interface ActionablePlanChange {
+  ticketId: string;
+  /** AAAA-MM-DD, o null para volver a la fecha detectada / meta interna. */
+  due?: string | null;
+  /** Minutos, o null para volver al default. */
+  estimateMinutes?: number | null;
+  /** Lado manual, o null para volver al detectado. */
+  side?: "debo" | "me_deben" | null;
+}
+
+/** Fecha y estimación manuales de un accionable. La fecha toca `ticketsUpdatedAt` (aparece en los borradores). */
+export async function setActionablePlan(id: string, change: ActionablePlanChange): Promise<ClientRecord | null> {
+  const m = await mutateClient(id, (client) => {
+    if (change.due !== undefined) {
+      const due = { ...client.actionableDue };
+      if (change.due) due[change.ticketId] = change.due;
+      else delete due[change.ticketId];
+      client.actionableDue = due;
+      client.ticketsUpdatedAt = new Date().toISOString();
+    }
+    if (change.side !== undefined) {
+      const side = { ...client.actionableSide };
+      if (change.side) side[change.ticketId] = change.side;
+      else delete side[change.ticketId];
+      client.actionableSide = side;
+      client.ticketsUpdatedAt = new Date().toISOString();
+    }
+    if (change.estimateMinutes !== undefined) {
+      const est = { ...client.actionableEstimate };
+      if (change.estimateMinutes) est[change.ticketId] = change.estimateMinutes;
+      else delete est[change.ticketId];
+      client.actionableEstimate = est;
+    }
+  });
+  return m?.client ?? null;
+}
+
 export async function setTicketDone(
   id: string,
   ticketId: string,
@@ -580,6 +631,85 @@ export async function setMeetingNotes(
   };
   await mutateClients(null, (client) => (apply(client.meetings) ? true : SKIP));
   await mutateFileLevel((state) => void apply(state.unmatched));
+}
+
+/** Guarda las sugerencias de transcripción de minutas procesadas (no toca nada más de la reunión). */
+export async function setMeetingTranscripts(updates: { meetingId: string; transcript: TranscriptSuggestion[] }[]): Promise<void> {
+  if (!updates.length) return;
+  const byId = new Map(updates.map((u) => [u.meetingId, u.transcript]));
+  await mutateClients(null, (client) => {
+    let changed = false;
+    for (const m of client.meetings) {
+      const t = byId.get(m.id);
+      if (t) {
+        m.transcript = t;
+        changed = true;
+      }
+    }
+    return changed ? true : SKIP;
+  });
+}
+
+/**
+ * Acepta (crea un accionable propio con el título elegido y, si se dijo, la fecha) o descarta una sugerencia
+ * de la transcripción. Lo descartado queda guardado: frases parecidas no se vuelven a sugerir en la cuenta.
+ */
+export async function resolveSuggestion(
+  id: string,
+  input: { suggestionId: string; action: "accept" | "dismiss"; title?: string; due?: string | null },
+): Promise<{ client: ClientRecord; ticketId: string | null } | null> {
+  const m = await mutateClient(id, (client): string | null | typeof SKIP => {
+    const meeting = client.meetings.find((x) => x.transcript?.some((s) => s.id === input.suggestionId));
+    const sug = meeting?.transcript?.find((s) => s.id === input.suggestionId);
+    if (!meeting || !sug || client.suggestions?.[sug.id]) return SKIP;
+    const now = new Date().toISOString();
+    let ticketId: string | null = null;
+    if (input.action === "accept") {
+      const title = (input.title?.trim() || sug.text).slice(0, 500);
+      ticketId = `${client.id}:custom-${randomUUID().slice(0, 8)}`;
+      client.customActionables = [...(client.customActionables ?? []), { id: ticketId, title, meetingId: meeting.id, createdAt: now }];
+      if (input.due) client.actionableDue = { ...client.actionableDue, [ticketId]: input.due };
+      client.ticketsUpdatedAt = now;
+    }
+    client.suggestions = {
+      ...client.suggestions,
+      [sug.id]: { state: input.action === "accept" ? "accepted" : "dismissed", at: now, text: sug.text, ...(ticketId && { ticketId }) },
+    };
+    return ticketId;
+  });
+  return m ? { client: m.client, ticketId: m.result } : null;
+}
+
+/** Aplica una corrección aprendida a todo lo guardado (minutas, transcripciones, ediciones, propios, mails). */
+export async function applyCorrectionEverywhere(correction: Correction): Promise<number> {
+  const fix = (s: string) => applyCorrections(s, [correction]);
+  const fixMeetings = (meetings: DiscoveredMeeting[]) => {
+    for (const m of meetings) {
+      m.title = fix(m.title);
+      if (m.summary) m.summary = fix(m.summary);
+      m.nextSteps = m.nextSteps.map(fix);
+      if (m.milestones) m.milestones = m.milestones.map(fix);
+      if (m.decisions) m.decisions = m.decisions.map((d) => ({ ...d, text: fix(d.text) }));
+      if (m.transcript) m.transcript = m.transcript.map((t) => ({ ...t, text: fix(t.text), context: fix(t.context) }));
+    }
+  };
+  const changed = await mutateClients(null, (client) => {
+    const before = JSON.stringify(client);
+    fixMeetings(client.meetings);
+    if (client.actionableEdits) {
+      client.actionableEdits = Object.fromEntries(Object.entries(client.actionableEdits).map(([k, v]) => [k, fix(v)]));
+    }
+    client.customActionables = client.customActionables?.map((c) => ({ ...c, title: fix(c.title) }));
+    if (client.mailActionables) {
+      client.mailActionables = Object.fromEntries(
+        Object.entries(client.mailActionables).map(([k, v]) => [k, { ...v, title: fix(v.title) }]),
+      );
+    }
+    if (JSON.stringify(client) === before) return SKIP;
+    client.ticketsUpdatedAt = new Date().toISOString();
+    return true;
+  });
+  return changed.size;
 }
 
 export async function saveFollowup(

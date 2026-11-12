@@ -121,25 +121,36 @@ export async function POST(request: Request, { params }: { params: Promise<{ id:
       updatedAt: sentAt,
     }).catch(() => undefined);
     await refreshActivity(r).catch(() => undefined);
-    return Response.json({ sentAt, gmailUrl: gmailDraftUrl({ ...sent }, sent.threadId) });
+    return Response.json({
+      sentAt,
+      inThread: input.threadId ? sent.threadId === input.threadId : null,
+      to: r.draft.to,
+      gmailUrl: gmailDraftUrl({ ...sent }, sent.threadId),
+    });
   }
   try {
-    const created = await createThreadDraft({
-      threadId: input.threadId ?? null,
-      to: r.draft.to,
-      cc: r.draft.cc,
-      subject: r.draft.subject,
-      body: r.draft.body,
-    });
+    const created = await createThreadDraft(
+      {
+        threadId: input.threadId ?? null,
+        to: r.draft.to,
+        cc: r.draft.cc,
+        subject: r.draft.subject,
+        body: r.draft.body,
+      },
+      r.pendingDraftId,
+    );
     const draft: FollowupDraft = {
       ...r.draft,
       gmailDraftId: created.draftId,
       gmailMessageId: created.messageId,
       threadId: created.threadId,
       draftCreatedAt: new Date().toISOString(),
+      gmailBody: r.draft.body,
     };
     await saveFollowup(r.client.id, r.key, draft);
-    return Response.json({ ...draft, gmailUrl: gmailDraftUrl(created, input.threadId ?? null) });
+    // Validación: si se pidió responder en un hilo, Gmail tiene que haberlo dejado en ese mismo hilo.
+    const inThread = input.threadId ? created.threadId === input.threadId : null;
+    return Response.json({ ...draft, inThread, updated: created.updated, gmailUrl: gmailDraftUrl(created, created.threadId ?? input.threadId ?? null) });
   } catch (error) {
     const msg = (error as Error).message;
     return Response.json({ error: msg }, { status: msg === "google_not_connected" ? 409 : 502 });

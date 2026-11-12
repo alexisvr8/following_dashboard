@@ -19,10 +19,17 @@ export function dailyWorkHours(s: WorkSettings): number {
   return Math.max(0, toMinutes(s.workEnd) - toMinutes(s.workStart) - s.lunchMinutes) / 60;
 }
 
+/** Rol aprendido de una persona (settings.people), si se marcó. */
+export const learnedRole = (name: string, s: WorkSettings) => s.people?.[norm(name)];
+
 export function isOwnActionable(step: string, s: WorkSettings): boolean {
   const owner = step.match(/^\s*\[([^\]]+)\]/)?.[1];
   if (!owner) return true;
   if (GROUP.test(owner.trim())) return s.includeGroupTasks;
+  // Varios dueños: es mío si alguno soy yo (rol aprendido "me" o alias).
+  const owners = owner.split(",").map((o) => o.trim()).filter(Boolean);
+  if (owners.some((o) => learnedRole(o, s) === "me")) return true;
+  if (owners.length && owners.every((o) => learnedRole(o, s) && learnedRole(o, s) !== "me")) return false;
   const o = norm(owner);
   return s.ownerAliases.some((alias) => {
     const a = norm(alias);

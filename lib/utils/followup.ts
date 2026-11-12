@@ -8,10 +8,11 @@ import {
 } from "@/lib/store/clients-store";
 import type { WorkSettings } from "@/lib/store/settings-store";
 import { computeParticipants, isOwnTeamEmail, type Participant } from "@/lib/utils/participants";
-import { isGroupOwner, isOwnActionable } from "@/lib/utils/capacity";
+import { isGroupOwner, isOwnActionable, learnedRole } from "@/lib/utils/capacity";
 import { isRecapMail, mailTickets, relatedMailNote } from "@/lib/utils/mail-tickets";
 import { accountActionables } from "@/lib/utils/actionables";
 import { parseStep, type StepDue } from "@/lib/utils/gemini-notes-parser";
+import { agreedDue } from "@/lib/utils/deadlines";
 
 // Borradores por reglas (sin LLM), recalculados con cada mail, reunión o accionable tildado.
 // Follow-up: hitos, decisiones y accionables para la próxima sesión (última minuta + arrastrados +
@@ -26,10 +27,31 @@ const fmtShort = (iso: string) =>
 const fmtDate = (iso: string) =>
   new Date(iso).toLocaleDateString("es", { weekday: "long", day: "numeric", month: "long" });
 
-/** "[Ana Pérez] Enviar X: detalle" → "Enviar X: detalle (Ana Pérez)". */
+/** "02/11" (siempre dos dígitos: `toLocaleDateString` en "es" da "2/11"). */
+const fmtDay = (iso: string) => {
+  const d = new Date(iso);
+  return `${String(d.getDate()).padStart(2, "0")}/${String(d.getMonth() + 1).padStart(2, "0")}`;
+};
+
+/** "[Ana Pérez] Enviar X: detalle" → "Enviar X: detalle" (el responsable va al final, ver `ownerTag`). */
 function formatStep(step: string): string {
   const m = step.match(/^\s*\[([^\]]+)\]\s*(.+)$/);
-  return m ? `${m[2].trim()} (${m[1].trim()})` : step.trim();
+  return m ? m[2].trim() : step.trim();
+}
+
+const ARTICLE = /^(el|la|los|las|the)$/i;
+/** Nombre de pila ("Nerina Gómez" → "Nerina"); "La empresa" / "El grupo" quedan enteros. */
+const firstName = (name: string) => {
+  const words = name.trim().split(/\s+/);
+  return words.length > 1 && !ARTICLE.test(words[0]) ? words[0] : name.trim();
+};
+
+/** " (Nerina)" / " (Sebastian y Alexis)" al final del punto, antes del status. */
+export function ownerTag(step: string): string {
+  const owners = step.match(/^\s*\[([^\]]+)\]/)?.[1].split(",").map((o) => o.trim()).filter(Boolean) ?? [];
+  const names = [...new Set(owners.map(firstName))];
+  if (!names.length) return "";
+  return ` (${names.length > 1 ? `${names.slice(0, -1).join(", ")} y ${names.at(-1)}` : names[0]})`;
 }
 
 const senderNames = (client: ClientRecord) =>
@@ -38,6 +60,29 @@ const senderNames = (client: ClientRecord) =>
       .filter((m) => m.fromName)
       .map((m) => [m.from, m.fromName!]),
   );
+
+/**
+ * Cómo nombrar la reunión según cuánto pasó: "del día de hoy", "de ayer", "del lunes" (hasta 3 días) y,
+ * después, la fecha completa ("del viernes, 6 de noviembre").
+ */
+export function meetingWhen(iso: string, now: Date): { text: string; recent: boolean } {
+  const d = new Date(iso);
+  const days = Math.round(
+    (Date.UTC(now.getFullYear(), now.getMonth(), now.getDate()) - Date.UTC(d.getFullYear(), d.getMonth(), d.getDate())) /
+      86_400_000,
+  );
+  if (days <= 0) return { text: "del día de hoy", recent: true };
+  if (days === 1) return { text: "de ayer", recent: true };
+  if (days <= 3) return { text: `del ${d.toLocaleDateString("es", { weekday: "long" })}`, recent: true };
+  return { text: `del ${fmtDate(iso)}`, recent: false };
+}
+
+// Estado al final de cada punto. En el editor es texto plano; al pasar a Gmail (`bodyToHtml`) queda
+// "Status:" en negrita y "Hecho" en negrita verde.
+export const STATUS_DONE = " - Status: Hecho";
+export const STATUS_PENDING = " - Status: Pendiente";
+/** " - Status: Hecho (02/11)" */
+const doneStatus = (doneAt: string | null) => `${STATUS_DONE}${doneAt ? ` (${fmtDay(doneAt)})` : ""}`;
 
 const cleanSubject = (subject: string) => subject.replace(/^\s*((re|fwd?|rv)\s*:\s*)+/i, "").trim();
 
@@ -173,6 +218,8 @@ function ownerSide(
   settings: WorkSettings,
 ): StepSide {
   if (isGroupOwner(owner)) return "shared";
+  const role = learnedRole(owner, settings);
+  if (role) return role === "me" ? "me" : role === "team" ? "team" : "client";
   if (isOwnActionable(`[${owner}]`, settings)) return "me";
   const target = normName(owner);
   if (!target.length) return "unknown";
@@ -205,6 +252,14 @@ export function stepSide(
   if (sides.includes("shared") || (ours && sides.includes("client"))) return "shared";
   if (!ours) return "client";
   return sides.includes("me") ? "me" : "team";
+}
+
+/** Lado corregido a mano en /accionables: debo → mío; me deben → de su lado (si lo detectado era nuestro). */
+function overrideSide(client: ClientRecord, id: string, side: StepSide): StepSide {
+  const o = client.actionableSide?.[id];
+  if (o === "debo") return "me";
+  if (o === "me_deben" && (side === "me" || side === "team")) return "client";
+  return side;
 }
 
 /** Fecha objetivo para mostrar en el mail; las ya vencidas no se exponen al cliente. */
@@ -254,34 +309,41 @@ export function buildFollowup(
   );
   const trace = mailTrace(client, meeting);
   const interaction = latestInteraction(client, meeting);
-  const steps: { text: string; side: StepSide; done: boolean }[] = actionables.map((a) => ({
+  const steps: { text: string; side: StepSide; done: boolean; doneAt: string | null }[] = actionables.map((a) => ({
     text:
-      `${formatStep(a.step)}${a.done ? "" : dueSuffix(parseStep(a.step, a.meeting.date).due, now)}` +
+      `${formatStep(a.step)}${a.done ? "" : dueSuffix(agreedDue(client, a.id, a.step, a.meeting.date, settings.workDays), now)}` +
       (!a.done && trace.has(a.id) ? ` (conversado por mail el ${fmtShort(trace.get(a.id)!.date)})` : "") +
-      (a.done && a.doneAt ? ` (${fmtShort(a.doneAt)})` : "") +
-      (!a.done && a.carried ? ` [acordado el ${fmtShort(a.meeting.date)}]` : ""),
-    side: stepSide(a.step, client, ownerEmail, settings),
+      (!a.done && a.carried ? ` [acordado el ${fmtShort(a.meeting.date)}]` : "") +
+      ownerTag(a.step),
+    side: overrideSide(client, a.id, stepSide(a.step, client, ownerEmail, settings)),
     done: a.done,
+    doneAt: a.doneAt,
   }));
   const requests = openRequests(client, interaction).map((r) => ({
     text: `${r.title} (consulta por mail)`,
     side: "team" as StepSide,
     done: false,
+    doneAt: null,
   }));
   const open = [...steps.filter((s) => !s.done), ...requests];
-  const bullets = (items: typeof steps) => items.map((s) => `• ${s.text}`);
+  const bullets = (items: typeof steps) =>
+    items.map((s) =>
+      s.done ? `✓ ${s.text}${doneStatus(s.doneAt)}` : `• ${s.text}${STATUS_PENDING}`,
+    );
   const group = (title: string, items: typeof steps) => (items.length ? ["", title, ...bullets(items)] : []);
   const agreed = (meeting.decisions ?? []).filter((d) => d.agreed).map((d) => `• ${d.text}`);
   const pending = (meeting.decisions ?? []).filter((d) => !d.agreed).map((d) => `• ${d.text}`);
   const milestones = (meeting.milestones ?? []).map((m) => `• ${m}`);
 
+  const when = meetingWhen(meeting.date, now);
   const lines = [
     greet(recipients, client),
     "",
-    `Gracias por el tiempo en la reunión del ${fmtDate(meeting.date)}. Les comparto lo conversado y cómo seguimos.`,
+    `Muchas gracias por la reunión ${when.text}${when.recent ? "" : ","} y por el tiempo dedicado. Les comparto lo que vimos y cómo seguimos.`,
   ];
-  if (meeting.summary) lines.push("", meeting.summary);
-  if (milestones.length) lines.push("", "Hitos de la reunión:", ...milestones);
+  // Orden: puntos importantes charlados → resumen → decisiones → accionables.
+  if (milestones.length) lines.push("", "Puntos importantes que vimos:", ...milestones);
+  if (meeting.summary) lines.push("", "Resumen:", meeting.summary);
   if (agreed.length) lines.push("", "Decisiones acordadas:", ...agreed);
   if (pending.length) lines.push("", "Quedó por definir:", ...pending);
   if (open.length) {
@@ -295,7 +357,7 @@ export function buildFollowup(
     );
   }
   lines.push(...group("Ya avanzamos con:", steps.filter((s) => s.done)));
-  lines.push("", "Si algo no quedó bien reflejado, avísenme y lo corregimos.", "", "Saludos,");
+  lines.push("", "Si algo no quedó bien reflejado, avísenme y lo corregimos.", "", "Saludos");
 
   const reviewNotes = lastTalkNote(interaction);
   if (!meeting.summary) reviewNotes.push("La minuta no trae resumen: agregalo si hace falta.");
@@ -330,8 +392,9 @@ export function buildStatusUpdate(
   const steps = accountActionables(client).map((a) => ({
     ...a,
     text: formatStep(a.step),
-    due: parseStep(a.step, a.meeting.date).due,
-    side: stepSide(a.step, client, ownerEmail, settings),
+    who: ownerTag(a.step),
+    due: agreedDue(client, a.id, a.step, a.meeting.date, settings.workDays),
+    side: overrideSide(client, a.id, stepSide(a.step, client, ownerEmail, settings)),
   }));
   // Avances = accionables tildados desde mi último mail posterior a la reunión (o desde la reunión).
   const lastMine = (client.activity?.recentMails ?? [])
@@ -343,7 +406,7 @@ export function buildStatusUpdate(
   const completed = [
     ...steps
       .filter((s) => s.done && (!s.carried || (s.doneAt && s.doneAt >= meeting.date)))
-      .map((s) => ({ text: s.text, doneAt: s.doneAt })),
+      .map((s) => ({ text: `${s.text}${s.who}`, doneAt: s.doneAt })),
     ...mailTickets(client)
       .filter((t) => t.kind === "request" && t.date > meeting.date && doneAt[t.id])
       .map((t) => ({ text: t.title, doneAt: doneAt[t.id] })),
@@ -361,14 +424,14 @@ export function buildStatusUpdate(
   const related = pending.filter((s) => trace.has(s.id));
   const open = pending.filter((s) => !trace.has(s.id));
   const tag = (s: (typeof steps)[number]) =>
-    `${dueSuffix(s.due, now)}${s.carried ? ` [acordado el ${fmtShort(s.meeting.date)}]` : ""}`;
+    `${dueSuffix(s.due, now)}${s.carried ? ` [acordado el ${fmtShort(s.meeting.date)}]` : ""}${s.who}`;
   const ours = open.filter((s) => s.side === "me" || s.side === "team");
   const theirs = open.filter((s) => s.side === "client");
   const shared = open.filter((s) => s.side === "shared");
   const other = open.filter((s) => s.side === "unknown");
   const requests = openRequests(client, interaction);
   const recipients = interactionRecipients(client, meeting, interaction, ownerEmail);
-  const meetingRef = `la reunión del ${fmtDate(meeting.date)}`;
+  const meetingRef = `la reunión ${meetingWhen(meeting.date, now).text}`;
   const progress = !steps.length
     ? `Les escribo para retomar lo conversado en ${meetingRef}.`
     : pending.length
@@ -387,23 +450,23 @@ export function buildStatusUpdate(
     lines.push(
       "",
       lastMine ? `Avanzamos desde mi último mail (${fmtShort(lastMine.date)}):` : "Avanzamos desde la reunión:",
-      ...advanced.map((c) => `✓ ${c.text} (${fmtShort(c.doneAt!)})`),
+      ...advanced.map((c) => `✓ ${c.text}${doneStatus(c.doneAt)}`),
     );
   }
-  if (completedBefore.length) lines.push("", "Ya completado:", ...completedBefore.map((c) => `✓ ${c.text}`));
+  if (completedBefore.length) lines.push("", "Ya completado:", ...completedBefore.map((c) => `✓ ${c.text}${doneStatus(c.doneAt)}`));
   if (related.length) {
     lines.push(
       "",
       "Conversado por mail desde la reunión:",
-      ...related.map((s) => `• ${s.text}${tag(s)} (mail del ${fmtShort(trace.get(s.id)!.date)})`),
+      ...related.map((s) => `• ${s.text} (mail del ${fmtShort(trace.get(s.id)!.date)})${tag(s)}${STATUS_PENDING}`),
     );
   }
-  if (ours.length) lines.push("", "En curso de nuestro lado:", ...ours.map((s) => `• ${s.text}${tag(s)}`));
-  if (requests.length) lines.push("", "Sobre lo que nos consultaron, lo estamos revisando:", ...requests.map((r) => `• ${r.title}`));
-  if (theirs.length) lines.push("", "Pendiente de su lado (para poder avanzar):", ...theirs.map((s) => `• ${s.text}${tag(s)}`));
-  if (shared.length) lines.push("", "Para resolver en conjunto:", ...shared.map((s) => `• ${s.text}${tag(s)}`));
-  if (other.length) lines.push("", "Otros pendientes acordados:", ...other.map((s) => `• ${s.text}${tag(s)}`));
-  lines.push("", "Cualquier duda o si hay algo para priorizar, me avisan.", "", "Saludos,");
+  if (ours.length) lines.push("", "En curso de nuestro lado:", ...ours.map((s) => `• ${s.text}${tag(s)}${STATUS_PENDING}`));
+  if (requests.length) lines.push("", "Sobre lo que nos consultaron, lo estamos revisando:", ...requests.map((r) => `• ${r.title}${STATUS_PENDING}`));
+  if (theirs.length) lines.push("", "Pendiente de su lado (para poder avanzar):", ...theirs.map((s) => `• ${s.text}${tag(s)}${STATUS_PENDING}`));
+  if (shared.length) lines.push("", "Para resolver en conjunto:", ...shared.map((s) => `• ${s.text}${tag(s)}${STATUS_PENDING}`));
+  if (other.length) lines.push("", "Otros pendientes acordados:", ...other.map((s) => `• ${s.text}${tag(s)}${STATUS_PENDING}`));
+  lines.push("", "Cualquier duda o si hay algo para priorizar, me avisan.", "", "Saludos");
 
   const reviewNotes = lastTalkNote(interaction);
   if (requests.length) reviewNotes.push(`Agregá la respuesta a ${requests.length} consulta(s) del cliente.`);
@@ -464,6 +527,12 @@ export function getDraft(
         ...generated,
         to: saved.to.length ? saved.to : generated.to,
         cc: saved.cc?.length ? saved.cc : generated.cc,
+        // Sigue siendo el mismo mail: "Borrador en Gmail" actualiza ese borrador y el panel avisa que quedó viejo.
+        gmailDraftId: saved.gmailDraftId,
+        gmailMessageId: saved.gmailMessageId,
+        draftCreatedAt: saved.draftCreatedAt,
+        gmailBody: saved.gmailBody,
+        threadId: generated.threadId ?? saved.threadId,
       },
       generated,
       regenerated: true,
@@ -471,4 +540,66 @@ export function getDraft(
     };
   }
   return { draft: saved, generated, regenerated: false, lastSentAt };
+}
+
+/**
+ * Mail de los lunes: los pendientes de la cuenta como objetivos de la semana (lo que debo y lo que me deben)
+ * y lo que se completó en los últimos 7 días. Las fechas solo si se acordaron (nunca la meta interna).
+ * `null` si no queda nada pendiente con la cuenta.
+ */
+export function buildWeeklyPlan(
+  client: ClientRecord,
+  meeting: DiscoveredMeeting,
+  ownerEmail: string | null,
+  settings: WorkSettings,
+  now = new Date(),
+): FollowupDraft | null {
+  const base = buildStatusUpdate(client, meeting, ownerEmail, settings);
+  const weekAgo = now.getTime() - 7 * 86_400_000;
+  const all = accountActionables(client);
+  const line = (a: (typeof all)[number]) => {
+    const due = agreedDue(client, a.id, a.step, a.meeting.date, settings.workDays);
+    const dueTxt = due && due.until >= now ? ` – para ${due.label.startsWith("semana") ? "la" : "el"} ${due.label}` : "";
+    return `${formatStep(a.step)}${dueTxt}${ownerTag(a.step)}`;
+  };
+  const sideOf = (a: (typeof all)[number]) => overrideSide(client, a.id, stepSide(a.step, client, ownerEmail, settings));
+  const open = all.filter((a) => !a.done);
+  const ours = open.filter((a) => ["me", "team"].includes(sideOf(a)));
+  const theirs = open.filter((a) => sideOf(a) === "client");
+  const shared = open.filter((a) => sideOf(a) === "shared");
+  const other = open.filter((a) => sideOf(a) === "unknown");
+  const done = new Set(client.doneTicketIds ?? []);
+  const mail = mailTickets(client).filter((t) => (t.kind === "request" || t.kind === "commitment") && !done.has(t.id));
+  const finished = all.filter((a) => a.done && a.doneAt && Date.parse(a.doneAt) >= weekAgo);
+  if (!open.length && !mail.length) return null;
+
+  const pend = (text: string) => `• ${text}${STATUS_PENDING}`;
+  const section = (title: string, rows: string[]) => (rows.length ? ["", title, ...rows] : []);
+  const recipients = base.to.map((email) => ({ email, name: null as string | null }));
+  const lines = [
+    greet(recipients, client),
+    "",
+    "Les comparto los objetivos de esta semana para seguir avanzando con la integración.",
+    ...section(
+      "Lo que completamos la semana pasada:",
+      finished.map((a) => `✓ ${formatStep(a.step)}${ownerTag(a.step)}${doneStatus(a.doneAt)}`),
+    ),
+    ...section("Objetivos de nuestro lado:", [
+      ...ours.map((a) => pend(line(a))),
+      ...mail.map((t) => pend(`${t.title} (${t.kind === "request" ? "consulta por mail" : "lo que quedé en enviar"})`)),
+    ]),
+    ...section("Objetivos de su lado (para poder avanzar):", theirs.map((a) => pend(line(a)))),
+    ...section("Para resolver en conjunto:", shared.map((a) => pend(line(a)))),
+    ...section("Otros pendientes acordados:", other.map((a) => pend(line(a)))),
+    "",
+    "La idea es cerrar estos puntos en el transcurso de la semana. Cualquier duda o si hay algo para priorizar, me avisan.",
+    "",
+    "Saludos",
+  ];
+  return {
+    ...base,
+    subject: base.threadId ? base.subject : `Objetivos de la semana – ${companyName(client)}`,
+    body: lines.join("\n"),
+    reviewNotes: [],
+  };
 }
