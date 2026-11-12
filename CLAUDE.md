@@ -205,10 +205,7 @@ tiempo/dificultad → quick_win/major_project/fill_in/thankless_task), no se per
   `no_progress` / `awaiting_client` (sin mails ni reuniones ≥ `settings.staleBusinessDays`
   (default 2) días hábiles con accionables abiertos).
 - Borradores (`lib/utils/followup.ts`, `getDraft(kind)`), por reglas y sin placeholders en el cuerpo:
-  `meeting` = agradecimiento por la reunión y el tiempo, puntos importantes (hitos), resumen, decisiones (acordadas / por definir) y accionables vigentes para la próxima
-  sesión (arrastrados + consultas por mail; "Ya avanzamos con" = tildados) por
-  lado (`stepSide`: me/team/client/shared/unknown) con fecha objetivo (`parseStep`/`parseDue`, resuelta
-  contra la fecha de la reunión); `status` parte de `latestInteraction`: último mail recibido del cliente
+  `meeting` = saludo + agradecimiento por el espacio, tiempo y disposición (tú si hay 1 referente en `to`, plural si son 2+), Puntos importantes (solo el título de cada hito, antes de ":"), Lo que charlamos (resumen + decisiones, "Por definir: …"), Accionables de {empresa} (cliente/compartidos/sin lado; responsable de la minuta o "Equipo"), Accionables de Xtract (propios/equipo/consultas por mail, todos a nombre de `ownerAliases[0]`) y al final "Ya avanzamos con" (tildados), cierre "Quedo a disposición por si tienes/tienen alguna consulta…"; fecha objetivo (`parseStep`/`parseDue`, resuelta contra la fecha de la reunión); `status` parte de `latestInteraction`: último mail recibido del cliente
   o enviado por mí (no del equipo) si es posterior a la reunión; si no hay, accionables de la última reunión con lo tildado como avance. Con mail: responde en
   ese hilo y a sus participantes del lado cliente (`MailRef.recipients`, poblado en cada sync; fallback
   asistentes de la reunión). Secciones: accionables finalizados desde mi último mail posterior a la reunión (o desde la reunión) / en curso nuestro con arrastrados
@@ -241,7 +238,7 @@ tiempo/dificultad → quick_win/major_project/fill_in/thankless_task), no se per
   (`buildMimeMessage`): multipart/alternative + HTML estilo Gmail + firma de la cuenta (`sendAs`, sin clase `gmail_signature`
   para que Gmail no la esconda tras "…"). Arranque relativo (`meetingWhen`: "del día de hoy" / "de ayer" / "del lunes" hasta 3 días, después la fecha); cierre
   "Saludos". Cada punto termina en "(Nombre) - Status: Hecho (dd/mm)" (✓) o "(Nombre) - Status: Pendiente": responsables
-  por nombre de pila (`ownerTag`; "La empresa"/"El grupo" enteros), un solo guion (`STATUS_DONE`/`STATUS_PENDING`); `bodyToHtml` pone "Status:" en negrita y "Hecho" en negrita verde. UI: tabs en `/cuentas/[id]`
+  por nombre de pila (`ownerTag`; "La empresa"/"El grupo" enteros), un solo guion (`STATUS_DONE`/`STATUS_PENDING`); `bodyToHtml` (`gmail.ts`, solo estilos inline para Gmail/Outlook) arma `<p>` por línea, títulos de sección en negrita y subrayados seguidos de ":", 2+ líneas en blanco = un espacio más (`margin-top` 24px, antes del cierre y de "Saludos"), viñetas `•`/`✓` en `<ul>`, sin `<br>`/párrafos vacíos (`normalizeHtml`), y "Status:" en negrita con valor coloreado (Pendiente rojo / En curso naranja / Hecho verde, fecha sin color); el texto plano del MIME (`bodyToPlain`) usa "- " y una línea en blanco entre secciones (dos antes del cierre). UI: tabs en `/cuentas/[id]`
   (`?borrador=status#borradores`), `FollowupComposer` (hilo, Para, editar, Copiar, Actualizar, Enviar; barra de progreso al enviar / crear borrador y
   recuadro de resultado con "Abrir borrador" / "Ver en Gmail"; la API devuelve `inThread` para validar que quedó en el hilo).
 - `POST /api/cron/daily-followup` (header `x-cron-secret`, cron externo): `runSync` con el mail semanal de objetivos
