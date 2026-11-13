@@ -2,7 +2,7 @@ import { google, type gmail_v1, type calendar_v3 } from "googleapis";
 import { getAuthorizedClient } from "./google-client";
 import { getDocText } from "./drive";
 import { parseGeminiNotes } from "@/lib/utils/gemini-notes-parser";
-import { applyCorrections, extractSuggestions, type TranscriptSuggestion } from "@/lib/utils/transcript";
+import { applyCorrections, extractSuggestions, transcriptSpeakers, type TranscriptSuggestion } from "@/lib/utils/transcript";
 import { getSettings } from "@/lib/store/settings-store";
 import type {
   ClientsFile,
@@ -73,6 +73,16 @@ export function stripHtml(html: string): string {
     .replace(/&#39;/g, "'")
     .replace(/&lt;/g, "<")
     .replace(/&gt;/g, ">");
+}
+
+/**
+ * Gmail (y otros clientes) cortan el text/plain a ~76 caracteres dejando un espacio al final de la línea cortada.
+ * Une esos cortes "blandos" para que cada párrafo quede en una línea; no toca líneas citadas (">") ni viñetas.
+ */
+export function unwrapPlain(text: string): string {
+  return text
+    .replace(/\r/g, "")
+    .replace(/([^\s>]) +\n(?=[^\s>\-*•])/g, "$1 ");
 }
 
 export function extractBody(payload?: gmail_v1.Schema$MessagePart): { text: string; html: string } {
@@ -217,17 +227,30 @@ export async function backfillTranscripts(file: ClientsFile) {
   const pending = file.clients
     .filter((c) => c.status === "assigned" || c.status === "unassigned")
     .flatMap((c) => c.meetings)
-    .filter((m) => m.docId && m.transcript === undefined && Date.parse(m.date) >= since && !seen.has(m.id) && seen.add(m.id))
+    // Sin transcripción procesada, o procesada antes de guardar hablantes (solo se completan los hablantes).
+    .filter(
+      (m) =>
+        m.docId &&
+        (m.transcript === undefined || m.speakers === undefined) &&
+        Date.parse(m.date) >= since &&
+        !seen.has(m.id) &&
+        seen.add(m.id),
+    )
     .sort((a, b) => b.date.localeCompare(a.date))
     .slice(0, BACKFILL_PER_RUN);
 
   const updates = await mapLimit(pending, CONCURRENCY, async (m) => {
     try {
-      const doc = applyCorrections(await withRetry(() => getDocText(m.docId!)), corrections);
-      return { meetingId: m.id, transcript: extractSuggestions(m.id, doc, m.nextSteps) };
+      const raw = await withRetry(() => getDocText(m.docId!));
+      const speakers = transcriptSpeakers(raw);
+      if (m.transcript !== undefined) return { meetingId: m.id, speakers };
+      const doc = applyCorrections(raw, corrections);
+      return { meetingId: m.id, transcript: extractSuggestions(m.id, doc, m.nextSteps), speakers };
     } catch (error) {
       const code = (error as { code?: number; status?: number }).code ?? (error as { status?: number }).status;
-      return code === 403 || code === 404 ? { meetingId: m.id, transcript: [] as TranscriptSuggestion[] } : null;
+      return code === 403 || code === 404
+        ? { meetingId: m.id, transcript: m.transcript === undefined ? ([] as TranscriptSuggestion[]) : undefined, speakers: [] }
+        : null;
     }
   });
   return updates.filter((u) => u !== null);

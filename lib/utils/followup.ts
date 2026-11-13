@@ -12,7 +12,7 @@ import { computeParticipants, isOwnTeamEmail, type Participant } from "@/lib/uti
 import { isGroupOwner, isOwnActionable, learnedRole } from "@/lib/utils/capacity";
 import { isRecapMail, mailTickets, relatedMailNote } from "@/lib/utils/mail-tickets";
 import { accountActionables } from "@/lib/utils/actionables";
-import { parseStep, type StepDue } from "@/lib/utils/gemini-notes-parser";
+import { parseStep } from "@/lib/utils/gemini-notes-parser";
 import { agreedDue } from "@/lib/utils/deadlines";
 import {
   cleanThreadSubject,
@@ -120,11 +120,23 @@ function aiStep(clientId: string, a: Actionable) {
 
 const AI_SIDE: Record<AISide, StepSide> = { cliente: "client", xtract: "me", ambas: "shared" };
 
-/** "del miércoles" (última semana) o "del miércoles 11/11": siempre el día real de la reunión. */
-function meetingDay(iso: string, now: Date): string {
+/**
+ * Cuándo fue la reunión, relativo a hoy, para el agradecimiento: "de hoy", "de ayer", "del miércoles" (esta semana),
+ * "del miércoles de la semana pasada" o, si es más vieja, "del día 30/10".
+ */
+export function meetingDay(iso: string, now: Date): string {
   const d = new Date(iso);
+  const dayNum = (x: Date) => Math.round(Date.UTC(x.getFullYear(), x.getMonth(), x.getDate()) / 86_400_000);
+  const days = dayNum(now) - dayNum(d);
+  if (days <= 0) return "de hoy";
+  if (days === 1) return "de ayer";
+  // Semanas de lunes a domingo: 0 = esta semana, 1 = la pasada.
+  const weekStart = (x: Date) => dayNum(x) - ((x.getDay() + 6) % 7);
+  const weeksAgo = Math.round((weekStart(now) - weekStart(d)) / 7);
   const weekday = d.toLocaleDateString("es", { weekday: "long" });
-  return now.getTime() - d.getTime() <= 6 * 86_400_000 ? `del ${weekday}` : `del ${weekday} ${fmtDay(iso)}`;
+  if (weeksAgo === 0) return `del ${weekday}`;
+  if (weeksAgo === 1) return `del ${weekday} de la semana pasada`;
+  return `del día ${fmtDay(iso)}`;
 }
 
 const cleanSubject = (subject: string) => subject.replace(/^\s*((re|fwd?|rv)\s*:\s*)+/i, "").trim();
@@ -177,8 +189,9 @@ function interactionRecipients(
   meeting: DiscoveredMeeting,
   interaction: Interaction,
   ownerEmail: string | null,
+  settings: WorkSettings,
 ): { email: string; name: string | null }[] {
-  const fallback = followupRecipients(client, meeting, ownerEmail);
+  const fallback = followupRecipients(client, meeting, ownerEmail, settings);
   if (interaction.kind === "meeting") return fallback;
   const { mail } = interaction;
   const emails = [...new Set([...(mail.direction === "client" ? [mail.from] : []), ...(mail.recipients ?? [])])].filter(
@@ -193,20 +206,58 @@ function interactionRecipients(
   return emails.map((email) => ({ email, name: people.get(email) ?? senders.get(email) ?? null }));
 }
 
-/** Referentes que asistieron a la reunión (fallback: todos los referentes de la cuenta). */
+/** Hablante de la transcripción ↔ persona: "Yani Origüela" ↔ yanina.origuela@ (mismo apellido e inicial). */
+function speakerIs(speaker: string, p: { name: string | null; email: string }): boolean {
+  const target = normName(speaker);
+  if (!target.length || matchesPerson(target, p.name, p.email)) return true;
+  const local = normName(p.email.split("@")[0].replace(/[._-]/g, " "));
+  const last = target.at(-1)!;
+  return target.length >= 2 && last.length >= 4 && local.length >= 2 && local.includes(last) && local[0][0] === target[0][0];
+}
+
+/**
+ * Del lado del cliente, quiénes participaron de la reunión: los que hablaron en la transcripción (Xtract, equipo y
+ * partners no cuentan). Si habló alguien que no se puede identificar (una sala, un usuario genérico, un nombre
+ * cortado) o no hay transcripción: los invitados del cliente. Fallback: todos los referentes de la cuenta.
+ */
 export function followupRecipients(
   client: ClientRecord,
   meeting: DiscoveredMeeting,
   ownerEmail: string | null,
+  settings: WorkSettings,
 ): { email: string; name: string | null }[] {
-  const referents = computeParticipants(client, ownerEmail).filter((p) => p.role === "referent");
+  const people = computeParticipants(client, ownerEmail);
+  const referents = people.filter((p) => p.role === "referent");
   const attended = new Set((meeting.attendees ?? []).map((a) => a.email.toLowerCase()));
-  const inMeeting = referents.filter((p) => attended.has(p.email));
+  const invited = referents.filter((p) => attended.has(p.email));
+  // Gemini a veces lista como hablante la pantalla compartida o un fragmento del título (1 turno).
+  const speakers = (meeting.speakers ?? []).filter((s) => s.turns >= 2 && !/\b(presentation|presentaci[oó]n)\b/i.test(s.name));
+  let chosen = invited.length ? invited : referents;
+  if (speakers.length) {
+    const spoke: typeof referents = [];
+    let unknown = false;
+    for (const s of speakers) {
+      // Yo primero por alias: un rol aprendido equivocado no puede mandarme del lado del cliente.
+      const spoken = normName(s.name).join(" ");
+      if (settings.ownerAliases.some((a) => normName(a).join(" ") === spoken)) continue;
+      const side = ownerSide(s.name, client, people, settings);
+      if (side === "me" || side === "team") continue;
+      const hit = invited.find((p) => speakerIs(s.name, p)) ?? referents.find((p) => speakerIs(s.name, p));
+      if (hit) spoke.push(hit);
+      else unknown = true;
+    }
+    if (spoke.length && !unknown) chosen = [...new Set(spoke)];
+  }
   const mailNames = senderNames(client);
-  return (inMeeting.length ? inMeeting : referents).map((p) => ({
+  return chosen.map((p) => ({
     email: p.email,
     name: p.name ?? mailNames.get(p.email) ?? null,
   }));
+}
+
+/** "Buenos días" hasta las 11:55; después, "Buenas tardes" (hora en que se genera el mail). */
+export function salutation(now: Date): string {
+  return now.getHours() * 60 + now.getMinutes() < 11 * 60 + 55 ? "Buenos días" : "Buenas tardes";
 }
 
 /** Referentes y equipo Xtract que no estén ya en "to": en copia para que todos queden al tanto del mail nuevo. */
@@ -312,7 +363,6 @@ function overrideSide(client: ClientRecord, id: string, side: StepSide): StepSid
 }
 
 /** Fecha objetivo para mostrar en el mail; las ya vencidas no se exponen al cliente. */
-const dueSuffix = (due: StepDue | null, now: Date) => (due && due.until >= now ? ` – objetivo: ${due.label}` : "");
 
 // Buzones de un área: su nombre visible suele ser el área o la empresa, no una persona.
 const GENERIC_MAILBOX =
@@ -351,7 +401,7 @@ export function buildFollowup(
   settings: WorkSettings,
 ): FollowupDraft {
   const now = new Date();
-  const recipients = followupRecipients(client, meeting, ownerEmail);
+  const recipients = followupRecipients(client, meeting, ownerEmail, settings);
   // Arrastrados cerrados antes de esta reunión ya no son novedad.
   const actionables = accountActionables(client).filter(
     (a) => !a.done || !a.carried || (a.doneAt && a.doneAt >= meeting.date),
@@ -375,7 +425,6 @@ export function buildFollowup(
       return {
         text:
           base.replace(/\s*\.+$/, "") +
-          (a.done ? "" : dueSuffix(agreedDue(client, a.id, a.step, a.meeting.date, settings.workDays), now)) +
           (!a.done && trace.has(a.id) ? ` (conversado por mail el ${fmtShort(trace.get(a.id)!.date)})` : "") +
           (!a.done && a.carried ? ` [acordado el ${fmtShort(a.meeting.date)}]` : ""),
         owner: ai?.empresa === "ambas" ? both : groupTag(a.step),
@@ -415,8 +464,8 @@ export function buildFollowup(
   // Un solo referente: se le habla a él; dos o más: en plural.
   const one = recipients.length === 1;
   const body = renderPostMeetingMail({
-    greeting: one ? greet(recipients, client).replace(/^Hola\b/, "Buen día") : "Buen día equipo,",
-    thanks: `Gracias por el espacio ${meetingDay(meeting.date, now)} y por ${one ? "tu" : "su"} tiempo y disposición. ${one ? "Te" : "Les"} comparto un resumen y los próximos pasos.`,
+    greeting: one ? greet(recipients, client).replace(/^Hola\b/, salutation(now)) : `${salutation(now)} equipo,`,
+    thanks: `Gracias por la reunión ${meetingDay(meeting.date, now)} y por ${one ? "tu" : "su"} tiempo y disposición. ${one ? "Te" : "Les"} comparto un resumen y los próximos pasos.`,
     puntos,
     objetivo,
     charlamos,
@@ -502,13 +551,14 @@ export function buildStatusUpdate(
   const related = pending.filter((s) => trace.has(s.id));
   const open = pending.filter((s) => !trace.has(s.id));
   const tag = (s: (typeof steps)[number]) =>
-    `${dueSuffix(s.due, now)}${s.carried ? ` [acordado el ${fmtShort(s.meeting.date)}]` : ""}${s.who}`;
+    // La fecha objetivo queda en la card del accionable; en el mail no va.
+    `${s.carried ? ` [acordado el ${fmtShort(s.meeting.date)}]` : ""}${s.who}`;
   const ours = open.filter((s) => s.side === "me" || s.side === "team");
   const theirs = open.filter((s) => s.side === "client");
   const shared = open.filter((s) => s.side === "shared");
   const other = open.filter((s) => s.side === "unknown");
   const requests = openRequests(client, interaction);
-  const recipients = interactionRecipients(client, meeting, interaction, ownerEmail);
+  const recipients = interactionRecipients(client, meeting, interaction, ownerEmail, settings);
   const meetingRef = `la reunión ${meetingWhen(meeting.date, now).text}`;
   const progress = !steps.length
     ? `Les escribo para retomar lo conversado en ${meetingRef}.`
