@@ -46,6 +46,10 @@
   --color-warning-muted: var(--warning-muted);
   --color-success: var(--success);
   --color-success-muted: var(--success-muted);
+  --color-carried: var(--carried);
+  --color-overdue: var(--overdue);
+  --color-due-today: var(--due-today);
+  --color-carried-muted: var(--carried-muted);
   --color-accent-foreground: var(--accent-foreground);
   --color-accent: var(--accent);
   --color-muted-foreground: var(--muted-foreground);
@@ -104,6 +108,10 @@
   --warning-muted: #fffbeb;
   --success: #059669;
   --success-muted: #ecfdf5;
+  --carried: #7c3aed; /* arrastrados (violeta) */
+  --carried-muted: #f3efff;
+  --overdue: #ea580c; /* accionable vencido (naranja) */
+  --due-today: #0284c7; /* vence hoy (azul claro) */
   --destructive: var(--critical);
   --chart-1: #d4d4d8;
   --chart-2: #a1a1aa;
@@ -159,6 +167,10 @@
   --warning-muted: #451a03;
   --success: #10b981; /* Operational Emerald */
   --success-muted: #022c22;
+  --carried: #a78bfa; /* arrastrados (violeta) */
+  --carried-muted: rgba(139, 92, 246, 0.16);
+  --overdue: #fb923c; /* accionable vencido (naranja) */
+  --due-today: #38bdf8; /* vence hoy (azul claro) */
   --destructive: var(--critical);
   --chart-1: #f4f4f5;
   --chart-2: #a1a1aa;
@@ -180,6 +192,16 @@
   --sidebar-accent-foreground: #ffffff;
   --sidebar-border: rgba(255, 255, 255, 0.08);
   --sidebar-ring: rgba(255, 255, 255, 0.4);
+}
+
+/* Barra de cierre de accionables (Hecho / Quitar con Deshacer): se vacía de derecha a izquierda. */
+@keyframes closing-bar {
+  from {
+    transform: scaleX(1);
+  }
+  to {
+    transform: scaleX(0);
+  }
 }
 
 @layer base {

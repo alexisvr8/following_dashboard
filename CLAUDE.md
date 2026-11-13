@@ -28,8 +28,10 @@ se vuelve menú desplegable `MobileNav`). Sin sidebar. 5 secciones. Navegación 
   (se apilan en móvil). Izq. `AccountDirectory` (tabs Asignadas/No asignadas, filtro Todas/En riesgo/Atención por `computeChurnRisk`, buscador nombre/dominio/ERP, filas
   ordenadas por `lastMovement` con títulos Hoy/Ayer/Esta semana/Anteriores, `lib/utils/movement.ts`); default = primera.
   Centro + der. = `AccountWorkspace` (datos de `lib/server/account-view.ts` `loadAccountView`): una card con encabezado
-  `AccountProfileForm`, franja de engagement, un solo editor con selector "Mail post-reunión" (`meeting`) / "Mail de seguimiento" (`status`)
-  (altura según el contenido del mail, máx. 36dvh; abre en seguimiento con alerta o `?borrador=status`); ancho completo, columnas 320px / resto / 360px (2xl: 360 / resto / 420); derecha pestañas Accionables / Trazabilidad / Reuniones (`MeetingsList`: minuta de cada reunión) /
+  `AccountProfileForm`, franja de engagement, un solo "Mail de seguimiento" sin selector (`getFollowupDraft`/`currentFollowupKind` en `followup.ts`:
+  `meeting` mientras la minuta no salió [sin `sentAt`, follow-up sin tildar, sin mail mío posterior], con lo tildado como hecho;
+  después `status` = avances + pendientes; mismo criterio en `FollowupPanel` del Dashboard; `?borrador=` se ignora)
+  (altura según el contenido del mail, máx. 36dvh); ancho completo, columnas 320px / resto / 360px (2xl: 360 / resto / 420); derecha pestañas Accionables / Trazabilidad / Reuniones (`MeetingsList`: minuta de cada reunión) /
   Participantes. `FollowupComposer`: Enviar, Regenerar (PATCH), Guardar (PUT), Borrador en Gmail, Copiar.
   Capacidad = `WeekPlanner` (planificador por día, meta = cerrar
   pendientes al viernes: veredicto core/flex/deficit, métricas (reuniones, libre normal + flex,
@@ -64,10 +66,10 @@ se vuelve menú desplegable `MobileNav`). Sin sidebar. 5 secciones. Navegación 
 - `/accionables` (`components/accionables/{ActionablesBoard,ActionablePanel}.tsx`, helpers `format.ts`): vistas Tablero (5 columnas
   Vencido / Hoy / Esta semana / Próxima semana / Más adelante) y Lista (secciones por plazo), toggle guardado en cookie
   `accionables_view` (la lee la página). Sin agrupar por cuenta (la card la muestra). Contadores (vencidos, para hoy, me deben, sin hueco), filtros Debo (default) / Me deben / Todo, cuenta, búsqueda,
-  "Solo arrastrados" + aviso de arrastrados vencidos, leyenda de tipos de fecha. Card fija: franja de prioridad, cuenta + origen
+  "Solo arrastrados" + aviso de arrastrados vencidos, leyenda de tipos de fecha. En cada plazo, arrastrados arriba (más viejo primero, `carriedFirst`; chip violeta de antigüedad `carriedAge`) y luego "Nuevos". Card minimalista: cliente, hito (título) y descripción (3 líneas; compacta 1) + plazo/estimación/origen/lado. Color por plazo `cardTone` (card entera, fondo + borde, sin franja de prioridad): rojo = atrasado ≥2 días háb., naranja (`overdue`) = vencido 1 día, azul claro (`due-today`) = vence hoy, gris = nuevo / en plazo; arrastrado = solo chip violeta. Densidad cómoda/compacta (cookie `accionables_density`). Click en la card la despliega in situ (texto completo, origen, responsables, Hecho / +1 día / Reclamar / Cuenta / Editar → modal / Quitar = No corresponde). Hecho y Quitar (card, checkbox o modal) esperan `CLOSE_DELAY_MS` (5 s) con barra `ClosingBar` (keyframes `closing-bar`) y "Deshacer" antes del PATCH; destildar también deshace. Accionables que se resuelven por mail (`isMailItem`: follow-up / Responder / pedido por mail / me deben) muestran un ícono chico (Responder / Borrador de minuta / Reclamar) junto a "Cuenta" en la card desplegada que abre `FollowupPanel` (el del Dashboard, cuenta sin alerta; tipo según `data.draft.kind`); `app/accionables/page.tsx` precalcula `mailPanels` (por cuenta) con `getFollowupDraft` solo para esas cuentas. Tablero: arrastrar una card a otra columna pone fecha manual (`dropDue`: Hoy / último hábil de esta o la próxima semana / primer hábil de la siguiente; Vencido no recibe). Textos: cuenta + origen
   (Reunión/Mail dd/mm), título corto + detalle (`splitTitle`: "Título: detalle" de Gemini; mails → "Pedido de X" /
   "Responder a X" / "Compromiso tuyo"; saludos sueltos se descartan, `isGreetingOnly`), plazo relativo con ícono del tipo
-  (acordada / meta interna / manual), estimación, Debo / Me deben · responsable. Click → detalle en modal centrado: texto original, origen,
+  (acordada / meta interna / manual), estimación, Debo / Me deben · responsable. "Editar" → detalle en modal centrado: texto original, origen,
   plazo (+1 día háb., +1 semana, fecha, Restaurar), estimación, Marcar hecho, No corresponde (`actionable remove`, no en
   automáticos), Reclamar (me deben → `/cuentas/[id]?borrador=status`), Abrir cuenta. Fecha/estimación →
   `PATCH /api/clients/[id]` `{plan: {ticketId, due?: "AAAA-MM-DD"|null, estimateMinutes?: number|null}}` (`setActionablePlan`,
