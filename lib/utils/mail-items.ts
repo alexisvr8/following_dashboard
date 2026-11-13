@@ -1,4 +1,5 @@
 import type { ClientRecord, MailRef } from "@/lib/store/clients-store";
+import { isAutomationSubject } from "@/lib/utils/mail-classify";
 
 // Pedidos (mails del cliente) y compromisos (mails míos) detectados. `recentMails` solo guarda los últimos
 // mails, así que se conservan en `client.mailActionables`: un punto abierto no desaparece cuando llegan otros.
@@ -32,9 +33,12 @@ export const isRecapMail = (mail: MailRef) =>
 
 /** Lo guardado más lo que traen los mails actuales. */
 export function collectMailItems(client: ClientRecord): Record<string, MailItem> {
-  const items: Record<string, MailItem> = { ...client.mailActionables };
+  // Lo guardado antes del filtro de automatizaciones (planillas CMA, etc.) se descarta.
+  const items: Record<string, MailItem> = Object.fromEntries(
+    Object.entries(client.mailActionables ?? {}).filter(([, v]) => !isAutomationSubject(v.subject)),
+  );
   for (const m of client.activity?.recentMails ?? client.activity?.recentInbound ?? []) {
-    if (Date.parse(m.date) < SINCE) continue;
+    if (Date.parse(m.date) < SINCE || isAutomationSubject(m.subject)) continue;
     const base = { messageId: m.messageId, subject: m.subject, date: m.date };
     if (m.direction === "me" && !isRecapMail(m)) {
       (m.commitments ?? []).forEach((title, i) => {

@@ -113,6 +113,18 @@ export interface ThreadRef {
   threadId: string;
   subject: string;
   date: string;
+  /** Hilo de seguimiento fijado de la cuenta (`profile.followupThread`). */
+  pinned?: boolean;
+}
+
+/** Estado en Gmail del hilo fijado (lo revisa cada sync): si se borró o llegó al tope de Gmail, no se usa. */
+export interface PinnedThreadStatus {
+  threadId: string;
+  /** Mensajes reales del hilo (Gmail no agrega más de 100 a un hilo). */
+  messages: number;
+  /** Fecha del último mensaje. */
+  date: string | null;
+  missing?: boolean;
 }
 
 export interface ClientActivity {
@@ -127,10 +139,12 @@ export interface ClientActivity {
   recentInbound: MailRef[];
   /** Hilos recientes con referentes (cualquier dirección): destino del follow-up. */
   threads: ThreadRef[];
+  /** Estado del hilo fijado (`profile.followupThread`), si la cuenta tiene uno. */
+  pinnedThread?: PinnedThreadStatus | null;
   /** Último evento de Calendar ya realizado con el cliente; `hasNotes` = tiene minuta. */
   lastCalendarMeeting: { title: string; date: string; hasNotes: boolean } | null;
   /** Mails descartados por tipo (invitaciones de Calendar, auto-respuestas, minutas). */
-  skipped: { invitation: number; autoReply: number; minutes: number };
+  skipped: { invitation: number; autoReply: number; minutes: number; automation?: number };
 }
 
 export interface FollowupDraft {
@@ -153,6 +167,8 @@ export interface FollowupDraft {
   autoFor?: string;
   /** Avisos para quien revisa el borrador: se muestran en la UI, nunca van en el mail. */
   reviewNotes?: string[];
+  /** Por qué se eligió el hilo (`pickFollowupThread`): fijado / asunto estándar / último con el cliente / nuevo. */
+  threadReason?: "pinned" | "standard" | "recent" | "new" | "anchor";
 }
 
 export type FollowupKind = "meeting" | "status";
@@ -176,6 +192,8 @@ export interface ClientProfile {
   referentOverrides?: Record<string, boolean>;
   /** Cómo saludar a cada contacto en los mails: email → nombre (se usa tal cual). */
   contactNames?: Record<string, string>;
+  /** Hilo de seguimiento fijado (⭐ en el composer): los borradores post-reunión van siempre acá. */
+  followupThread?: { threadId: string; subject: string; pinnedAt: string };
 }
 
 export interface ClientsFile {
@@ -486,6 +504,29 @@ export async function updateClientProfile(
     }
     client.profile = profile;
     if (naming(profile) !== namingBefore) client.profileUpdatedAt = new Date().toISOString();
+  });
+  return m?.client ?? null;
+}
+
+/**
+ * Fija (o quita, con `null`) el hilo de seguimiento de la cuenta. `onlyIfEmpty`: no pisa uno ya fijado
+ * (auto-fijado del primer mail nuevo). Toca `profileUpdatedAt` para que los borradores se regeneren.
+ */
+export async function setFollowupThread(
+  id: string,
+  thread: { threadId: string; subject: string } | null,
+  opts: { onlyIfEmpty?: boolean } = {},
+): Promise<ClientRecord | null> {
+  const m = await mutateClient(id, (client) => {
+    if (opts.onlyIfEmpty && client.profile?.followupThread) return SKIP;
+    const profile = { ...client.profile };
+    if (thread) {
+      profile.followupThread = { threadId: thread.threadId, subject: thread.subject.slice(0, 300), pinnedAt: new Date().toISOString() };
+    } else {
+      delete profile.followupThread;
+    }
+    client.profile = profile;
+    client.profileUpdatedAt = new Date().toISOString();
   });
   return m?.client ?? null;
 }

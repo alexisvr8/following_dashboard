@@ -183,7 +183,8 @@ tiempo/dificultad → quick_win/major_project/fill_in/thankless_task), no se per
   `lib/integrations/client-activity.ts`: por cliente guarda `activity` en `.data/clients.json`:
   `lastMail`/`recentMails` = últimos mails REALES en cualquier dirección (`direction`
   client/team/me; cliente = dominio + referentes + invitados externos; team = dominio propio),
-  descartando invitaciones/respuestas de Calendar, auto-respuestas y minutas
+  descartando invitaciones/respuestas de Calendar, auto-respuestas, minutas y envíos de mis Apps Script
+  (`isAutomationSubject`: asunto con CMA, "[ERP Algoritmo]"/"Importación lista:", "fournisseurs NON paramétrés", "Reporte de Gastos", "Interface Oracle prête"; también en hilos y `mailActionables`)
   (`lib/utils/mail-classify.ts`); `lastInboundMail` = último del cliente con `requests`
   (pedidos/preguntas por reglas); `relatedTicketIds` (match por palabras clave con la última
   minuta: si el mail es nuestro → "posiblemente resuelto"); hilos recientes; última reunión de
@@ -215,6 +216,13 @@ tiempo/dificultad → quick_win/major_project/fill_in/thankless_task), no se per
   cambiaron tickets o llegó un mail después de la edición guardada se regenera (`regenerated`); tras `sentAt`
   se genera uno nuevo. `FollowupComposer` aplica novedades solo si no estás editando (si no, aviso). Botón Actualizar =
   `PATCH /api/clients/[id]/followup`: sincroniza esa cuenta y regenera (descarta la edición, pide confirmación si la hay). Ticket sintético follow-up `followupTicketId`.
+- Hilo del borrador (`lib/utils/followup-thread.ts`, `pickFollowupThread`; post-reunión, semanal y seguimiento sin mail de partida):
+  1) fijado `profile.followupThread` (⭐ junto a "Dónde" en `FollowupComposer` → `PATCH /api/clients/[id] {followupThread: {threadId, subject}|null}`,
+  `setFollowupThread`; la sync guarda `activity.pinnedThread` y si se borró o tiene ≥100 mensajes se salta con aviso) → 2) asunto estándar
+  (`Xtract + … | Seguimiento` / Etapa 2) → 3) último hilo con mail del cliente o mío (no solo equipo) → 4) mail nuevo con `standardSubject`,
+  que queda fijado al crearlo/enviarlo si no había otro. `FollowupDraft.threadReason` = motivo (se muestra bajo el selector). Mails del
+  cliente posteriores a la reunión en otros hilos (`strayClientMails`) → línea "Retomo en este hilo…" + sus participantes en Cc + aviso.
+  `composerThreads` pone el fijado primero en el selector.
 - Saludo (`greet` en `followup.ts`): `profile.contactNames[email]` tal cual → primer nombre detectado → nombre del mail
   (`nombre.apellido@`); buzones genéricos (`GENERIC_MAILBOX`) no aportan nombre. Sin nombres: "Hola equipo de {emailName},"
   o "Hola equipo,". `emailName` va en el asunto de actualización. Cambiar `emailName`/`contactNames` regenera el borrador (`profileUpdatedAt`).
@@ -267,7 +275,7 @@ automático de emails (el envío es manual, desde `/cuentas/[id]`).
 `lib/jobs/sync-job.ts` `runSync({drafts, trigger})`: minutas nuevas (`discoverGeminiMeetings(7d)` incremental +
 `mergeDiscovery`) → transcripciones (`backfillTranscripts`) → `syncClientsActivity` (asignados + no asignados) →
 **minuta automática** (`createMeetingDrafts`, si `settings.autoMeetingDrafts` [default true]: última reunión ≤48 h de cada
-asignado, sin borrador/envío previo, sin follow-up tildado ni mail mío posterior → borrador `meeting` en el hilo más reciente,
+asignado, sin borrador/envío previo, sin follow-up tildado ni mail mío posterior → borrador `meeting` en el hilo de `pickFollowupThread`,
 `autoFor` = id de reunión, en cada corrida) → `computeAlerts` → si `drafts` (lunes), **mail semanal de objetivos**
 (`createWeeklyDrafts` + `buildWeeklyPlan`: por cuenta asignada con pendientes, completado en los últimos 7 días + objetivos de
 nuestro lado [incl. consultas/compromisos por mail] / de su lado / en conjunto / otros, fechas solo acordadas; clave

@@ -8,7 +8,29 @@ const AUTO_SUBJECT = /^(respuesta autom[aá]tica|automatic reply|auto(matic)?[- 
 const REPORT_SUBJECT = /\d{1,2}\/\d{1,2}\/\d{2,4},?\s+\d{1,2}:\d{2}(:\d{2})?\s*$/;
 const MINUTES_SUBJECT = /(notes by gemini|notas de gemini|”? de gemini$|notas de la reuni[oó]n|meeting notes|minuta)/i;
 
-export type MailKind = "message" | "invitation" | "autoReply" | "minutes";
+// Envíos de mis automatizaciones (Apps Script, archivos para importación masiva al ERP): CMA, Algoritmo,
+// Reporte de Gastos, Interface Oracle, facturas sin parametrizar. No son seguimiento: no cuentan como
+// mail mío/del cliente, ni hilo, ni compromiso. Se evalúa sin "Re:/Fwd:" para cubrir respuestas al mismo envío.
+const AUTOMATION_SUBJECT = [
+  /\bCMA\b/, // "MCD ARG - Solicitud de CMA", planillas CMA
+  /^algoritmo\b/i,
+  /\[\s*erp algoritmo\s*\]/i, // "[ERP Algoritmo] Importación lista: Facturas de Compras 12/11/2026"
+  /importaci[oó]n lista\s*:/i,
+  /factures? fournisseurs?/i,
+  /non param[ée]tr[ée]s?/i, // "MCD FWI - ⚠ 817 factures fournisseurs NON paramétrés"
+  /reporte de gastos/i,
+  /interface oracle pr[eê]te/i, // "MCD FWI - Interface Oracle prête"
+];
+
+const REPLY_PREFIX = /^\s*((re|rv|fw|fwd|tr|res|enc)\s*:\s*)+/i;
+
+/** Asunto de un envío automático propio (ver `AUTOMATION_SUBJECT`). */
+export const isAutomationSubject = (subject: string) => {
+  const s = subject.replace(REPLY_PREFIX, "").trim();
+  return AUTOMATION_SUBJECT.some((re) => re.test(s));
+};
+
+export type MailKind = "message" | "invitation" | "autoReply" | "minutes" | "automation";
 
 export function classifyMail(input: {
   subject: string;
@@ -19,6 +41,7 @@ export function classifyMail(input: {
   const from = input.from.toLowerCase();
   const h = input.headers;
   if (/gemini-notes@google\.com/.test(from) || MINUTES_SUBJECT.test(input.subject)) return "minutes";
+  if (isAutomationSubject(input.subject)) return "automation";
   if (
     input.hasCalendarPart ||
     /calendar-notification@google\.com/.test(from) ||

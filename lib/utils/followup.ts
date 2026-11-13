@@ -13,6 +13,15 @@ import { isRecapMail, mailTickets, relatedMailNote } from "@/lib/utils/mail-tick
 import { accountActionables } from "@/lib/utils/actionables";
 import { parseStep, type StepDue } from "@/lib/utils/gemini-notes-parser";
 import { agreedDue } from "@/lib/utils/deadlines";
+import {
+  cleanThreadSubject,
+  pickFollowupThread,
+  standardSubject,
+  strayClientMails,
+  strayLine,
+  strayNotes,
+  strayParticipants,
+} from "@/lib/utils/followup-thread";
 
 // Borradores por reglas (sin LLM), recalculados con cada mail, reunión o accionable tildado.
 // Follow-up: hitos, decisiones y accionables para la próxima sesión (última minuta + arrastrados +
@@ -187,6 +196,12 @@ function newMailCc(client: ClientRecord, ownerEmail: string | null, to: { email:
     .map((p) => p.email);
 }
 
+/** Cc + participantes de los hilos sueltos del cliente (sin mí ni quienes ya están en "to"). */
+function withStrayCc(cc: string[], extra: string[], ownerEmail: string | null, to: { email: string }[]): string[] {
+  const skip = new Set([ownerEmail?.toLowerCase(), ...to.map((r) => r.email)]);
+  return [...new Set([...cc, ...extra.filter((e) => !skip.has(e) && !/^(no-?reply|notifications?)@/i.test(e))])];
+}
+
 /** Todos los que aparecieron en De/Para/Cc del hilo, salvo yo y quienes ya están en "to": "Responder a todos". */
 function replyAllCc(
   client: ClientRecord,
@@ -322,6 +337,10 @@ export function buildFollowup(
   );
   const trace = mailTrace(client, meeting);
   const interaction = latestInteraction(client, meeting);
+  // Hilo: fijado → asunto estándar → último con el cliente → nuevo. Lo que el cliente mandó por separado
+  // después de la reunión se retoma acá (línea + Cc) para no partir el seguimiento.
+  const thread = pickFollowupThread(client);
+  const strays = strayClientMails(client, thread.threadId, meeting.date);
   // `owner` = responsables según la minuta (" (Gonzalo)"); vacío si no se dijo.
   const steps: { text: string; owner: string; side: StepSide; done: boolean; doneAt: string | null }[] = actionables.map((a) => ({
     text:
@@ -371,6 +390,7 @@ export function buildFollowup(
       "Ya avanzamos con:",
       steps.filter((s) => s.done).map((s) => `✓ ${s.text}${s.owner ? ` (${s.owner})` : ""}${doneStatus(s.doneAt)}`),
     ),
+    ...(strays.length ? ["", strayLine(strays, one)!] : []),
     // Dos líneas en blanco = un espacio más antes del cierre y antes de "Saludos" (ver `bodyToHtml`).
     "",
     "",
@@ -380,7 +400,7 @@ export function buildFollowup(
     "Saludos",
   ];
 
-  const reviewNotes = lastTalkNote(interaction);
+  const reviewNotes = [...thread.notes, ...strayNotes(strays), ...lastTalkNote(interaction)];
   if (!meeting.summary) reviewNotes.push("La minuta no trae resumen: agregalo si hace falta.");
   if (meeting.milestones === undefined) {
     reviewNotes.push("Esta minuta todavía no se reprocesó: los hitos y decisiones aparecen después de la próxima sincronización.");
@@ -389,11 +409,13 @@ export function buildFollowup(
 
   return {
     meetingId: meeting.id,
-    subject: `Resumen y próximos pasos – ${meeting.title}`,
+    subject: thread.subject ? `Re: ${cleanThreadSubject(thread.subject)}` : standardSubject(client),
     body: lines.join("\n"),
     to: recipients.map((r) => r.email),
-    cc: newMailCc(client, ownerEmail, recipients),
+    cc: withStrayCc(newMailCc(client, ownerEmail, recipients), strayParticipants(client, strays), ownerEmail, recipients),
     updatedAt: now.toISOString(),
+    threadId: thread.threadId,
+    threadReason: thread.reason,
     reviewNotes,
   };
 }
@@ -508,16 +530,24 @@ export function buildStatusUpdate(
     reviewNotes.push(`${lastMail.fromName ?? lastMail.from} escribió después (${fmtShort(lastMail.date)}, “${lastMail.subject}”): revisá que no se repita.`);
   }
 
+  // Sin mail de partida: mismo hilo que el post-reunión (fijado → estándar → último con el cliente → nuevo).
+  const thread = anchorMail ? null : pickFollowupThread(client);
+  if (thread) reviewNotes.unshift(...thread.notes);
   return {
     meetingId: meeting.id,
-    subject: anchorMail ? `Re: ${cleanSubject(anchorMail.subject)}` : `Actualización de avance – ${companyName(client)}`,
+    subject: anchorMail
+      ? `Re: ${cleanSubject(anchorMail.subject)}`
+      : thread?.subject
+        ? `Re: ${cleanThreadSubject(thread.subject)}`
+        : `Actualización de avance – ${companyName(client)}`,
     body: lines.join("\n"),
     to: recipients.map((r) => r.email),
     cc: anchorMail
       ? replyAllCc(client, anchorMail.threadId, ownerEmail, recipients)
       : newMailCc(client, ownerEmail, recipients),
     updatedAt: now.toISOString(),
-    ...(anchorMail ? { threadId: anchorMail.threadId } : {}),
+    threadId: anchorMail ? anchorMail.threadId : thread!.threadId,
+    threadReason: anchorMail ? "anchor" : thread!.reason,
     reviewNotes,
   };
 }

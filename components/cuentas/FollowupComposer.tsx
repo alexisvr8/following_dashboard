@@ -2,7 +2,7 @@
 
 import { useEffect, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
-import { AlertTriangle, Check, CheckCircle2, Copy, ExternalLink, Loader2, Mail, RefreshCw, Save, Send } from "lucide-react";
+import { AlertTriangle, Check, CheckCircle2, Copy, ExternalLink, Loader2, Mail, RefreshCw, Save, Send, Star } from "lucide-react";
 import { Progress } from "@/components/ui/progress";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
@@ -20,6 +20,14 @@ import { Label } from "@/components/ui/label";
 import type { FollowupDraft, FollowupKind, ThreadRef } from "@/lib/store/clients-store";
 
 const NEW_THREAD = "__new__";
+/** Por qué el borrador eligió ese hilo (`pickFollowupThread`). */
+const THREAD_REASON: Record<NonNullable<FollowupDraft["threadReason"]>, string> = {
+  pinned: "Hilo de seguimiento fijado.",
+  standard: "Hilo con el asunto de seguimiento (Xtract + … | Seguimiento / Etapa 2). Fijalo con ⭐ para usarlo siempre.",
+  recent: "Último hilo donde escribió el cliente o le escribiste vos. Fijá con ⭐ el hilo de seguimiento para usarlo siempre.",
+  new: "Mail nuevo con el asunto de seguimiento: al crearlo queda fijado como hilo de seguimiento.",
+  anchor: "Responde en el hilo del último mail.",
+};
 const BUTTONS_RESERVE = 76;
 const MIN_BODY_PX = 160;
 
@@ -67,6 +75,30 @@ export function FollowupComposer({
     initial.threadId === null ? NEW_THREAD : (initial.threadId ?? threads[0]?.threadId ?? NEW_THREAD),
   );
   const [state, setState] = useState<"idle" | "drafting" | "sending" | "updating" | "saving" | "copied">("idle");
+  // Hilo fijado de la cuenta (optimista hasta el refresh).
+  const [pinnedId, setPinnedId] = useState<string | null>(threads.find((t) => t.pinned)?.threadId ?? null);
+  const [pinning, setPinning] = useState(false);
+  async function togglePin() {
+    if (threadId === NEW_THREAD) return;
+    const unpin = pinnedId === threadId;
+    const subjectOf = threads.find((t) => t.threadId === threadId)?.subject ?? subject;
+    setPinning(true);
+    setError(null);
+    try {
+      const res = await fetch(`/api/clients/${encodeURIComponent(clientId)}`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ followupThread: unpin ? null : { threadId, subject: subjectOf } }),
+      });
+      if (!res.ok) throw new Error();
+      setPinnedId(unpin ? null : threadId);
+      router.refresh();
+    } catch {
+      setError("No se pudo fijar el hilo.");
+    } finally {
+      setPinning(false);
+    }
+  }
   const [confirmingUpdate, setConfirmingUpdate] = useState(false);
   const [notice, setNotice] = useState<string | null>(null);
   const [confirming, setConfirming] = useState(false);
@@ -107,7 +139,7 @@ export function FollowupComposer({
       setBody(initial.body);
       setTo(initial.to.join(", "));
       setCc(initial.cc?.join(", ") ?? "");
-      if (initial.threadId) setThreadId(initial.threadId);
+      if (initial.threadId !== undefined) setThreadId(initial.threadId ?? NEW_THREAD);
     }
   }
   const threadLabel =
@@ -210,7 +242,7 @@ export function FollowupComposer({
       setBody(draft.body);
       setTo(draft.to.join(", "));
       setCc(draft.cc?.join(", ") ?? "");
-      setThreadId(draft.threadId ?? threads[0]?.threadId ?? NEW_THREAD);
+      setThreadId(draft.threadId === null ? NEW_THREAD : (draft.threadId ?? threads[0]?.threadId ?? NEW_THREAD));
       setSeenBody(draft.body);
       setEdited(false);
       setHasNews(false);
@@ -285,6 +317,7 @@ export function FollowupComposer({
         <div className="grid shrink-0 gap-3 sm:grid-cols-2">
         <div className="min-w-0 space-y-1.5 sm:col-span-2">
           <Label htmlFor={`${kind}-thread`}>Dónde</Label>
+          <div className="flex gap-1.5">
           <select
             id={`${kind}-thread`}
             value={threadId}
@@ -292,11 +325,11 @@ export function FollowupComposer({
               setThreadId(e.target.value);
               setEdited(true);
             }}
-            className={`${inputClass} h-9 dark:[color-scheme:dark] [&_option]:bg-popover [&_option]:text-popover-foreground`}
+            className={`${inputClass} h-9 min-w-0 flex-1 dark:[color-scheme:dark] [&_option]:bg-popover [&_option]:text-popover-foreground`}
           >
             {threads.map((t, i) => (
               <option key={t.threadId} value={t.threadId}>
-                {i === 0 ? "Último hilo: " : "Responder en: "}
+                {t.threadId === pinnedId ? "⭐ Hilo de seguimiento: " : i === 0 ? "Último hilo: " : "Responder en: "}
                 {t.subject} ({new Date(t.date).toLocaleDateString("es", { day: "2-digit", month: "short" })})
               </option>
             ))}
@@ -305,6 +338,32 @@ export function FollowupComposer({
             )}
             <option value={NEW_THREAD}>Mail nuevo</option>
           </select>
+          <Button
+            type="button"
+            variant="outline"
+            size="icon"
+            className="size-9 shrink-0"
+            disabled={threadId === NEW_THREAD || pinning}
+            onClick={togglePin}
+            aria-pressed={pinnedId === threadId}
+            title={
+              threadId === NEW_THREAD
+                ? "Elegí un hilo para fijarlo como hilo de seguimiento"
+                : pinnedId === threadId
+                  ? "Quitar como hilo de seguimiento"
+                  : "Fijar como hilo de seguimiento: los mails post-reunión van siempre acá"
+            }
+          >
+            {pinning ? (
+              <Loader2 className="size-4 animate-spin" />
+            ) : (
+              <Star className={cn("size-4", pinnedId === threadId && "fill-warning text-warning")} />
+            )}
+          </Button>
+          </div>
+          {threadId === (generated.threadId ?? NEW_THREAD) && generated.threadReason && (
+            <p className="text-[11px] text-muted-foreground">{THREAD_REASON[generated.threadReason]}</p>
+          )}
           {!threads.length && (
             <p className="text-[11px] text-muted-foreground">
               Sin hilos detectados: actualizá la trazabilidad para listar los hilos con referentes.

@@ -4,6 +4,7 @@ import {
   followupKey,
   getClientsFile,
   saveFollowup,
+  setFollowupThread,
   setClientActivity,
   type ClientRecord,
   type ClientsFile,
@@ -49,7 +50,7 @@ async function resolve(rawId: string, input: Body) {
   };
   const key = followupKey(kind, meeting.id);
   const saved = client.followups?.[key];
-  return { client, file, draft, key, pendingDraftId: saved?.sentAt ? undefined : saved?.gmailDraftId };
+  return { client, file, draft, key, pendingDraftId: saved?.sentAt ? undefined : saved?.gmailDraftId, savedThreadId: saved?.threadId ?? null };
 }
 
 export async function PATCH(request: Request, { params }: { params: Promise<{ id: string }> }) {
@@ -120,6 +121,12 @@ export async function POST(request: Request, { params }: { params: Promise<{ id:
       sentAt,
       updatedAt: sentAt,
     }).catch(() => undefined);
+    // Mail nuevo: pasa a ser el hilo de seguimiento si no había uno, o si el fijado era el de su borrador
+    // (Gmail lo descarta al enviar y el mail sale en un hilo nuevo).
+    const pin = r.client.profile?.followupThread;
+    if (!input.threadId && sent.threadId && (!pin || pin.threadId === r.savedThreadId)) {
+      await setFollowupThread(r.client.id, { threadId: sent.threadId, subject: r.draft.subject }).catch(() => undefined);
+    }
     await refreshActivity(r).catch(() => undefined);
     return Response.json({
       sentAt,
@@ -148,6 +155,12 @@ export async function POST(request: Request, { params }: { params: Promise<{ id:
       gmailBody: r.draft.body,
     };
     await saveFollowup(r.client.id, r.key, draft);
+    // Mail nuevo en una cuenta sin hilo fijado: ese hilo pasa a ser el de seguimiento.
+    if (!input.threadId && created.threadId) {
+      await setFollowupThread(r.client.id, { threadId: created.threadId, subject: r.draft.subject }, { onlyIfEmpty: true }).catch(
+        () => undefined,
+      );
+    }
     // Validación: si se pidió responder en un hilo, Gmail tiene que haberlo dejado en ese mismo hilo.
     const inThread = input.threadId ? created.threadId === input.threadId : null;
     return Response.json({ ...draft, inThread, updated: created.updated, gmailUrl: gmailDraftUrl(created, created.threadId ?? input.threadId ?? null) });

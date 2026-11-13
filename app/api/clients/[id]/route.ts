@@ -1,6 +1,7 @@
 import {
   changeActionable,
   resolveSuggestion,
+  setFollowupThread,
   setActionablePlan,
   setTicketDone,
   updateClient,
@@ -27,7 +28,22 @@ export async function PATCH(
     actionable?: ActionableChange;
     plan?: { ticketId?: unknown; due?: unknown; estimateMinutes?: unknown; side?: unknown };
     suggestion?: { suggestionId?: unknown; action?: unknown; title?: unknown; due?: unknown };
+    followupThread?: { threadId?: unknown; subject?: unknown } | null;
   };
+
+  // Hilo de seguimiento fijado (⭐ en el composer); `null` lo quita.
+  if (body.followupThread !== undefined) {
+    const t = body.followupThread;
+    if (t !== null && (typeof t?.threadId !== "string" || !/^[0-9a-f]{6,40}$/i.test(t.threadId) || typeof t.subject !== "string")) {
+      return Response.json({ error: "invalid_thread" }, { status: 400 });
+    }
+    const client = await setFollowupThread(
+      decodeURIComponent(id),
+      t ? { threadId: t.threadId as string, subject: t.subject as string } : null,
+    );
+    if (!client) return Response.json({ error: "not_found" }, { status: 404 });
+    return Response.json({ id: client.id, followupThread: client.profile?.followupThread ?? null });
+  }
 
   // Sugerencia de la transcripción: aceptar (crea accionable propio) o descartar (enseña a no repetirla).
   if (body.suggestion && typeof body.suggestion === "object") {
