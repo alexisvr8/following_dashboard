@@ -37,7 +37,8 @@ export type PanelAction =
   | { type: "role"; name: string; role: Role | null }
   | { type: "correction"; from: string; to: string };
 
-const TONE_TEXT = { critical: "text-critical", warning: "text-warning", muted: "text-muted-foreground" } as const;
+// "warning" de `relativeDue` = vence hoy: azul (`due-today`), igual que el color de la card.
+const TONE_TEXT = { critical: "text-critical", warning: "text-due-today", muted: "text-muted-foreground" } as const;
 
 function Row({ label, children }: { label: string; children: React.ReactNode }) {
   return (
@@ -404,17 +405,17 @@ function PanelBody({
             size="sm"
             variant="outline"
             disabled={busy}
-            onClick={() => window.confirm("¿Quitar este accionable? No corresponde / ya no aplica.") && onAction(item, { type: "remove" })}
+            onClick={() => onAction(item, { type: "remove" })}
           >
             <Ban /> No corresponde
           </Button>
         )}
         {item.side === "me_deben" && (
-          <Button size="sm" variant="outline" render={<Link href={`/cuentas/${encodeURIComponent(item.clientId)}?borrador=status`} />}>
+          <Button size="sm" variant="outline" nativeButton={false} render={<Link href={`/cuentas/${encodeURIComponent(item.clientId)}?borrador=status`} />}>
             <Mail /> Reclamar
           </Button>
         )}
-        <Button size="sm" variant="ghost" className="ml-auto" render={<Link href={`/cuentas/${encodeURIComponent(item.clientId)}`} />}>
+        <Button size="sm" variant="ghost" className="ml-auto" nativeButton={false} render={<Link href={`/cuentas/${encodeURIComponent(item.clientId)}`} />}>
           Abrir cuenta <ArrowUpRight />
         </Button>
       </footer>

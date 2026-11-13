@@ -5,7 +5,7 @@ import Link from "next/link";
 import { ArrowRight, Loader2 } from "lucide-react";
 import { Dialog, DialogContent, DialogDescription, DialogTitle } from "@/components/ui/dialog";
 import { FollowupComposer } from "@/components/cuentas/FollowupComposer";
-import type { FollowupDraft, MailRef, ThreadRef } from "@/lib/store/clients-store";
+import type { FollowupDraft, FollowupKind, MailRef, ThreadRef } from "@/lib/store/clients-store";
 import type { ThreadMessage } from "@/lib/integrations/client-activity";
 import type { AccountAlert } from "@/lib/utils/followup-alerts";
 import { cn } from "@/lib/utils";
@@ -22,14 +22,18 @@ const fmtDate = (iso: string) => new Date(iso).toLocaleString("es", { dateStyle:
 // Cuadro centrado de respuesta inline: hilo del último mail (izq.) + editor del borrador de
 // actualización (der.), con el mismo FollowupComposer y endpoints que /cuentas. Click afuera o Esc
 // lo cierra y vuelve al Dashboard.
+// También lo usa /accionables ("Responder" / "Borrador de minuta" en la card): ahí no hay alerta, solo cuenta, y el
+// borrador puede ser el post-reunión (`kind="meeting"`).
 export function FollowupPanel({
   alert,
   data,
   open,
   onOpenChange,
+  kind = "status",
 }: {
-  alert: AccountAlert;
+  alert: Pick<AccountAlert, "clientId" | "name"> & Partial<Pick<AccountAlert, "lastMovementLabel" | "businessDays">>;
   data: FollowupPanelData | undefined;
+  kind?: FollowupKind;
   open: boolean;
   onOpenChange: (open: boolean) => void;
 }) {
@@ -39,13 +43,18 @@ export function FollowupPanel({
         <div className="shrink-0 border-b border-border px-4 py-3 pr-12">
           <DialogTitle className="text-foreground-strong">{alert.name}</DialogTitle>
           <DialogDescription className="mt-1 text-xs">
-            Último movimiento: {alert.lastMovementLabel} ·{" "}
-            <span className="tabular">
-              {alert.businessDays} día{alert.businessDays === 1 ? "" : "s"} háb.
-            </span>{" "}
-            ·{" "}
+            {alert.lastMovementLabel != null && alert.businessDays != null && (
+              <>
+                Último movimiento: {alert.lastMovementLabel} ·{" "}
+                <span className="tabular">
+                  {alert.businessDays} día{alert.businessDays === 1 ? "" : "s"} háb.
+                </span>{" "}
+                ·{" "}
+              </>
+            )}
+            {kind === "meeting" && data && <>Minuta de “{data.meetingTitle}” · </>}
             <Link
-              href={`/cuentas/${encodeURIComponent(alert.clientId)}?borrador=status#borradores`}
+              href={`/cuentas/${encodeURIComponent(alert.clientId)}?borrador=${kind}#borradores`}
               className="inline-flex items-center gap-1 font-medium text-foreground-strong no-underline hover:underline"
             >
               Abrir cuenta <ArrowRight className="size-3" />
@@ -60,14 +69,16 @@ export function FollowupPanel({
             {data ? (
               <FollowupComposer
                 key={data.draft.draft.meetingId}
-                kind="status"
+                kind={kind}
                 showTitle
                 className="border-0 bg-transparent py-0 lg:h-auto [--card-spacing:0px]"
                 bodyMaxClass="max-h-[calc(88dvh-24rem)]"
                 clientId={alert.clientId}
-                title="Respuesta / actualización"
+                title={kind === "meeting" ? "Mail post-reunión" : "Respuesta / actualización"}
                 hint={
-                  data.draft.regenerated
+                  kind === "meeting"
+                    ? `Minuta de “${data.meetingTitle}”: puntos importantes, lo conversado y los accionables de cada lado.`
+                    : data.draft.regenerated
                     ? `Regenerado con los mails y accionables nuevos, a partir de “${data.meetingTitle}”.`
                     : `Generado con lo finalizado y lo pendiente desde la última interacción (“${data.meetingTitle}”).`
                 }

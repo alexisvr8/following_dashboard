@@ -1,7 +1,12 @@
+import type { FollowupKind } from "@/lib/store/clients-store";
 import type { Bucket, DueKind, PlannedItem, Priority } from "@/lib/utils/deadlines";
 
 /** Vista elegida (Tablero / Lista): cookie que la página lee en el servidor, sin parpadeo al cargar. */
 export const VIEW_COOKIE = "accionables_view";
+/** Densidad de las cards (cómoda / compacta), misma idea que la vista. */
+export const DENSITY_COOKIE = "accionables_density";
+/** Espera antes de guardar Hecho / No corresponde (barra de progreso con "Deshacer"). */
+export const CLOSE_DELAY_MS = 5000;
 
 export const COLUMNS: { key: Bucket; label: string; tone: "critical" | "warning" | "neutral" }[] = [
   { key: "overdue", label: "Vencido", tone: "critical" },
@@ -59,6 +64,71 @@ export function addWorkdays(from: Date, n: number, workDays: number[]): Date {
     if (workDays.includes(d.getDay())) left--;
   }
   return d;
+}
+
+/** Antigüedad de un arrastrado contada desde su origen: "hace 4 d" / "hace 3 sem". */
+export function carriedAge(originDate: string, nowMs: number): string {
+  const days = Math.max(0, Math.floor((nowMs - Date.parse(originDate)) / 86_400_000));
+  return days < 7 ? `hace ${days} d` : `hace ${Math.floor(days / 7)} sem`;
+}
+
+/**
+ * Color de la card según el plazo: rojo = muy atrasado (≥2 días háb.); naranja = vencido (1 día); azul claro = vence
+ * hoy; gris (sin tono) = nuevo o todavía en plazo. Lo arrastrado se marca con el chip violeta, no con el fondo.
+ */
+export type CardTone = "late" | "overdue" | "today" | null;
+export function cardTone(item: PlannedItem): CardTone {
+  if (item.bucket === "overdue") return -item.businessDaysLeft >= 2 ? "late" : "overdue";
+  return item.bucket === "today" ? "today" : null;
+}
+
+/**
+ * Accionables que se resuelven con un mail (panel hilo + borrador, como en el Dashboard): "Enviar minuta" → borrador
+ * post-reunión; "Responder a X" y pedidos del cliente por mail → respuesta; "me deben" → reclamo (actualización).
+ */
+export function mailDraftKind(item: PlannedItem): FollowupKind | null {
+  if (item.kind === "followup") return "meeting";
+  if (item.kind === "reply" || item.kind === "request" || item.side === "me_deben") return "status";
+  return null;
+}
+export const mailPanelKey = (clientId: string, kind: FollowupKind) => `${clientId}:${kind}`;
+export const MAIL_ACTION_LABEL = (item: PlannedItem) =>
+  item.kind === "followup" ? "Borrador de minuta" : item.kind === "reply" || item.kind === "request" ? "Responder" : "Reclamar";
+
+/** Arrastrados primero (el más viejo arriba); el resto mantiene el orden de plazo/prioridad. */
+export function carriedFirst(items: PlannedItem[]): { carried: PlannedItem[]; fresh: PlannedItem[] } {
+  return {
+    carried: items.filter((i) => i.carried).sort((a, b) => a.originDate.localeCompare(b.originDate)),
+    fresh: items.filter((i) => !i.carried),
+  };
+}
+
+/**
+ * Fecha (AAAA-MM-DD) que toma un accionable al soltarlo en una columna: Hoy = hoy, Esta semana = último hábil de
+ * esta semana, Próxima semana = último hábil de la próxima, Más adelante = primer hábil de la siguiente. `null` =
+ * no se puede soltar ahí (Vencido, o no queda hábil esta semana).
+ */
+export function dropDue(bucket: Bucket, now: Date, workDays: number[]): string | null {
+  const today = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+  const sunday = new Date(today);
+  sunday.setDate(today.getDate() + ((7 - today.getDay()) % 7));
+  const lastWorkday = (from: Date, to: Date) => {
+    for (const d = new Date(to); d > from; d.setDate(d.getDate() - 1)) if (workDays.includes(d.getDay())) return new Date(d);
+    return null;
+  };
+  if (bucket === "today") return isoDay(today);
+  if (bucket === "this_week") {
+    const d = lastWorkday(today, sunday);
+    return d ? isoDay(d) : null;
+  }
+  const nextSunday = new Date(sunday);
+  nextSunday.setDate(sunday.getDate() + 7);
+  if (bucket === "next_week") {
+    const d = lastWorkday(sunday, nextSunday);
+    return d ? isoDay(d) : null;
+  }
+  if (bucket === "later") return isoDay(addWorkdays(nextSunday, 1, workDays));
+  return null;
 }
 
 export const ownMinutes = (items: PlannedItem[]) =>
