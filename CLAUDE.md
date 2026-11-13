@@ -277,10 +277,10 @@ Los borradores en Gmail se actualizan en vez de duplicarse (`createThreadDraft(i
 Estado en `.data/sync-status.json` (`lib/store/sync-status-store.ts`).
 Scheduler: `instrumentation.ts` → `lib/jobs/scheduler.ts`, solo si `CRON_ENABLED=true` (runtime nodejs; corre
 con `pnpm dev`/`pnpm start`). Tick por minuto, hora local (`TZ`): lunes (`CRON_DRAFTS_DAY`=1) desde `CRON_DRAFTS_AT`
-(08:30) sync + mail semanal, una vez por semana (si la Mac dormía, al despertar ese lunes; reintento cada intervalo si falla); entre `CRON_FROM`–`CRON_TO` (9–18) cada `CRON_INTERVAL_MINUTES` (15) sync; al
+(08:30) sync + mail semanal, una vez por semana (si la Mac dormía, al despertar ese lunes; reintento cada intervalo si falla); todos los días (también fin de semana si el server está prendido) entre `CRON_FROM`–`CRON_TO` (8–21) cada `CRON_INTERVAL_MINUTES` (15; local = 5) sync; modo post-reunión: `CRON_FAST_MINUTES` (40) tras el fin de cada evento de Calendar con externos, sync cada `CRON_FAST_INTERVAL_MINUTES` (2), aun fuera de ventana; `SyncStatus` consulta cada 30 s y refresca solo si cambió `syncStatus.lastChangeAt` (huella sha1 de los clientes sin `syncedAt`, o borradores semanales); al
 iniciar o tras suspensión, recuperación si la última corrida es más vieja que el intervalo.
-Endpoints: `GET /api/cron/sync` (estado, lo consulta `components/layout/SyncStatus.tsx` en el header cada 60 s y
-hace `router.refresh()` si hubo corrida nueva); `POST /api/cron/sync[?drafts=1]` y
+Endpoints: `GET /api/cron/sync` (estado, lo consulta `components/layout/SyncStatus.tsx` en el header cada 30 s y
+hace `router.refresh()` si la corrida trajo cambios); `POST /api/cron/sync[?drafts=1]` y
 `POST /api/cron/daily-followup[?drafts=0]` (wrapper de `runSync`) con header `x-cron-secret: $CRON_SECRET` para
 un cron externo opcional. `POST /api/cron/weekly-actionables` sigue stub.
 
