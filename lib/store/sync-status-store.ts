@@ -14,6 +14,8 @@ export interface SyncStatus {
   draftsCreated: number;
   /** Borradores de minuta creados solos tras una reunión nueva. */
   meetingDrafts?: number;
+  /** Reuniones procesadas con IA en la corrida (mail post-reunión + accionables). */
+  aiMeetings?: number;
   /** Última vez que se generaron los borradores semanales de objetivos (lunes 08:30). */
   lastWeeklyDraftsAt?: string | null;
   /** Última corrida que cambió datos (reuniones, mails, borradores…): la UI solo refresca cuando cambia. */

@@ -108,7 +108,7 @@ Dark mode vía `next-themes` (`ThemeProvider`/`ThemeToggleButton` en
 `app/globals.css` (`:root`/`.dark`).
 
 ## Comandos
-pnpm install · pnpm dev · pnpm build · pnpm lint · pnpm migrate:supabase · pnpm autostart:{install,restart,logs}
+pnpm install · pnpm dev · pnpm build · pnpm lint · pnpm test · pnpm migrate:supabase · pnpm autostart:{install,restart,logs}
 
 ## Persistencia (Supabase o archivo) — resumen
 `lib/store/backend.ts`: `usingSupabase()` (`STORE_BACKEND=supabase|file`; vacío = supabase si hay
@@ -269,13 +269,29 @@ Flujo: `GET /api/auth/google/connect` → consentimiento → `GET /api/auth/goog
 guarda tokens en `app_state.google_tokens` (Supabase) o `.data/google-tokens.json` en modo local.
 Wrappers: `lib/integrations/{gmail,calendar,drive}.ts`. Env vars nuevas:
 `GOOGLE_CLIENT_ID`/`GOOGLE_CLIENT_SECRET`/`GOOGLE_REDIRECT_URI`.
-Pendiente explícito: extracción de
-accionables por LLM desde el texto de la minuta, análisis de sentimiento real, envío
+Pendiente explícito: análisis de sentimiento real, envío
 automático de emails (el envío es manual, desde `/cuentas/[id]`).
+
+## Mail post-reunión con IA (Claude, única llamada a un LLM)
+`ANTHROPIC_API_KEY` + `ANTHROPIC_MODEL` (default `claude-sonnet-5-5`) en `.env.local`; sin clave todo sigue por reglas.
+`lib/llm/postmeeting.ts` (`generatePostMeeting`, `messages.parse` + `zodOutputFormat`) con prompt único + ejemplo de Salvita
+en `postmeeting-prompt.ts` y JSON fijo en `postmeeting-schema.ts` (objetivo, puntos, charlamos, accionables {titulo,
+descripcion, responsable, empresa cliente|xtract|ambas, status Pendiente|En curso|Stand By, fecha, requiere_revision},
+ya_avanzamos, revision; `descripcion` = detalle completo para la card, `resumen_mail` = versión corta ≤~20 palabras que va al mail
+vía `ai.steps[i].mail`, salvo que el accionable se haya editado). Vista previa sin la app: `pnpm preview:postmeeting -- --json|--doc …`
+(`scripts/preview-postmeeting.ts`). `lib/integrations/meeting-ai.ts` `generateMeetingAI` (en `runSync`, tras transcripciones): reuniones
+≤7 días y desde `AI_SINCE` (env; default 13/11/2026 13:45, lo previo no se reprocesa) de asignados con Doc, sin `meeting.ai`, sin accionables tocados (`meetingHasTicketState`), máx. 3 por corrida y 3 intentos
+(`aiAttempts`/`aiError`); entrada = minuta + transcripción completa del Doc (`splitNotesAndTranscript`) + participantes con empresa,
+correcciones, ERP y abiertos previos. `setMeetingAI` guarda `meeting.ai` (status/empresa por índice en `steps`) y **reemplaza
+`nextSteps`** por `[Responsable] Título: descripción` (accionables + ya avanzado, éste tildado con su fecha; originales en
+`ai.geminiNextSteps`; fecha acordada → `actionableDue`): mail y módulo de accionables comparten la lista.
+Template único `lib/utils/postmeeting-mail.ts` (`renderPostMeetingMail`, `actionableLine` =
+`• Título: Descripción. (Responsable) - Status: X ⏳|✅ (dd/mm)`), usado por `buildFollowup` con IA o por reglas.
+Tests: `pnpm test` (vitest, `tests/`); `RUN_LLM=1 LLM_DOC=<minuta.txt>` corre la prueba real contra la API.
 
 ## Sincronización automática (scheduler interno + cron externo opcional)
 `lib/jobs/sync-job.ts` `runSync({drafts, trigger})`: minutas nuevas (`discoverGeminiMeetings(7d)` incremental +
-`mergeDiscovery`) → transcripciones (`backfillTranscripts`) → `syncClientsActivity` (asignados + no asignados) →
+`mergeDiscovery`) → transcripciones (`backfillTranscripts`) → IA post-reunión (`generateMeetingAI`) → `syncClientsActivity` (asignados + no asignados) →
 **minuta automática** (`createMeetingDrafts`, si `settings.autoMeetingDrafts` [default true]: última reunión ≤48 h de cada
 asignado, sin borrador/envío previo, sin follow-up tildado ni mail mío posterior → borrador `meeting` en el hilo de `pickFollowupThread`,
 `autoFor` = id de reunión, en cada corrida) → `computeAlerts` → si `drafts` (lunes), **mail semanal de objetivos**
@@ -308,7 +324,8 @@ instrucciones), no inventar fechas, credenciales solo en env. Campos nuevos siem
   (primeros/últimos días hábiles del mes) como contexto en alertas y Capacidad.
 - Minuta: asunto estándar `Xtract + <Cliente> | Integración | <ERP> | Seguimiento` y elegir ese hilo antes que el más reciente.
 - Seguridad: evaluar bajar `calendar.events` a `calendar.readonly` (no se escribe en Calendar).
-- Descartado: etiqueta Gmail "Minuta lista" (pide `gmail.modify`), WhatsApp, tablero compartido / multi-PM, LLM.
+- Descartado: etiqueta Gmail "Minuta lista" (pide `gmail.modify`), WhatsApp, tablero compartido / multi-PM. LLM solo para el
+  mail post-reunión (ver "Mail post-reunión con IA").
 
 ## Regla de tokens
 Para ahorrar tokens, proveer respuestas directas sin relleno, generar exclusivamente los
