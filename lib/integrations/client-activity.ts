@@ -1,7 +1,7 @@
 import { google, type gmail_v1 } from "googleapis";
 import { getAuthorizedClient } from "./google-client";
 import { listEventsBetween } from "./calendar";
-import { extractBody, mapLimit, stripHtml, withRetry } from "./gemini-mail";
+import { extractBody, mapLimit, stripHtml, unwrapPlain, withRetry } from "./gemini-mail";
 import {
   followupTicketId,
   mailTicketId,
@@ -130,7 +130,7 @@ async function syncOne(
       // Pasado el cupo solo seguimos buscando el último mail del cliente.
       if (recentMails.length >= KEEP_MAILS && dir !== "client") continue;
       const { text, html } = extractBody(msg.payload ?? undefined);
-      const own = stripQuoted(text || stripHtml(html));
+      const own = stripQuoted(text ? unwrapPlain(text) : stripHtml(html));
       const subject = h["subject"] ?? "(sin asunto)";
       const related = relatedActionables(`${subject}\n${own}`, acts.map((x) => x.step)).map((i) => acts[i].id);
       recentMails.push({
@@ -353,7 +353,7 @@ export async function getThreadMessages(threadId: string): Promise<ThreadMessage
         to: parseAddresses(`${h["to"] ?? ""},${h["cc"] ?? ""}`),
         subject: h["subject"] ?? "(sin asunto)",
         date: new Date(Number(msg.internalDate)).toISOString(),
-        text: (stripQuoted(text || stripHtml(html)) || msg.snippet || "").slice(0, 20_000),
+        text: (stripQuoted(text ? unwrapPlain(text) : stripHtml(html)) || msg.snippet || "").slice(0, 20_000),
       };
     });
 }

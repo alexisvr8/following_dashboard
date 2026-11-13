@@ -21,6 +21,11 @@ export interface MeetingAttendee {
   name: string | null;
 }
 
+export interface MeetingSpeaker {
+  name: string;
+  turns: number;
+}
+
 export interface DiscoveredMeeting {
   id: string; // id del mensaje de Gmail
   docId: string | null;
@@ -36,6 +41,8 @@ export interface DiscoveredMeeting {
   decisions?: MeetingDecision[];
   /** Compromisos/pedidos de la transcripción. `undefined` = aún sin procesar. */
   transcript?: TranscriptSuggestion[];
+  /** Quiénes hablaron en la transcripción (nombre tal como lo pone Gemini) y cuántos turnos. `undefined` = sin procesar. */
+  speakers?: MeetingSpeaker[];
   /** Mail post-reunión generado por Claude (`lib/integrations/meeting-ai.ts`); sus accionables = `nextSteps`. */
   ai?: MeetingAI;
   /** Intentos fallidos de generación (se deja de intentar en `AI_MAX_ATTEMPTS`). */
@@ -702,16 +709,22 @@ export async function setMeetingNotes(
   await mutateFileLevel((state) => void apply(state.unmatched));
 }
 
-/** Guarda las sugerencias de transcripción de minutas procesadas (no toca nada más de la reunión). */
-export async function setMeetingTranscripts(updates: { meetingId: string; transcript: TranscriptSuggestion[] }[]): Promise<void> {
+/**
+ * Guarda las sugerencias de transcripción y los hablantes de minutas procesadas (no toca nada más de la reunión).
+ * Sin `transcript` solo completa `speakers` (reuniones procesadas antes de guardar hablantes).
+ */
+export async function setMeetingTranscripts(
+  updates: { meetingId: string; transcript?: TranscriptSuggestion[]; speakers?: MeetingSpeaker[] }[],
+): Promise<void> {
   if (!updates.length) return;
-  const byId = new Map(updates.map((u) => [u.meetingId, u.transcript]));
+  const byId = new Map(updates.map((u) => [u.meetingId, u]));
   await mutateClients(null, (client) => {
     let changed = false;
     for (const m of client.meetings) {
-      const t = byId.get(m.id);
-      if (t) {
-        m.transcript = t;
+      const u = byId.get(m.id);
+      if (u) {
+        if (u.transcript) m.transcript = u.transcript;
+        if (u.speakers) m.speakers = u.speakers;
         changed = true;
       }
     }

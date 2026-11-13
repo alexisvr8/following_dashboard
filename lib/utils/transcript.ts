@@ -67,6 +67,13 @@ export function parseTranscript(doc: string): TranscriptTurn[] {
   return turns;
 }
 
+/** Hablantes de la transcripción con su cantidad de turnos (vacío si el Doc no trae transcripción). */
+export function transcriptSpeakers(doc: string): { name: string; turns: number }[] {
+  const count = new Map<string, number>();
+  for (const t of parseTranscript(doc)) count.set(t.speaker, (count.get(t.speaker) ?? 0) + 1);
+  return [...count].map(([name, turns]) => ({ name, turns }));
+}
+
 const DELIVER =
   /\b(te|les|le|se lo|se la|se los)\s+(voy a |vamos a )?(paso|pasamos|pasar|envio|enviamos|enviar|mando|mandamos|mandar|confirmo|confirmamos|confirmar|comparto|compartimos|compartir|aviso|avisamos|avisar|escribo|escribir|reenvio|reenviar|dejo|dejamos|dejar|habilito|habilitar|armo|armar|preparo|preparar)\b|\bquedamos (en|pendiente)/;
 const ASK =
