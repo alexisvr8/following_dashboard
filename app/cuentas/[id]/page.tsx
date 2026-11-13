@@ -2,7 +2,6 @@ import { notFound } from "next/navigation";
 import { Mail } from "lucide-react";
 import { buttonVariants } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
-import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { ChurnRiskBadge } from "@/components/dashboard/ChurnRiskBadge";
 import { AccountWorkspace } from "@/components/cuentas/AccountWorkspace";
 import { AccountProfileForm } from "@/components/cuentas/AccountProfileForm";
@@ -22,12 +21,10 @@ export const dynamic = "force-dynamic";
 // a pedir al cambiar de cuenta: acá solo se lee la fila de esta cuenta.
 export default async function CuentaPage({
   params,
-  searchParams,
 }: {
   params: Promise<{ id: string }>;
-  searchParams: Promise<{ borrador?: string }>;
 }) {
-  const [{ id }, { borrador }] = await Promise.all([params, searchParams]);
+  const { id } = await params; // `?borrador=` de links viejos: ya hay un solo mail, se ignora.
   const [{ client, ownerEmail }, settings] = await Promise.all([
     getClientCached(decodeURIComponent(id)),
     getSettingsCached(),
@@ -35,22 +32,20 @@ export default async function CuentaPage({
   if (!client || (client.status !== "assigned" && client.status !== "unassigned")) notFound();
   // `loadAccountView` solo usa `ownerEmail` del archivo.
   const file: ClientsFile = { clients: [client], unmatched: [], lastScanAt: null, ownerEmail };
-  return <Workspace key={client.id} client={client} borrador={borrador} file={file} settings={settings} />;
+  return <Workspace key={client.id} client={client} file={file} settings={settings} />;
 }
 
 function Workspace({
   client,
-  borrador,
   file,
   settings,
 }: {
   client: ClientRecord;
-  borrador?: string;
   file: ClientsFile;
   settings: WorkSettings;
 }) {
   const v = loadAccountView(file, client, settings);
-  const { latest, meetingDraft, statusDraft, alert } = v;
+  const { latest, followup, alert } = v;
   const enc = encodeURIComponent(client.id);
   const threads = composerThreads(client); // hilo fijado primero
 
@@ -99,7 +94,7 @@ function Workspace({
   );
 
   const drafts =
-    latest && meetingDraft && statusDraft ? (
+    latest && followup ? (
       <section id="borradores" className="flex flex-col gap-3 scroll-mt-20">
         {alert && (
           <p className="rounded-md border border-warning/25 bg-warning-muted px-3 py-1.5 text-xs">
@@ -111,51 +106,30 @@ function Workspace({
             Último movimiento: {alert.lastMovementLabel}.
           </p>
         )}
-        {/* Un solo editor con selector de vista; con alerta o ?borrador=status abre en seguimiento. */}
-        <Tabs defaultValue={borrador === "status" || alert ? "status" : "meeting"}>
-          <TabsList className="w-full sm:w-fit">
-            <TabsTrigger value="meeting">Mail post-reunión</TabsTrigger>
-            <TabsTrigger value="status">Mail de seguimiento</TabsTrigger>
-          </TabsList>
-          <TabsContent value="meeting" keepMounted>
-          <FollowupComposer
-            key={`m-${latest.id}`}
-            kind="meeting"
-            className="lg:h-auto"
-            fitViewport
-            clientId={client.id}
-            title="Mail post-reunión"
-            hint={
-              meetingDraft.regenerated
-                ? `Regenerado con los mails y accionables nuevos, a partir de la minuta de “${latest.title}”.`
-                : `Accionables de la minuta de “${latest.title}”, al día con mails y lo marcado como realizado.`
-            }
-            lastSentAt={meetingDraft.lastSentAt}
-            initial={meetingDraft.draft}
-            generated={meetingDraft.generated}
-            threads={threads}
-          />
-          </TabsContent>
-          <TabsContent value="status" keepMounted>
-          <FollowupComposer
-            key={`s-${latest.id}`}
-            kind="status"
-            className="lg:h-auto"
-            fitViewport
-            clientId={client.id}
-            title="Mail de seguimiento"
-            hint={
-              statusDraft.regenerated
-                ? `Regenerado porque cambiaron los accionables o llegó un mail nuevo después de tu última edición. Parte de ${v.statusSource}.`
-                : `Parte de ${v.statusSource}, con los accionables finalizados desde tu último mail y lo que falta. Se actualiza con cada mail o accionable.`
-            }
-            lastSentAt={statusDraft.lastSentAt}
-            initial={statusDraft.draft}
-            generated={statusDraft.generated}
-            threads={threads}
-          />
-          </TabsContent>
-        </Tabs>
+        {/* Un solo mail de seguimiento: post-reunión hasta que sale (con lo tildado como hecho), después
+            avances desde la reunión / mi último mail + lo que queda (`currentFollowupKind`). */}
+        <FollowupComposer
+          key={`${followup.kind}-${latest.id}`}
+          kind={followup.kind}
+          showTitle
+          className="lg:h-auto"
+          fitViewport
+          clientId={client.id}
+          title="Mail de seguimiento"
+          hint={
+            followup.kind === "meeting"
+              ? followup.regenerated
+                ? `Resumen de “${latest.title}”, regenerado con los mails y accionables nuevos. Al enviarlo, pasa a mail de avances.`
+                : `Resumen de “${latest.title}” con cada accionable en su estado (lo que marcás como hecho se actualiza). Al enviarlo, pasa a mail de avances.`
+              : followup.regenerated
+                ? `Regenerado porque cambiaron los accionables o llegó un mail nuevo. Parte de ${v.statusSource}.`
+                : `Avances desde ${v.statusSource} y lo que queda pendiente. Se actualiza con cada mail o accionable.`
+          }
+          lastSentAt={followup.lastSentAt}
+          initial={followup.draft}
+          generated={followup.generated}
+          threads={threads}
+        />
       </section>
     ) : (
       <p className="rounded-lg border border-dashed border-divider p-6 text-center text-sm text-muted-foreground">

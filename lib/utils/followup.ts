@@ -1,5 +1,6 @@
 import {
   followupKey,
+  followupTicketId,
   type ClientRecord,
   type DiscoveredMeeting,
   type FollowupDraft,
@@ -550,6 +551,29 @@ export function buildStatusUpdate(
     threadReason: anchorMail ? "anchor" : thread!.reason,
     reviewNotes,
   };
+}
+
+/**
+ * Qué mail toca en la cuenta (un solo editor): mientras la minuta no salió (sin envío, sin "Enviar follow-up"
+ * tildado y sin mail mío posterior a la reunión) es el post-reunión, que ya refleja lo tildado; después pasa a
+ * ser el de seguimiento (avances desde la reunión o mi último mail + lo que queda).
+ */
+export function currentFollowupKind(client: ClientRecord, meeting: DiscoveredMeeting): FollowupKind {
+  if (client.followups?.[followupKey("meeting", meeting.id)]?.sentAt) return "status";
+  if (client.doneTicketIds?.includes(followupTicketId(client.id, meeting.id))) return "status";
+  const wroteAfter = (client.activity?.recentMails ?? []).some((m) => m.direction === "me" && m.date > meeting.date);
+  return wroteAfter ? "status" : "meeting";
+}
+
+/** `getDraft` del tipo que toca ahora (`currentFollowupKind`). */
+export function getFollowupDraft(
+  client: ClientRecord,
+  meeting: DiscoveredMeeting,
+  ownerEmail: string | null,
+  settings: WorkSettings,
+) {
+  const kind = currentFollowupKind(client, meeting);
+  return { kind, ...getDraft(kind, client, meeting, ownerEmail, settings) };
 }
 
 /**

@@ -28,8 +28,10 @@ se vuelve menú desplegable `MobileNav`). Sin sidebar. 5 secciones. Navegación 
   (se apilan en móvil). Izq. `AccountDirectory` (tabs Asignadas/No asignadas, filtro Todas/En riesgo/Atención por `computeChurnRisk`, buscador nombre/dominio/ERP, filas
   ordenadas por `lastMovement` con títulos Hoy/Ayer/Esta semana/Anteriores, `lib/utils/movement.ts`); default = primera.
   Centro + der. = `AccountWorkspace` (datos de `lib/server/account-view.ts` `loadAccountView`): una card con encabezado
-  `AccountProfileForm`, franja de engagement, un solo editor con selector "Mail post-reunión" (`meeting`) / "Mail de seguimiento" (`status`)
-  (altura según el contenido del mail, máx. 36dvh; abre en seguimiento con alerta o `?borrador=status`); ancho completo, columnas 320px / resto / 360px (2xl: 360 / resto / 420); derecha pestañas Accionables / Trazabilidad / Reuniones (`MeetingsList`: minuta de cada reunión) /
+  `AccountProfileForm`, franja de engagement, un solo "Mail de seguimiento" sin selector (`getFollowupDraft`/`currentFollowupKind` en `followup.ts`:
+  `meeting` mientras la minuta no salió [sin `sentAt`, follow-up sin tildar, sin mail mío posterior], con lo tildado como hecho;
+  después `status` = avances + pendientes; mismo criterio en `FollowupPanel` del Dashboard; `?borrador=` se ignora)
+  (altura según el contenido del mail, máx. 36dvh); ancho completo, columnas 320px / resto / 360px (2xl: 360 / resto / 420); derecha pestañas Accionables / Trazabilidad / Reuniones (`MeetingsList`: minuta de cada reunión) /
   Participantes. `FollowupComposer`: Enviar, Regenerar (PATCH), Guardar (PUT), Borrador en Gmail, Copiar.
   Capacidad = `WeekPlanner` (planificador por día, meta = cerrar
   pendientes al viernes: veredicto core/flex/deficit, métricas (reuniones, libre normal + flex,

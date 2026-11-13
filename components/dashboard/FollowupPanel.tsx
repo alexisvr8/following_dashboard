@@ -5,14 +5,14 @@ import Link from "next/link";
 import { ArrowRight, Loader2 } from "lucide-react";
 import { Dialog, DialogContent, DialogDescription, DialogTitle } from "@/components/ui/dialog";
 import { FollowupComposer } from "@/components/cuentas/FollowupComposer";
-import type { FollowupDraft, MailRef, ThreadRef } from "@/lib/store/clients-store";
+import type { FollowupDraft, FollowupKind, MailRef, ThreadRef } from "@/lib/store/clients-store";
 import type { ThreadMessage } from "@/lib/integrations/client-activity";
 import type { AccountAlert } from "@/lib/utils/followup-alerts";
 import { cn } from "@/lib/utils";
 
 export type FollowupPanelData = {
   meetingTitle: string;
-  draft: { draft: FollowupDraft; generated: FollowupDraft; regenerated: boolean; lastSentAt: string | null };
+  draft: { kind: FollowupKind; draft: FollowupDraft; generated: FollowupDraft; regenerated: boolean; lastSentAt: string | null };
   threads: ThreadRef[];
   lastMail: MailRef | null;
 };
@@ -60,7 +60,7 @@ export function FollowupPanel({
             {data ? (
               <FollowupComposer
                 key={data.draft.draft.meetingId}
-                kind="status"
+                kind={data.draft.kind}
                 showTitle
                 className="border-0 bg-transparent py-0 lg:h-auto [--card-spacing:0px]"
                 bodyMaxClass="max-h-[calc(88dvh-24rem)]"
