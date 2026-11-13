@@ -18,6 +18,7 @@ import { computeAlerts, type AccountAlert } from "@/lib/utils/followup-alerts";
 import { buildFollowup, buildWeeklyPlan } from "@/lib/utils/followup";
 import { getSyncStatus } from "@/lib/store/sync-status-store";
 import { followupTicketId } from "@/lib/store/clients-store";
+import { createHash } from "node:crypto";
 
 // Sincronización completa (la usan el scheduler de `instrumentation.ts` y `/api/cron/*`):
 // 1) minutas nuevas de Gemini Notes (incremental), 2) actividad de mails/reuniones de clientes
@@ -56,9 +57,10 @@ export async function runSync(opts: SyncOptions): Promise<SyncResult> {
 async function doSync({ drafts: withDrafts, trigger }: SyncOptions): Promise<SyncResult> {
   const started = Date.now();
   // El último mail semanal se conserva entre corridas (el scheduler lo usa para no repetirlo ni saltearlo).
-  const { lastWeeklyDraftsAt } = await getSyncStatus();
+  const { lastWeeklyDraftsAt, lastChangeAt } = await getSyncStatus();
   const status: SyncStatus = {
     lastWeeklyDraftsAt,
+    lastChangeAt,
     lastRunAt: new Date().toISOString(),
     ok: false,
     trigger,
@@ -77,7 +79,9 @@ async function doSync({ drafts: withDrafts, trigger }: SyncOptions): Promise<Syn
 
   try {
     // 1) Minutas nuevas → reuniones (y con ellas, accionables de la última minuta).
-    const known = knownMeetingIds(await getClientsFile());
+    const initial = await getClientsFile();
+    const fingerprintBefore = fingerprint(initial);
+    const known = knownMeetingIds(initial);
     const discovery = await discoverGeminiMeetings(DISCOVERY_DAYS, known);
     if (!discovery) throw new Error("google_not_connected");
     const before = countMeetings(await getClientsFile());
@@ -115,6 +119,9 @@ async function doSync({ drafts: withDrafts, trigger }: SyncOptions): Promise<Syn
       status.draftsCreated = weekly.filter((d) => d.ok).length;
       status.lastWeeklyDraftsAt = new Date().toISOString();
     }
+    if (fingerprint(await getClientsFile()) !== fingerprintBefore || status.draftsCreated > 0) {
+      status.lastChangeAt = status.lastRunAt;
+    }
     status.ok = true;
   } catch (error) {
     status.error = (error as Error).message;
@@ -123,6 +130,12 @@ async function doSync({ drafts: withDrafts, trigger }: SyncOptions): Promise<Syn
   status.durationMs = Date.now() - started;
   await saveSyncStatus(status);
   return { ...status, skipped: false, alertList, drafts };
+}
+
+/** Huella de los datos de clientes sin la marca de hora de cada sync (`syncedAt`), para saber si algo cambió. */
+function fingerprint(file: ClientsFile): string {
+  const json = JSON.stringify(file.clients, (k, v) => (k === "syncedAt" ? undefined : v));
+  return createHash("sha1").update(json).digest("hex");
 }
 
 function countMeetings(file: ClientsFile): number {

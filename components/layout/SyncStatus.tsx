@@ -7,6 +7,7 @@ import { cn } from "@/lib/utils";
 
 interface Status {
   lastRunAt: string | null;
+  lastChangeAt?: string | null;
   ok: boolean;
   error: string | null;
   newMeetings: number;
@@ -14,7 +15,7 @@ interface Status {
   schedulerEnabled: boolean;
 }
 
-const POLL_MS = 60_000;
+const POLL_MS = 30_000;
 
 function ago(iso: string, now: number): string {
   const min = Math.max(0, Math.round((now - new Date(iso).getTime()) / 60_000));
@@ -39,8 +40,9 @@ export function SyncStatus() {
         const res = await fetch("/api/cron/sync", { cache: "no-store" });
         if (!res.ok || !alive) return;
         const next = (await res.json()) as Status;
-        if (lastSeen.current !== undefined && next.lastRunAt !== lastSeen.current) router.refresh();
-        lastSeen.current = next.lastRunAt;
+        const marker = next.lastChangeAt ?? next.lastRunAt; // estado viejo sin `lastChangeAt`: como antes
+        if (lastSeen.current !== undefined && marker !== lastSeen.current) router.refresh();
+        lastSeen.current = marker;
         setStatus(next);
         setNow(Date.now());
       } catch {
