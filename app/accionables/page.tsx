@@ -1,8 +1,8 @@
 import { cookies } from "next/headers";
 import { ActionablesBoard } from "@/components/accionables/ActionablesBoard";
-import { DENSITY_COOKIE, mailDraftKind, mailPanelKey, VIEW_COOKIE } from "@/components/accionables/format";
+import { DENSITY_COOKIE, isMailItem, VIEW_COOKIE } from "@/components/accionables/format";
 import type { FollowupPanelData } from "@/components/dashboard/FollowupPanel";
-import { getDraft } from "@/lib/utils/followup";
+import { getFollowupDraft } from "@/lib/utils/followup";
 import { composerThreads } from "@/lib/utils/followup-thread";
 import { listEventsBetween } from "@/lib/integrations/calendar";
 import { getClientsFileCached, getSettingsCached } from "@/lib/server/cached-data";
@@ -24,18 +24,17 @@ export default async function AccionablesPage() {
   const events = await listEventsBetween(start, end).catch(() => null);
   const plan = computeWeekPlan(clients, settings, events, offset, now);
 
-  // Panel de mail de la card (mismo que Seguimiento del Dashboard): un borrador por cuenta y tipo, solo donde hace falta.
+  // Panel de mail de la card (mismo que Seguimiento del Dashboard): el mail único de la cuenta, solo donde hace falta.
   const mailPanels: Record<string, FollowupPanelData> = {};
   for (const item of plan.items) {
-    const kind = mailDraftKind(item);
-    const key = kind && mailPanelKey(item.clientId, kind);
-    if (!kind || !key || mailPanels[key]) continue;
+    const key = item.clientId;
+    if (!isMailItem(item) || mailPanels[key]) continue;
     const c = clients.find((x) => x.id === item.clientId);
     const latest = c && [...c.meetings].sort((x, y) => y.date.localeCompare(x.date))[0];
     if (!c || !latest) continue;
     mailPanels[key] = {
       meetingTitle: latest.title,
-      draft: getDraft(kind, c, latest, ownerEmail ?? null, settings),
+      draft: getFollowupDraft(c, latest, ownerEmail ?? null, settings),
       threads: composerThreads(c),
       lastMail: c.activity?.lastMail ?? null,
     };

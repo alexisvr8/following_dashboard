@@ -10,7 +10,7 @@ import { getClientsFileCached, getSettingsCached } from "@/lib/server/cached-dat
 import type { WorkSettings } from "@/lib/store/settings-store";
 import { computeWeekPlan, hasWorkLeftThisWeek, planWeekBounds, type WeekPlan } from "@/lib/utils/week-plan";
 import { clientsToBoard } from "@/lib/utils/clients-to-board";
-import { getDraft } from "@/lib/utils/followup";
+import { getFollowupDraft } from "@/lib/utils/followup";
 import type { Account } from "@/types/account";
 import type { Ticket } from "@/types/ticket";
 import { composerThreads } from "@/lib/utils/followup-thread";
@@ -49,7 +49,7 @@ export default async function Home({ searchParams }: { searchParams: Promise<{ s
     if (!c || !latest) continue;
     panels[a.clientId] = {
       meetingTitle: latest.title,
-      draft: getDraft("status", c, latest, ownerEmail ?? null, settings),
+      draft: getFollowupDraft(c, latest, ownerEmail ?? null, settings),
       threads: composerThreads(c),
       lastMail: c.activity?.lastMail ?? null,
     };

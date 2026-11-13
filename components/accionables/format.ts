@@ -1,4 +1,3 @@
-import type { FollowupKind } from "@/lib/store/clients-store";
 import type { Bucket, DueKind, PlannedItem, Priority } from "@/lib/utils/deadlines";
 
 /** Vista elegida (Tablero / Lista): cookie que la página lee en el servidor, sin parpadeo al cargar. */
@@ -83,15 +82,11 @@ export function cardTone(item: PlannedItem): CardTone {
 }
 
 /**
- * Accionables que se resuelven con un mail (panel hilo + borrador, como en el Dashboard): "Enviar minuta" → borrador
- * post-reunión; "Responder a X" y pedidos del cliente por mail → respuesta; "me deben" → reclamo (actualización).
+ * Accionables que se resuelven con un mail ("Enviar minuta", "Responder a X", pedidos del cliente por mail, "me
+ * deben"): abren el panel hilo + borrador del Dashboard con el mail único de la cuenta (`getFollowupDraft`).
  */
-export function mailDraftKind(item: PlannedItem): FollowupKind | null {
-  if (item.kind === "followup") return "meeting";
-  if (item.kind === "reply" || item.kind === "request" || item.side === "me_deben") return "status";
-  return null;
-}
-export const mailPanelKey = (clientId: string, kind: FollowupKind) => `${clientId}:${kind}`;
+export const isMailItem = (item: PlannedItem) =>
+  item.kind === "followup" || item.kind === "reply" || item.kind === "request" || item.side === "me_deben";
 export const MAIL_ACTION_LABEL = (item: PlannedItem) =>
   item.kind === "followup" ? "Borrador de minuta" : item.kind === "reply" || item.kind === "request" ? "Responder" : "Reclamar";
 

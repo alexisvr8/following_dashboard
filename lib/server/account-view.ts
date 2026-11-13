@@ -1,6 +1,6 @@
 import type { ClientRecord, ClientsFile } from "@/lib/store/clients-store";
 import type { WorkSettings } from "@/lib/store/settings-store";
-import { getDraft, latestInteraction } from "@/lib/utils/followup";
+import { getFollowupDraft, latestInteraction } from "@/lib/utils/followup";
 import { computeAlerts } from "@/lib/utils/followup-alerts";
 import { clientsToBoard } from "@/lib/utils/clients-to-board";
 import { executedHistory } from "@/lib/utils/actionables";
@@ -14,8 +14,8 @@ export function loadAccountView(file: ClientsFile, client: ClientRecord, setting
   const meetings = [...client.meetings].sort((a, b) => b.date.localeCompare(a.date));
   const latest = meetings[0] ?? null;
   const owner = file.ownerEmail ?? null;
-  const meetingDraft = latest ? getDraft("meeting", client, latest, owner, settings) : null;
-  const statusDraft = latest ? getDraft("status", client, latest, owner, settings) : null;
+  // Un solo mail de seguimiento: post-reunión hasta que sale, después avances + pendientes.
+  const followup = latest ? getFollowupDraft(client, latest, owner, settings) : null;
   const interaction = latest ? latestInteraction(client, latest) : null;
   const statusSource =
     interaction?.kind === "mail"
@@ -34,8 +34,7 @@ export function loadAccountView(file: ClientsFile, client: ClientRecord, setting
   const contactEmails = new Set([
     ...participants.filter((p) => p.role === "referent").map((p) => p.email),
     ...senders.keys(),
-    ...(meetingDraft?.draft.to ?? []),
-    ...(statusDraft?.draft.to ?? []),
+    ...(followup?.draft.to ?? []),
   ]);
   const contacts = [...contactEmails].map((email) => {
     const name = participants.find((p) => p.email === email)?.name ?? senders.get(email) ?? null;
@@ -50,8 +49,7 @@ export function loadAccountView(file: ClientsFile, client: ClientRecord, setting
     referents,
     meetings,
     latest,
-    meetingDraft,
-    statusDraft,
+    followup,
     statusSource,
     alert,
     ticketTitles,

@@ -34,14 +34,12 @@ import { ActionablePanel, type PanelAction } from "@/components/accionables/Acti
 import { SuggestionsDialog } from "@/components/accionables/SuggestionsSection";
 import { CorrectionsDialog } from "@/components/accionables/CorrectionsDialog";
 import { FollowupPanel, type FollowupPanelData } from "@/components/dashboard/FollowupPanel";
-import type { FollowupKind } from "@/lib/store/clients-store";
 import {
   addWorkdays,
   carriedAge,
   carriedFirst,
   MAIL_ACTION_LABEL,
-  mailDraftKind,
-  mailPanelKey,
+  isMailItem,
   CLOSE_DELAY_MS,
   cardTone,
   type CardTone,
@@ -206,11 +204,10 @@ export function ActionablesBoard({
   }
 
   // Panel de mail (hilo + borrador) para "Responder" / "Borrador de minuta" / "Reclamar".
-  const [mail, setMail] = useState<{ clientId: string; name: string; kind: FollowupKind } | null>(null);
+  const [mail, setMail] = useState<{ clientId: string; name: string } | null>(null);
   const mailAction = (i: PlannedItem) => {
-    const kind = mailDraftKind(i);
-    if (!kind || !mailPanels[mailPanelKey(i.clientId, kind)]) return undefined;
-    return () => setMail({ clientId: i.clientId, name: i.clientName, kind });
+    if (!isMailItem(i) || !mailPanels[i.clientId]) return undefined;
+    return () => setMail({ clientId: i.clientId, name: i.clientName });
   };
 
   // Hecho / No corresponde esperan CLOSE_DELAY_MS con barra de progreso y "Deshacer" antes de guardarse.
@@ -486,10 +483,9 @@ export function ActionablesBoard({
 
       {mail && (
         <FollowupPanel
-          key={mailPanelKey(mail.clientId, mail.kind)}
+          key={mail.clientId}
           alert={{ clientId: mail.clientId, name: mail.name }}
-          kind={mail.kind}
-          data={mailPanels[mailPanelKey(mail.clientId, mail.kind)]}
+          data={mailPanels[mail.clientId]}
           open
           onOpenChange={(o) => !o && setMail(null)}
         />

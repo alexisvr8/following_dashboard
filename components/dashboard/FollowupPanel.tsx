@@ -12,7 +12,7 @@ import { cn } from "@/lib/utils";
 
 export type FollowupPanelData = {
   meetingTitle: string;
-  draft: { draft: FollowupDraft; generated: FollowupDraft; regenerated: boolean; lastSentAt: string | null };
+  draft: { kind: FollowupKind; draft: FollowupDraft; generated: FollowupDraft; regenerated: boolean; lastSentAt: string | null };
   threads: ThreadRef[];
   lastMail: MailRef | null;
 };
@@ -22,21 +22,20 @@ const fmtDate = (iso: string) => new Date(iso).toLocaleString("es", { dateStyle:
 // Cuadro centrado de respuesta inline: hilo del último mail (izq.) + editor del borrador de
 // actualización (der.), con el mismo FollowupComposer y endpoints que /cuentas. Click afuera o Esc
 // lo cierra y vuelve al Dashboard.
-// También lo usa /accionables ("Responder" / "Borrador de minuta" en la card): ahí no hay alerta, solo cuenta, y el
-// borrador puede ser el post-reunión (`kind="meeting"`).
+// También lo usa /accionables (ícono de mail en la card): ahí no hay alerta, solo cuenta. El tipo (post-reunión o
+// seguimiento) lo decide `getFollowupDraft`, igual que en /cuentas.
 export function FollowupPanel({
   alert,
   data,
   open,
   onOpenChange,
-  kind = "status",
 }: {
   alert: Pick<AccountAlert, "clientId" | "name"> & Partial<Pick<AccountAlert, "lastMovementLabel" | "businessDays">>;
   data: FollowupPanelData | undefined;
-  kind?: FollowupKind;
   open: boolean;
   onOpenChange: (open: boolean) => void;
 }) {
+  const kind: FollowupKind = data?.draft.kind ?? "status";
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent className="flex max-h-[88dvh] w-[min(78rem,calc(100%-2rem))] max-w-none flex-col gap-0 p-0 sm:max-w-none">
@@ -54,7 +53,7 @@ export function FollowupPanel({
             )}
             {kind === "meeting" && data && <>Minuta de “{data.meetingTitle}” · </>}
             <Link
-              href={`/cuentas/${encodeURIComponent(alert.clientId)}?borrador=${kind}#borradores`}
+              href={`/cuentas/${encodeURIComponent(alert.clientId)}#borradores`}
               className="inline-flex items-center gap-1 font-medium text-foreground-strong no-underline hover:underline"
             >
               Abrir cuenta <ArrowRight className="size-3" />
@@ -69,7 +68,7 @@ export function FollowupPanel({
             {data ? (
               <FollowupComposer
                 key={data.draft.draft.meetingId}
-                kind={kind}
+                kind={data.draft.kind}
                 showTitle
                 className="border-0 bg-transparent py-0 lg:h-auto [--card-spacing:0px]"
                 bodyMaxClass="max-h-[calc(88dvh-24rem)]"
