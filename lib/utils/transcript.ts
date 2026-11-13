@@ -34,6 +34,14 @@ const TRANSCRIPT_START = /^.*\s-\s(Transcripci[oó]n|Transcript)\s*$/m;
 const TIMESTAMP = /^\d{2}:\d{2}:\d{2}$/;
 const TURN = /^([A-ZÁÉÍÓÚÑ][^:]{1,40}):\s+(.*)$/;
 
+/** Export de texto del Doc de Gemini → minuta (resumen, decisiones, pasos, detalles) y transcripción completa. */
+export function splitNotesAndTranscript(doc: string): { notes: string | null; transcript: string | null } {
+  const start = doc.search(TRANSCRIPT_START);
+  const notes = (start < 0 ? doc : doc.slice(0, start)).trim();
+  const transcript = start < 0 ? "" : doc.slice(start).trim();
+  return { notes: notes || null, transcript: transcript || null };
+}
+
 /** Turnos de la transcripción; une los fragmentos que Gemini corta del mismo hablante en el mismo minuto. */
 export function parseTranscript(doc: string): TranscriptTurn[] {
   const start = doc.search(TRANSCRIPT_START);

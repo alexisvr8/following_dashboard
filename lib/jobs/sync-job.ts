@@ -1,4 +1,5 @@
 import { backfillMeetingNotes, backfillTranscripts, discoverGeminiMeetings } from "@/lib/integrations/gemini-mail";
+import { generateMeetingAI } from "@/lib/integrations/meeting-ai";
 import { createThreadDraft } from "@/lib/integrations/gmail";
 import { syncClientsActivity } from "@/lib/integrations/client-activity";
 import {
@@ -91,6 +92,9 @@ async function doSync({ drafts: withDrafts, trigger }: SyncOptions): Promise<Syn
     status.newClients = newClients;
     await setMeetingNotes(await backfillMeetingNotes(merged));
     await setMeetingTranscripts(await backfillTranscripts(await getClientsFile()));
+    // 1b) Mail post-reunión con IA (Claude): minuta + transcripción → resumen y accionables de la reunión.
+    const ai = await generateMeetingAI(await getClientsFile(), await getSettings());
+    status.aiMeetings = ai.generated;
 
     // 2) Actividad (mails en cualquier dirección con cualquier persona del cliente + última reunión).
     const targets = merged.clients.filter((c) => c.status === "assigned" || c.status === "unassigned");

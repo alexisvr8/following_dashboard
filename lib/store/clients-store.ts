@@ -7,6 +7,8 @@ import type { MeetingDecision } from "@/lib/utils/gemini-notes-parser";
 import { applyCorrections, type TranscriptSuggestion } from "@/lib/utils/transcript";
 import type { Correction } from "@/lib/store/settings-store";
 import { collectMailItems, mailTicketId, type MailItem } from "@/lib/utils/mail-items";
+import { stepTicketId } from "@/lib/utils/actionables";
+import type { AISide, AIStatus, PostMeetingOutput } from "@/lib/llm/postmeeting-schema";
 
 export { mailTicketId };
 
@@ -34,6 +36,32 @@ export interface DiscoveredMeeting {
   decisions?: MeetingDecision[];
   /** Compromisos/pedidos de la transcripción. `undefined` = aún sin procesar. */
   transcript?: TranscriptSuggestion[];
+  /** Mail post-reunión generado por Claude (`lib/integrations/meeting-ai.ts`); sus accionables = `nextSteps`. */
+  ai?: MeetingAI;
+  /** Intentos fallidos de generación (se deja de intentar en `AI_MAX_ATTEMPTS`). */
+  aiAttempts?: number;
+  aiError?: string;
+}
+
+export interface MeetingAIStep {
+  status: AIStatus | "Hecho";
+  empresa: AISide;
+  requiereRevision?: boolean;
+  /** Versión corta para el mail ("Título: resumen"); la card usa el detalle completo de `nextSteps`. */
+  mail?: string;
+}
+
+export interface MeetingAI {
+  model: string;
+  generatedAt: string;
+  objetivo: string;
+  puntos: string[];
+  charlamos: string[];
+  /** Por índice de `nextSteps` (accionables y, al final, lo ya avanzado). */
+  steps: MeetingAIStep[];
+  revision: string[];
+  /** `nextSteps` originales de Gemini, antes de reemplazarlos por los de la IA. */
+  geminiNextSteps: string[];
 }
 
 export interface CustomActionable {
@@ -688,6 +716,106 @@ export async function setMeetingTranscripts(updates: { meetingId: string; transc
       }
     }
     return changed ? true : SKIP;
+  });
+}
+
+/** ¿Ya se tocó algún accionable de esta reunión (tildado, editado, quitado, con fecha/estimación/lado)? */
+export function meetingHasTicketState(client: ClientRecord, meetingId: string): boolean {
+  const prefix = `${client.id}:${meetingId}-`;
+  const keys = [
+    ...(client.doneTicketIds ?? []),
+    ...(client.removedTicketIds ?? []),
+    ...Object.keys(client.actionableEdits ?? {}),
+    ...Object.keys(client.actionableDue ?? {}),
+    ...Object.keys(client.actionableEstimate ?? {}),
+    ...Object.keys(client.actionableSide ?? {}),
+  ];
+  return keys.some((k) => k.startsWith(prefix));
+}
+
+/** "[Facundo Miguel Zingone] Revisar endpoints: Analizar…" (formato de `nextSteps` que usa toda la app). */
+export const aiStepText = (s: { responsable: string; titulo: string; descripcion: string }) =>
+  `${s.responsable.trim() ? `[${s.responsable.trim()}] ` : ""}${s.titulo.trim()}: ${s.descripcion.trim()}`;
+
+/** "Revisar endpoints: resumen corto" (lo que va en el mail). */
+export const aiMailText = (s: { titulo: string; resumen_mail: string }) => `${s.titulo.trim()}: ${s.resumen_mail.trim()}`;
+
+/** "14/11" contra la fecha de la reunión → "2026-11-14" (primera ocurrencia desde la reunión). */
+export function ddmmToIso(ddmm: string | null, meetingDate: string): string | null {
+  const m = ddmm?.match(/^(\d{1,2})\/(\d{1,2})$/);
+  if (!m) return null;
+  const base = new Date(meetingDate);
+  let d = new Date(base.getFullYear(), +m[2] - 1, +m[1]);
+  if (d.getTime() < new Date(base.getFullYear(), base.getMonth(), base.getDate()).getTime()) {
+    d = new Date(base.getFullYear() + 1, +m[2] - 1, +m[1]);
+  }
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
+}
+
+/**
+ * Guarda el resultado de la IA en la reunión y reemplaza sus `nextSteps` por los accionables generados (más lo ya
+ * avanzado, tildado con su fecha): mail y módulo de accionables usan la misma lista. No pisa reuniones cuyos
+ * accionables ya se tocaron (los ids dependen del índice). Devuelve false si no aplicó.
+ */
+export async function setMeetingAI(clientId: string, meetingId: string, out: PostMeetingOutput, model: string): Promise<boolean> {
+  const res = await mutateClient(clientId, (client) => {
+    const m = client.meetings.find((x) => x.id === meetingId);
+    if (!m || m.ai || meetingHasTicketState(client, meetingId)) return SKIP;
+    const now = new Date().toISOString();
+    const open = out.accionables;
+    m.ai = {
+      model,
+      generatedAt: now,
+      objetivo: out.objetivo,
+      puntos: out.puntos_importantes,
+      charlamos: out.lo_que_charlamos,
+      steps: [
+        ...open.map((a) => ({
+          status: a.status,
+          empresa: a.empresa,
+          mail: aiMailText(a),
+          ...(a.requiere_revision ? { requiereRevision: true } : {}),
+        })),
+        ...out.ya_avanzamos.map((a) => ({ status: "Hecho" as const, empresa: a.empresa, mail: aiMailText(a) })),
+      ],
+      revision: out.revision,
+      geminiNextSteps: m.nextSteps,
+    };
+    m.nextSteps = [...open, ...out.ya_avanzamos].map(aiStepText);
+    delete m.aiError;
+
+    const id = (i: number) => stepTicketId(client.id, m.id, i);
+    const due = Object.fromEntries(
+      open.flatMap((a, i) => {
+        const iso = ddmmToIso(a.fecha, m.date);
+        return iso ? [[id(i), iso]] : [];
+      }),
+    );
+    if (Object.keys(due).length) client.actionableDue = { ...client.actionableDue, ...due };
+    if (out.ya_avanzamos.length) {
+      const doneAt = Object.fromEntries(
+        out.ya_avanzamos.map((a, j) => {
+          const iso = ddmmToIso(a.fecha, m.date);
+          return [id(open.length + j), iso ? `${iso}T12:00:00.000Z` : m.date];
+        }),
+      );
+      client.doneTicketIds = [...new Set([...(client.doneTicketIds ?? []), ...Object.keys(doneAt)])];
+      client.doneTicketAt = { ...client.doneTicketAt, ...doneAt };
+    }
+    client.ticketsUpdatedAt = now;
+    return true;
+  });
+  return Boolean(res);
+}
+
+/** Registra un intento fallido de generación (se reintenta en la próxima sync hasta `AI_MAX_ATTEMPTS`). */
+export async function markMeetingAIFailed(clientId: string, meetingId: string, error: string): Promise<void> {
+  await mutateClient(clientId, (client) => {
+    const m = client.meetings.find((x) => x.id === meetingId);
+    if (!m) return SKIP;
+    m.aiAttempts = (m.aiAttempts ?? 0) + 1;
+    m.aiError = error.slice(0, 200);
+    return true;
   });
 }
 

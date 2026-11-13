@@ -23,8 +23,13 @@ import {
   strayNotes,
   strayParticipants,
 } from "@/lib/utils/followup-thread";
+import { actionableLine, renderPostMeetingMail, statusSuffix, type MailStatus } from "@/lib/utils/postmeeting-mail";
+import type { Actionable } from "@/lib/utils/actionables";
+import type { AISide } from "@/lib/llm/postmeeting-schema";
 
-// Borradores por reglas (sin LLM), recalculados con cada mail, reunión o accionable tildado.
+// Borradores recalculados con cada mail, reunión o accionable tildado. El de la minuta (`buildFollowup`) usa el
+// contenido generado por Claude cuando la reunión lo tiene (`meeting.ai`) y, si no, el armado por reglas; en ambos
+// casos con el mismo template (`renderPostMeetingMail`).
 // Follow-up: hitos, decisiones y accionables para la próxima sesión (última minuta + arrastrados +
 // pedidos por mail). Seguimiento: accionables finalizados desde mi último mail posterior a la reunión,
 // partiendo de la última interacción. Se persisten solo al editarlos, crear el draft en Gmail o
@@ -101,11 +106,26 @@ export function meetingWhen(iso: string, now: Date): { text: string; recent: boo
 }
 
 // Estado al final de cada punto. En el editor es texto plano; al pasar a Gmail (`bodyToHtml`) queda
-// "Status:" en negrita y "Hecho" en negrita verde.
-export const STATUS_DONE = " - Status: Hecho";
-export const STATUS_PENDING = " - Status: Pendiente";
-/** " - Status: Hecho (02/11)" */
-const doneStatus = (doneAt: string | null) => `${STATUS_DONE}${doneAt ? ` (${fmtDay(doneAt)})` : ""}`;
+// "Status:" en negrita y el valor en negrita con color.
+export const STATUS_PENDING = statusSuffix("Pendiente");
+/** " - Status: Hecho ✅ (02/11)" */
+const doneStatus = (doneAt: string | null) => statusSuffix("Hecho", doneAt ? fmtDay(doneAt) : null);
+
+/** Metadatos de la IA para un accionable de minuta (status y empresa), si su reunión se generó con IA. */
+function aiStep(clientId: string, a: Actionable) {
+  const prefix = `${clientId}:${a.meeting.id}-`;
+  if (!a.meeting.ai || !a.id.startsWith(prefix)) return null;
+  return a.meeting.ai.steps[Number(a.id.slice(prefix.length))] ?? null;
+}
+
+const AI_SIDE: Record<AISide, StepSide> = { cliente: "client", xtract: "me", ambas: "shared" };
+
+/** "del miércoles" (última semana) o "del miércoles 11/11": siempre el día real de la reunión. */
+function meetingDay(iso: string, now: Date): string {
+  const d = new Date(iso);
+  const weekday = d.toLocaleDateString("es", { weekday: "long" });
+  return now.getTime() - d.getTime() <= 6 * 86_400_000 ? `del ${weekday}` : `del ${weekday} ${fmtDay(iso)}`;
+}
 
 const cleanSubject = (subject: string) => subject.replace(/^\s*((re|fwd?|rv)\s*:\s*)+/i, "").trim();
 
@@ -342,76 +362,90 @@ export function buildFollowup(
   // después de la reunión se retoma acá (línea + Cc) para no partir el seguimiento.
   const thread = pickFollowupThread(client);
   const strays = strayClientMails(client, thread.threadId, meeting.date);
-  // `owner` = responsables según la minuta (" (Gonzalo)"); vacío si no se dijo.
-  const steps: { text: string; owner: string; side: StepSide; done: boolean; doneAt: string | null }[] = actionables.map((a) => ({
-    text:
-      `${formatStep(a.step)}${a.done ? "" : dueSuffix(agreedDue(client, a.id, a.step, a.meeting.date, settings.workDays), now)}` +
-      (!a.done && trace.has(a.id) ? ` (conversado por mail el ${fmtShort(trace.get(a.id)!.date)})` : "") +
-      (!a.done && a.carried ? ` [acordado el ${fmtShort(a.meeting.date)}]` : ""),
-    owner: groupTag(a.step),
-    side: overrideSide(client, a.id, stepSide(a.step, client, ownerEmail, settings)),
-    done: a.done,
-    doneAt: a.doneAt,
-  }));
+  const company = companyName(client);
+  const both = `Xtract y ${company}`;
+  // `owner` = responsables según la minuta (" (Gonzalo)"); vacío si no se dijo. Con IA, status (Pendiente / En curso /
+  // Stand By) y empresa del responsable salen de la generación; el lado puesto a mano sigue mandando.
+  const steps: { text: string; owner: string; side: StepSide; status: MailStatus; done: boolean; doneAt: string | null }[] =
+    actionables.map((a) => {
+      const ai = aiStep(client.id, a);
+      const side = overrideSide(client, a.id, ai ? AI_SIDE[ai.empresa] : stepSide(a.step, client, ownerEmail, settings));
+      // Con IA el mail lleva la versión corta (la card, el detalle); si lo editaste a mano, tu texto.
+      const base = ai?.mail && !client.actionableEdits?.[a.id] ? ai.mail : formatStep(a.step);
+      return {
+        text:
+          base.replace(/\s*\.+$/, "") +
+          (a.done ? "" : dueSuffix(agreedDue(client, a.id, a.step, a.meeting.date, settings.workDays), now)) +
+          (!a.done && trace.has(a.id) ? ` (conversado por mail el ${fmtShort(trace.get(a.id)!.date)})` : "") +
+          (!a.done && a.carried ? ` [acordado el ${fmtShort(a.meeting.date)}]` : ""),
+        owner: ai?.empresa === "ambas" ? both : groupTag(a.step),
+        side,
+        status: ai && ai.status !== "Hecho" ? ai.status : "Pendiente",
+        done: a.done,
+        doneAt: a.doneAt,
+      };
+    });
   const requests = openRequests(client, interaction).map((r) => ({
     text: `${r.title} (consulta por mail)`,
     owner: "",
     side: "team" as StepSide,
+    status: "Pendiente" as MailStatus,
     done: false,
     doneAt: null,
   }));
   const open = [...steps.filter((s) => !s.done), ...requests];
-  // Lado Xtract: todo a mi nombre. Lado cliente (incluye compartidos y sin lado claro): el responsable de la
-  // minuta o "Equipo" (todos los participantes) si no se dijo.
+  // Lado Xtract: todo a mi nombre (salvo lo de ambas partes). Lado cliente (incluye compartidos y sin lado claro):
+  // el responsable de la minuta o "Equipo" (todos los participantes) si no se dijo.
   const me = firstName(settings.ownerAliases[0] ?? "Alexis");
-  const ours = open.filter((s) => s.side === "me" || s.side === "team");
-  const theirs = open.filter((s) => !(s.side === "me" || s.side === "team"));
-  const agreed = (meeting.decisions ?? []).filter((d) => d.agreed).map((d) => `• ${d.text}`);
-  const pending = (meeting.decisions ?? []).filter((d) => !d.agreed).map((d) => `• Por definir: ${d.text}`);
-  const milestones = (meeting.milestones ?? []).map((m) => `• ${milestoneTitle(m)}`);
-  const talked = [...(meeting.summary ? [meeting.summary] : []), ...agreed, ...pending];
+  const isOurs = (s: (typeof open)[number]) => s.side === "me" || s.side === "team";
+  const ours = open.filter(isOurs);
+  const theirs = open.filter((s) => !isOurs(s));
+
+  // Contenido de la reunión: el de la IA si existe; si no, el de la minuta de Gemini por reglas.
+  const ai = meeting.ai;
+  const puntos = ai ? ai.puntos : (meeting.milestones ?? []).map(milestoneTitle);
+  const objetivo = ai ? ai.objetivo : meeting.summary;
+  const charlamos = ai
+    ? ai.charlamos
+    : [
+        ...(meeting.decisions ?? []).filter((d) => d.agreed).map((d) => d.text),
+        ...(meeting.decisions ?? []).filter((d) => !d.agreed).map((d) => `Por definir: ${d.text}`),
+      ];
 
   // Un solo referente: se le habla a él; dos o más: en plural.
   const one = recipients.length === 1;
-  const when = meetingWhen(meeting.date, now);
-  const section = (title: string, rows: string[]) => (rows.length ? ["", title, ...rows] : []);
-  const lines = [
-    greet(recipients, client),
-    "",
-    `Gracias por el espacio ${when.text}${when.recent ? "" : ","} y por ${one ? "tu" : "su"} tiempo y disposición. ${one ? "Te" : "Les"} comparto un resumen y los próximos pasos.`,
-    // Orden: puntos importantes → lo charlado → accionables del cliente → de Xtract → lo ya avanzado.
-    ...section("Puntos importantes:", milestones),
-    ...section("Lo que charlamos:", talked),
-    ...section(
-      `Accionables de ${companyName(client)}:`,
-      theirs.map((s) => `• ${s.text} (${s.owner || "Equipo"})${STATUS_PENDING}`),
-    ),
-    ...section("Accionables de Xtract:", ours.map((s) => `• ${s.text} (${me})${STATUS_PENDING}`)),
-    ...section(
-      "Ya avanzamos con:",
-      steps.filter((s) => s.done).map((s) => `✓ ${s.text}${s.owner ? ` (${s.owner})` : ""}${doneStatus(s.doneAt)}`),
-    ),
-    ...(strays.length ? ["", strayLine(strays, one)!] : []),
-    // Dos líneas en blanco = un espacio más antes del cierre y antes de "Saludos" (ver `bodyToHtml`).
-    "",
-    "",
-    `Quedo a disposición por si ${one ? "tienes" : "tienen"} alguna consulta o por si me faltó agregar algo más.`,
-    "",
-    "",
-    "Saludos",
-  ];
+  const body = renderPostMeetingMail({
+    greeting: one ? greet(recipients, client).replace(/^Hola\b/, "Buen día") : "Buen día equipo,",
+    thanks: `Gracias por el espacio ${meetingDay(meeting.date, now)} y por ${one ? "tu" : "su"} tiempo y disposición. ${one ? "Te" : "Les"} comparto un resumen y los próximos pasos.`,
+    puntos,
+    objetivo,
+    charlamos,
+    clientName: company,
+    theirs: theirs.map((s) => actionableLine(s.text, s.owner || "Equipo", s.status)),
+    ours: ours.map((s) => actionableLine(s.text, s.owner === both ? both : me, s.status)),
+    done: steps.filter((s) => s.done).map((s) => actionableLine(s.text, s.owner || me, "Hecho", s.doneAt ? fmtDay(s.doneAt) : null)),
+    extra: strays.length ? [strayLine(strays, one)!] : [],
+    closing: `Quedo a disposición por si ${one ? "tienes" : "tienen"} alguna consulta o si algo no quedó reflejado.`,
+  });
 
   const reviewNotes = [...thread.notes, ...strayNotes(strays), ...lastTalkNote(interaction)];
-  if (!meeting.summary) reviewNotes.push("La minuta no trae resumen: agregalo si hace falta.");
-  if (meeting.milestones === undefined) {
-    reviewNotes.push("Esta minuta todavía no se reprocesó: los hitos y decisiones aparecen después de la próxima sincronización.");
+  if (ai) {
+    reviewNotes.push(...ai.revision);
+    const unclear = ai.steps.filter((s) => s.requiereRevision).length;
+    if (unclear) reviewNotes.push(`${unclear} accionable(s) sin responsable claro en la reunión: revisalos antes de enviar.`);
+  } else {
+    if (meeting.aiError) reviewNotes.push(`No se pudo generar el resumen con IA (${meeting.aiError}): se armó por reglas.`);
+    if (!meeting.summary) reviewNotes.push("La minuta no trae resumen: agregalo si hace falta.");
+    if (meeting.milestones === undefined) {
+      reviewNotes.push("Esta minuta todavía no se reprocesó: los hitos y decisiones aparecen después de la próxima sincronización.");
+    }
   }
   if (!steps.length && !requests.length) reviewNotes.push("La minuta no trae próximos pasos: definí los accionables para la próxima sesión.");
 
   return {
     meetingId: meeting.id,
     subject: thread.subject ? `Re: ${cleanThreadSubject(thread.subject)}` : standardSubject(client),
-    body: lines.join("\n"),
+    body,
     to: recipients.map((r) => r.email),
     cc: withStrayCc(newMailCc(client, ownerEmail, recipients), strayParticipants(client, strays), ownerEmail, recipients),
     updatedAt: now.toISOString(),

@@ -71,12 +71,17 @@ const encodeHeader = (s: string) =>
 const escapeHtml = (s: string) =>
   s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
 
-// "- Status: Hecho|En curso|Pendiente (dd/mm)" al final de un punto → "Status:" en negrita y el valor en negrita con
-// color; la fecha va después, sin color. Gmail/Outlook descartan <style> y clases: todo inline. Funciona también si lo
-// escribís a mano en el editor.
-const STATUS_RE = /\s[—-]\s*Status:\s*(Hecho|En curso|Pendiente)(\s*\([^)]*\))?\s*$/i;
-const STATUS_COLOR: Record<string, string> = { hecho: "#188038", "en curso": "#E37400", pendiente: "#D93025" };
-const STATUS_LABEL: Record<string, string> = { hecho: "Hecho", "en curso": "En curso", pendiente: "Pendiente" };
+// "- Status: Hecho|En curso|Pendiente|Stand By [⏳|✅] (dd/mm)" al final de un punto → "Status:" en negrita y el valor
+// en negrita con color; emoji y fecha van después, sin color. Gmail/Outlook descartan <style> y clases: todo inline.
+// Funciona también si lo escribís a mano en el editor.
+const STATUS_RE = /\s[—-]\s*Status:\s*(Hecho|En curso|Pendiente|Stand By)(\s*[⏳✅]️?)?(\s*\([^)]*\))?\s*$/iu;
+const STATUS_COLOR: Record<string, string> = {
+  hecho: "#188038",
+  "en curso": "#E37400",
+  pendiente: "#D93025",
+  "stand by": "#5F6368",
+};
+const STATUS_LABEL: Record<string, string> = { hecho: "Hecho", "en curso": "En curso", pendiente: "Pendiente", "stand by": "Stand By" };
 
 const MAIL_STYLE = "font-family:Arial,Helvetica,sans-serif;font-size:14px;line-height:1.5;color:#202124;";
 const P_STYLE = "margin:0 0 12px 0;";
@@ -98,9 +103,13 @@ function formatLine(line: string): string {
   if (!m) return escapeHtml(line);
   const head = escapeHtml(line.slice(0, m.index));
   const key = m[1].toLowerCase();
-  const date = m[2] ? ` ${escapeHtml(m[2].trim())}` : "";
-  return `${head} - <strong>Status:</strong> <strong style="color:${STATUS_COLOR[key]}">${STATUS_LABEL[key]}</strong>${date}`;
+  const emoji = m[2] ? ` ${m[2].trim()}` : "";
+  const date = m[3] ? ` ${escapeHtml(m[3].trim())}` : "";
+  return `${head} - <strong>Status:</strong> <strong style="color:${STATUS_COLOR[key]}">${STATUS_LABEL[key]}</strong>${emoji}${date}`;
 }
+
+/** Títulos que van solo en negrita; el resto ("Accionables de…", "Ya avanzamos con") en negrita y subrayado. */
+const PLAIN_HEADING = /^(Puntos importantes|Lo que charlamos)$/i;
 
 /**
  * Texto del borrador → HTML compacto con estilos inline: cada línea un <p>, títulos en negrita y subrayados + ":", viñetas
@@ -131,10 +140,10 @@ export function bodyToHtml(body: string): string {
     }
     flush();
     if (isHeading(line.trim())) {
-      const title = escapeHtml(line.trim().replace(/\s*:\s*$/, ""));
-      out.push(
-        `<p style="${prevHeading ? SUBH_STYLE : H_STYLE}"><strong><span style="text-decoration:underline">${title}</span>:</strong></p>`,
-      );
+      const raw = line.trim().replace(/\s*:\s*$/, "");
+      const title = escapeHtml(raw);
+      const text = PLAIN_HEADING.test(raw) ? title : `<span style="text-decoration:underline">${title}</span>`;
+      out.push(`<p style="${prevHeading ? SUBH_STYLE : H_STYLE}"><strong>${text}:</strong></p>`);
       prevHeading = true;
     } else {
       out.push(`<p style="${gap ? P_GAP_STYLE : P_STYLE}">${formatLine(line.trim())}</p>`);
