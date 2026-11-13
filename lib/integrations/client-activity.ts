@@ -10,6 +10,7 @@ import {
   type ClientRecord,
   type MailRef,
   type ThreadRef,
+  type PinnedThreadStatus,
 } from "@/lib/store/clients-store";
 import { computeParticipants } from "@/lib/utils/participants";
 import { accountActionables } from "@/lib/utils/actionables";
@@ -86,7 +87,7 @@ async function syncOne(
   const or = query.join(" OR ");
   const latest = [...client.meetings].sort((a, b) => b.date.localeCompare(a.date))[0];
   const acts = accountActionables(client);
-  const skipped = { invitation: 0, autoReply: 0, minutes: 0 };
+  const skipped = { invitation: 0, autoReply: 0, minutes: 0, automation: 0 };
   const recentMails: MailRef[] = [];
   const threads: ThreadRef[] = [];
   const autoDoneTicketIds: string[] = [];
@@ -224,6 +225,31 @@ async function syncOne(
     }
   }
 
+  // 3b) Hilo fijado de seguimiento: ¿sigue existiendo y entra un mensaje más? (Gmail corta a los 100).
+  let pinnedThread: PinnedThreadStatus | null = null;
+  const pin = client.profile?.followupThread;
+  if (pin) {
+    try {
+      const th = (
+        await withRetry(() =>
+          gmail.users.threads.get({ userId: "me", id: pin.threadId, format: "metadata", metadataHeaders: ["Subject"] }),
+        )
+      ).data;
+      // Un hilo con solo el borrador es válido: es el mail nuevo auto-fijado que todavía no salió.
+      const all = th.messages ?? [];
+      const last = all.filter((m) => !m.labelIds?.includes("DRAFT")).at(-1);
+      pinnedThread = {
+        threadId: pin.threadId,
+        messages: all.length,
+        date: last ? new Date(Number(last.internalDate)).toISOString() : null,
+        missing: !all.length,
+      };
+    } catch (error) {
+      const code = (error as { code?: number }).code;
+      if (code === 404 || code === 400) pinnedThread = { threadId: pin.threadId, messages: 0, date: null, missing: true };
+    }
+  }
+
   // 4) Última reunión de Calendar ya realizada con algún referente / dominio del cliente.
   const now = Date.now();
   const lastEvent = (events ?? [])
@@ -247,6 +273,7 @@ async function syncOne(
       lastInboundMail: recentMails.find((m) => m.direction === "client") ?? null,
       recentInbound: recentMails.filter((m) => m.direction === "client"),
       threads,
+      pinnedThread,
       lastCalendarMeeting,
       skipped,
     },

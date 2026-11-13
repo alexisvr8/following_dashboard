@@ -13,6 +13,7 @@ import { clientsToBoard } from "@/lib/utils/clients-to-board";
 import { getDraft } from "@/lib/utils/followup";
 import type { Account } from "@/types/account";
 import type { Ticket } from "@/types/ticket";
+import { composerThreads } from "@/lib/utils/followup-thread";
 
 // Datos reales: clientes validados en /clientes (asignados + no asignados), leídos en cada request.
 // Supabase (clientes + settings) va en paralelo; Google Calendar (lo más lento) no bloquea: Números y
@@ -49,7 +50,7 @@ export default async function Home({ searchParams }: { searchParams: Promise<{ s
     panels[a.clientId] = {
       meetingTitle: latest.title,
       draft: getDraft("status", c, latest, ownerEmail ?? null, settings),
-      threads: c.activity?.threads ?? [],
+      threads: composerThreads(c),
       lastMail: c.activity?.lastMail ?? null,
     };
   }

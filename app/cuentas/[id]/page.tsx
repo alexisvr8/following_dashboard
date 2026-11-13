@@ -14,6 +14,7 @@ import type { ClientRecord, ClientsFile } from "@/lib/store/clients-store";
 import type { WorkSettings } from "@/lib/store/settings-store";
 import { loadAccountView } from "@/lib/server/account-view";
 import { getClientCached, getSettingsCached } from "@/lib/server/cached-data";
+import { composerThreads } from "@/lib/utils/followup-thread";
 
 export const dynamic = "force-dynamic";
 
@@ -51,7 +52,7 @@ function Workspace({
   const v = loadAccountView(file, client, settings);
   const { latest, meetingDraft, statusDraft, alert } = v;
   const enc = encodeURIComponent(client.id);
-  const threads = client.activity?.threads ?? [];
+  const threads = composerThreads(client); // hilo fijado primero
 
   const header = (
     <AccountProfileForm

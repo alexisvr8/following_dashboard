@@ -237,6 +237,8 @@ async function composeRaw(gmail: gmail_v1.Gmail, input: MailInput): Promise<stri
     const last = msgs.length - 1;
     const original = get(0, "Subject");
     if (original) subject = /^re:/i.test(original) ? original : `Re: ${original}`;
+    // Hilo que solo tiene el borrador (mail nuevo auto-fijado, todavía sin enviar): es el primer mail, sin "Re:".
+    else if (!msgs.length) subject = subject.replace(/^\s*re:\s*/i, "");
     const msgId = get(last, "Message-ID");
     if (msgId) {
       extraHeaders.push(`In-Reply-To: ${msgId}`, `References: ${[get(last, "References"), msgId].filter(Boolean).join(" ")}`);

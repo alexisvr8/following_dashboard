@@ -7,6 +7,7 @@ import {
   knownMeetingIds,
   mergeDiscovery,
   saveFollowup,
+  setFollowupThread,
   setClientActivity,
   setMeetingNotes,
   setMeetingTranscripts,
@@ -164,12 +165,13 @@ async function createWeeklyDrafts(file: ClientsFile, settings: WorkSettings) {
     if (previous?.sentAt) continue;
     const draft = buildWeeklyPlan(client, meeting, file.ownerEmail ?? null, settings);
     if (!draft || !draft.to.length) continue;
-    const threadId = draft.threadId ?? client.activity?.threads[0]?.threadId ?? null;
+    const threadId = draft.threadId ?? null;
     try {
       const created = await createThreadDraft(
         { threadId, to: draft.to, cc: draft.cc, subject: draft.subject, body: draft.body },
         previous?.gmailDraftId,
       );
+      await pinNewThread(client.id, threadId, created.threadId, draft.subject);
       await saveFollowup(client.id, key, {
         ...draft,
         gmailDraftId: created.draftId,
@@ -185,6 +187,12 @@ async function createWeeklyDrafts(file: ClientsFile, settings: WorkSettings) {
     }
   }
   return out;
+}
+
+/** Mail nuevo (sin hilo) en una cuenta sin hilo fijado: ese hilo pasa a ser el de seguimiento. */
+async function pinNewThread(clientId: string, requested: string | null, created: string | null, subject: string) {
+  if (requested || !created) return;
+  await setFollowupThread(clientId, { threadId: created, subject }, { onlyIfEmpty: true }).catch(() => undefined);
 }
 
 /** Ventana para crear la minuta sola: reuniones de las últimas 48 h (no se generan para minutas viejas). */
@@ -210,9 +218,11 @@ async function createMeetingDrafts(file: ClientsFile, settings: WorkSettings) {
     if (wroteAfter) continue;
     const draft = buildFollowup(client, meeting, file.ownerEmail ?? null, settings);
     if (!draft.to.length) continue;
-    const threadId = client.activity?.threads[0]?.threadId ?? null;
+    // Hilo fijado → asunto estándar → último con el cliente → nuevo (`pickFollowupThread`).
+    const threadId = draft.threadId ?? null;
     try {
       const created = await createThreadDraft({ threadId, to: draft.to, cc: draft.cc, subject: draft.subject, body: draft.body });
+      await pinNewThread(client.id, threadId, created.threadId, draft.subject);
       await saveFollowup(client.id, key, {
         ...draft,
         gmailDraftId: created.draftId,
