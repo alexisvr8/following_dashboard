@@ -290,7 +290,7 @@ Template único `lib/utils/postmeeting-mail.ts` (`renderPostMeetingMail`, `actio
 `• Título: Descripción. (Responsable) - Status: X ⏳|✅ (dd/mm)`), usado por `buildFollowup` con IA o por reglas.
 Tests: `pnpm test` (vitest, `tests/`); `RUN_LLM=1 LLM_DOC=<minuta.txt>` corre la prueba real contra la API.
 
-## Análisis semanal de cuentas con IA (en curso, `docs/analisis-ia-cuentas.md`)
+## Análisis semanal de cuentas con IA
 Por cuenta asignada: `analysisWindow` (base reunión ≤7 días / mails 21–45 días) → `collectAccountThreads` (`lib/integrations/account-mails.ts`,
 todos los hilos del período, texto completo, tope 100k caracteres) → `buildAnalysisInput` (`lib/utils/account-analysis.ts`: `plannedItems` con refs A1…,
 `refTexts`, reescribibles) → `generateAccountAnalysis` (`lib/llm/account-analysis*.ts`, JSON `AccountAnalysisSchema`) → `sanitizeRefs` → `setAccountAnalysis`
