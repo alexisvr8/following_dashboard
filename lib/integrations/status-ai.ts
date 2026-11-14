@@ -49,7 +49,11 @@ export async function generateStatusMails(
   let failed = 0;
   for (const { client, meeting, req } of todo) {
     try {
-      const out = await generateStatusMail(req.input);
+      const out = await generateStatusMail(req.input, {
+        clientId: client.id,
+        clientName: client.name,
+        trigger: opts.force ? "actualizar" : "sync",
+      });
       const refs = new Set(req.input.sections.flatMap((s) => s.items.map((i) => i.ref)));
       await setStatusAI(client.id, {
         meetingId: meeting.id,

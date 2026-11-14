@@ -289,6 +289,10 @@ correcciones, ERP y abiertos previos. `setMeetingAI` guarda `meeting.ai` (status
 Template único `lib/utils/postmeeting-mail.ts` (`renderPostMeetingMail`, `actionableLine` =
 `• Título: Descripción. (Responsable) - Status: X ⏳|✅ (dd/mm)`), usado por `buildFollowup` con IA o por reglas.
 Tests: `pnpm test` (vitest, `tests/`); `RUN_LLM=1 LLM_DOC=<minuta.txt>` corre la prueba real contra la API.
+**Registro de consumo**: las 3 llamadas (`postmeeting`, `status`, `analysis`) registran `response.usage` con `recordResponse`
+(`lib/store/ai-usage-store.ts`, `app_state.ai_usage` / `.data/ai-usage.json`, 120 días, escrituras encadenadas en el proceso; cuenta + `trigger`
+sync/actualizar/semanal/reanalizar/preview; `ok: false` = cobrada pero inútil). `GET /api/ai-usage?days=30` = totales, por tipo/día/cuenta y
+últimas 50, con costo **estimado** (`lib/llm/pricing.ts`, precios de lista por modelo; actualizar si cambian).
 
 ## Análisis semanal de cuentas con IA
 Por cuenta asignada: `analysisWindow` (base reunión ≤7 días / mails 21–45 días) → `collectAccountThreads` (`lib/integrations/account-mails.ts`,

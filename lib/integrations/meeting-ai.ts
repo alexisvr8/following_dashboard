@@ -120,7 +120,10 @@ async function processMeeting(
 ): Promise<{ ok: true; mode: "full" | "context" | false } | { ok: false; error: string }> {
   try {
     const doc = await getDocText(meeting.docId!);
-    const out = await generatePostMeeting(buildPostMeetingInput(client, meeting, doc, ownerEmail, settings));
+    const out = await generatePostMeeting(buildPostMeetingInput(client, meeting, doc, ownerEmail, settings), {
+      clientId: client.id,
+      clientName: client.name,
+    });
     return { ok: true, mode: await setMeetingAI(client.id, meeting.id, out, postMeetingModel()) };
   } catch (error) {
     const message = (error as Error).message || "error";

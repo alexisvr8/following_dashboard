@@ -1,6 +1,7 @@
 import Anthropic from "@anthropic-ai/sdk";
 import { zodOutputFormat } from "@anthropic-ai/sdk/helpers/zod";
 import { buildSystemPrompt } from "@/lib/llm/postmeeting-prompt";
+import { recordResponse, type UsageMeta } from "@/lib/store/ai-usage-store";
 import { PostMeetingSchema, type PostMeetingOutput } from "@/lib/llm/postmeeting-schema";
 
 // Única llamada al modelo de la app: minuta + transcripción → JSON fijo (`PostMeetingSchema`).
@@ -52,16 +53,18 @@ export function buildUserMessage(input: PostMeetingInput): string {
   return [block("contexto", context), block("notas", input.notes), block("transcripcion", input.transcript)].join("\n\n");
 }
 
-export async function generatePostMeeting(input: PostMeetingInput): Promise<PostMeetingOutput> {
+export async function generatePostMeeting(input: PostMeetingInput, meta?: UsageMeta): Promise<PostMeetingOutput> {
   if (!input.notes?.trim() && !input.transcript?.trim()) throw new Error("sin_notas_ni_transcripcion");
   const client = new Anthropic();
+  const model = postMeetingModel();
   const response = await client.messages.parse({
-    model: postMeetingModel(),
+    model,
     max_tokens: 16000,
     system: [{ type: "text", text: buildSystemPrompt(), cache_control: { type: "ephemeral" } }],
     messages: [{ role: "user", content: buildUserMessage(input) }],
     output_config: { format: zodOutputFormat(PostMeetingSchema) },
   });
+  await recordResponse("postmeeting", model, response, meta);
   if (response.stop_reason === "refusal") throw new Error("modelo_rechazo");
   if (response.stop_reason === "max_tokens") throw new Error("respuesta_cortada");
   if (!response.parsed_output) throw new Error("json_invalido");
