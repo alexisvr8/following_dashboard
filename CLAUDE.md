@@ -101,7 +101,9 @@ se vuelve menú desplegable `MobileNav`). Sin sidebar. 5 secciones. Navegación 
   cliente detectado.
 - `/conexiones`: estado en vivo de las 5 integraciones (`IntegrationsGrid`/
   `IntegrationStatusCard`, reusados del Dashboard original), llamando directamente a los
-  handlers `GET` de `/api/integrations/*` (sin fetch HTTP, in-process).
+  handlers `GET` de `/api/integrations/*` (sin fetch HTTP, in-process). Debajo, `AIUsageCard`
+  (`components/conexiones/`): consumo de IA estimado hoy / 7 / 30 días, por tipo, por origen y top 5 cuentas
+  (`summarizeAIUsage`, `lib/utils/ai-usage-summary.ts`, el mismo que usa `GET /api/ai-usage`).
 
 Dark mode vía `next-themes` (`ThemeProvider`/`ThemeToggleButton` en
 `components/layout/`), toggle en `AppHeader`; tokens OKLCH ya definidos en
