@@ -8,6 +8,9 @@ import { AnalysisPanel } from "@/components/cuentas/AnalysisPanel";
 import { analysisView } from "@/lib/utils/account-analysis";
 import { AccountProfileForm } from "@/components/cuentas/AccountProfileForm";
 import { AttentionBadge, AttentionToggle } from "@/components/cuentas/AttentionToggle";
+import { ClosedBadge, ClosedBanner, CloseAccountButton } from "@/components/cuentas/AccountClosure";
+import { meetingsAfterClosure } from "@/lib/utils/closure";
+import { isOwnActionable } from "@/lib/utils/capacity";
 import { ParticipantsList } from "@/components/cuentas/ParticipantsList";
 import { ActivityPanel } from "@/components/cuentas/ActivityPanel";
 import { FollowupComposer } from "@/components/cuentas/FollowupComposer";
@@ -32,7 +35,7 @@ export default async function CuentaPage({
     getClientCached(decodeURIComponent(id)),
     getSettingsCached(),
   ]);
-  if (!client || (client.status !== "assigned" && client.status !== "unassigned")) notFound();
+  if (!client || (client.status !== "assigned" && client.status !== "unassigned" && client.status !== "closed")) notFound();
   // `loadAccountView` solo usa `ownerEmail` del archivo.
   const file: ClientsFile = { clients: [client], unmatched: [], lastScanAt: null, ownerEmail };
   return <Workspace key={client.id} client={client} file={file} settings={settings} />;
@@ -51,6 +54,9 @@ function Workspace({
   const { latest, followup, alert } = v;
   const enc = encodeURIComponent(client.id);
   const threads = composerThreads(client); // hilo fijado primero
+  const closed = client.status === "closed";
+  const openTickets = v.tickets.filter((t) => !t.isDone);
+  const openDebo = openTickets.filter((t) => isOwnActionable(t.title, settings)).length;
 
   const header = (
     <AccountProfileForm
@@ -69,7 +75,8 @@ function Workspace({
         <div className="min-w-0 flex-1 basis-72 space-y-1">
           <div className="flex flex-wrap items-center gap-2">
             <h1 className="truncate text-lg font-semibold text-foreground-strong">{client.name}</h1>
-            <ChurnRiskBadge lastActivityAt={v.account.lastActivityAt} />
+            {!closed && <ChurnRiskBadge lastActivityAt={v.account.lastActivityAt} />}
+            {closed && <ClosedBadge />}
             {client.profile?.attention && <AttentionBadge />}
             {client.profile?.erp && <Badge variant="outline">ERP {client.profile.erp}</Badge>}
           </div>
@@ -85,6 +92,9 @@ function Workspace({
       actions={
         <>
           {client.status === "assigned" && <AttentionToggle clientId={client.id} initial={Boolean(client.profile?.attention)} />}
+          {client.status === "assigned" && (
+            <CloseAccountButton clientId={client.id} name={client.name} openDebo={openDebo} openMeDeben={openTickets.length - openDebo} />
+          )}
           <a
             href={`/api/clients/${enc}/last-mail`}
             target="_blank"
@@ -98,8 +108,14 @@ function Workspace({
     />
   );
 
-  const drafts =
-    latest && followup ? (
+  // Cerrada: sin mail de seguimiento (no se generan borradores); la franja muestra el cierre y "Reabrir".
+  const drafts = closed ? (
+    <ClosedBanner
+      clientId={client.id}
+      closure={client.profile?.closure ?? null}
+      newMeetings={meetingsAfterClosure(client).map((m) => ({ title: m.title, date: m.date }))}
+    />
+  ) : latest && followup ? (
       <section id="borradores" className="flex flex-col gap-3 scroll-mt-20">
         {alert && (
           <p className="rounded-md border border-warning/25 bg-warning-muted px-3 py-1.5 text-xs">

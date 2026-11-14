@@ -1,5 +1,7 @@
 import {
   changeActionable,
+  closeClient,
+  reopenClient,
   resolveRewrite,
   resolveSuggestion,
   setFollowupThread,
@@ -31,7 +33,25 @@ export async function PATCH(
     suggestion?: { suggestionId?: unknown; action?: unknown; title?: unknown; due?: unknown };
     rewrite?: { ref?: unknown; action?: unknown; title?: unknown };
     followupThread?: { threadId?: unknown; subject?: unknown } | null;
+    close?: { note?: unknown; handedTo?: unknown };
+    reopen?: boolean;
   };
+
+  // Cierre de la cuenta (pase a Soporte) / reapertura. El estado `closed` solo se pone por acá.
+  if (body.close && typeof body.close === "object") {
+    const { note, handedTo } = body.close;
+    const client = await closeClient(decodeURIComponent(id), {
+      note: typeof note === "string" ? note : undefined,
+      handedTo: typeof handedTo === "string" ? handedTo.slice(0, 120) : undefined,
+    });
+    if (!client) return Response.json({ error: "not_found" }, { status: 404 });
+    return Response.json({ id: client.id, status: client.status, closure: client.profile?.closure ?? null });
+  }
+  if (body.reopen === true) {
+    const client = await reopenClient(decodeURIComponent(id));
+    if (!client) return Response.json({ error: "not_found" }, { status: 404 });
+    return Response.json({ id: client.id, status: client.status });
+  }
 
   // Hilo de seguimiento fijado (⭐ en el composer); `null` lo quita.
   if (body.followupThread !== undefined) {

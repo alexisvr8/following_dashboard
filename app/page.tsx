@@ -14,6 +14,7 @@ import { getFollowupDraft } from "@/lib/utils/followup";
 import type { Account } from "@/types/account";
 import type { Ticket } from "@/types/ticket";
 import { composerThreads } from "@/lib/utils/followup-thread";
+import { meetingsAfterClosure } from "@/lib/utils/closure";
 
 // Datos reales: clientes validados en /clientes (asignados + no asignados), leídos en cada request.
 // Supabase (clientes + settings) va en paralelo; Google Calendar (lo más lento) no bloquea: Números y
@@ -28,6 +29,7 @@ export default async function Home({ searchParams }: { searchParams: Promise<{ s
   ]);
   const validated = clients.filter((c) => c.status === "assigned" || c.status === "unassigned");
   const pendingCount = clients.filter((c) => c.status === "pending").length;
+  const reopenHints = clients.filter((c) => meetingsAfterClosure(c).length > 0);
   const { accounts, tickets } = clientsToBoard(validated, new Date(), ownerEmail ?? null);
   // Fin de semana / jornada terminada → por defecto se planifica la semana siguiente.
   const now = new Date();
@@ -71,6 +73,21 @@ export default async function Home({ searchParams }: { searchParams: Promise<{ s
           <Link href="/clientes" className="font-medium text-foreground-strong underline-offset-4 hover:underline">
             Revisar en Clientes
           </Link>
+        </p>
+      )}
+
+      {reopenHints.length > 0 && (
+        <p className="shrink-0 rounded-lg border border-warning/25 bg-warning-muted px-4 py-2 text-sm text-foreground">
+          Reunión nueva en cuenta{reopenHints.length === 1 ? "" : "s"} cerrada{reopenHints.length === 1 ? "" : "s"}:{" "}
+          {reopenHints.map((c, i) => (
+            <span key={c.id}>
+              {i > 0 && ", "}
+              <Link href={`/cuentas/${encodeURIComponent(c.id)}`} className="font-medium text-foreground-strong underline-offset-4 hover:underline">
+                {c.name}
+              </Link>
+            </span>
+          ))}
+          . ¿Volvió a tu cargo? Reabrila desde la cuenta.
         </p>
       )}
 
