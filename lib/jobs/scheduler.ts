@@ -4,7 +4,7 @@ import { getSyncStatus } from "@/lib/store/sync-status-store";
 import { getClientsFile } from "@/lib/store/clients-store";
 import { listEventsBetween } from "@/lib/integrations/calendar";
 import { analyzeAccounts } from "@/lib/integrations/account-analysis";
-import { createWeeklyDigestDraft } from "@/lib/integrations/weekly-digest";
+import { deliverWeeklyDigest } from "@/lib/integrations/weekly-digest";
 import { getWeeklyAIState, saveWeeklyAIState } from "@/lib/store/weekly-ai-store";
 import { mondayKey } from "@/lib/utils/account-analysis";
 
@@ -12,9 +12,10 @@ import { mondayKey } from "@/lib/utils/account-analysis";
 // - Lunes (`CRON_DRAFTS_DAY`, default 1) desde las `CRON_DRAFTS_AT` (default 08:30): sync + borrador semanal de
 //   objetivos por cuenta. Una vez por semana; si a esa hora la Mac estaba dormida, se hace al despertar ese día.
 // - Lunes desde `CRON_ANALYSIS_AT` (07:00): sync + análisis semanal con IA de las cuentas asignadas; desde
-//   `CRON_DIGEST_AT` (08:00), ya con el análisis hecho (o 2 h después aunque falle), el resumen de la semana como
-//   borrador en Gmail a mí mismo. Una vez por semana cada uno (estado en `app_state.weekly_ai`); si la Mac
-//   dormía, al despertar ese día.
+//   `CRON_DIGEST_AT` (08:00), ya con el análisis hecho (o 2 h después del intento aunque falle), el resumen de la
+//   semana ENVIADO a mí mismo (`WEEKLY_DIGEST=draft` lo deja como borrador). Una vez por semana cada uno (estado
+//   en `app_state.weekly_ai`). Si el servidor no estaba prendido, corre apenas se levante: el lunes después de esa
+//   hora o cualquier día hábil siguiente de la misma semana.
 // - Siempre (cada sync): la minuta en borrador de cada reunión nueva.
 // - Todos los días (hábiles y fines de semana, si el servidor está prendido) entre `CRON_FROM` y `CRON_TO`
 //   (default 8–21), cada `CRON_INTERVAL_MINUTES` (15): sync.
@@ -60,7 +61,11 @@ export function startScheduler() {
     const week = mondayKey(now);
     const state = await getWeeklyAIState();
     const retry = interval * 60_000;
-    if (minuteOfDay >= analysisAt && state.analysisWeek !== week && Date.now() - analysisTriedAt >= retry) {
+    // El lunes, desde la hora configurada; martes en adelante (recuperación), a cualquier hora.
+    const monday = now.getDay() === draftsDay;
+    const analysisDue = !monday || minuteOfDay >= analysisAt;
+    const digestDue = !monday || minuteOfDay >= digestAt;
+    if (analysisDue && state.analysisWeek !== week && Date.now() - analysisTriedAt >= retry) {
       analysisTriedAt = Date.now();
       weeklyAIRunning = true;
       void (async () => {
@@ -77,11 +82,12 @@ export function startScheduler() {
       })();
       return;
     }
-    const analysisDone = state.analysisWeek === week || minuteOfDay >= digestAt + 120;
-    if (minuteOfDay >= digestAt && analysisDone && state.digestWeek !== week && Date.now() - digestTriedAt >= retry) {
+    // Con el análisis hecho; si falló, igual sale 2 h después del intento (con lo que haya).
+    const analysisDone = state.analysisWeek === week || (analysisTriedAt > 0 && Date.now() - analysisTriedAt >= 2 * 3_600_000);
+    if (digestDue && analysisDone && state.digestWeek !== week && Date.now() - digestTriedAt >= retry) {
       digestTriedAt = Date.now();
-      const r = await createWeeklyDigestDraft(now);
-      log(r.ok ? "resumen semanal: borrador creado en Gmail" : `resumen semanal: error ${r.error}`);
+      const r = await deliverWeeklyDigest(now);
+      log(r.ok ? `resumen semanal: ${r.mode === "send" ? "enviado a mi correo" : "borrador creado en Gmail"}` : `resumen semanal: error ${r.error}`);
     }
   };
   let lastTick = Date.now();
@@ -123,7 +129,8 @@ export function startScheduler() {
     const minuteOfDay = h * 60 + m;
     const inWindow = minuteOfDay >= from * 60 && minuteOfDay <= to * 60;
 
-    if (workDays.includes(now.getDay()) && now.getDay() === draftsDay) {
+    // Rutina IA: el lunes (o, si no se pudo, el siguiente día hábil de esa semana con el servidor prendido).
+    if (workDays.includes(now.getDay()) && ((now.getDay() + 6) % 7) >= ((draftsDay + 6) % 7)) {
       await weeklyAI(now, minuteOfDay).catch((e) => log(`rutina IA: ${(e as Error).message}`));
     }
     if (workDays.includes(now.getDay()) && now.getDay() === draftsDay && minuteOfDay >= dH * 60 + dM) {
