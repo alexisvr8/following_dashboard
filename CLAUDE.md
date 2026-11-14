@@ -313,7 +313,9 @@ válido mientras `statusKey` de la entrada coincida; si no, vuelve a reglas). Co
 **Estimación con IA**: `minutos_estimados` en el JSON de la minuta (accionables nuevos) y del análisis (todos los abiertos debo) →
 `client.aiEstimate` (ticketId → min, múltiplos de 5); `plannedItems`: manual → IA (`estimateSource: "ai"`) → aprendida → default; Capacidad la usa.
 **Lunes** (`scheduler.ts`, estado `app_state.weekly_ai`, `lib/store/weekly-ai-store.ts`): `CRON_ANALYSIS_AT` (07:00) sync + `analyzeAccounts`;
-`CRON_DIGEST_AT` (08:00) resumen como **borrador** en Gmail a `ownerEmail` (`createWeeklyDigestDraft`, `buildWeeklyDigest` en
+`CRON_DIGEST_AT` (08:00) resumen **enviado** solo a `ownerEmail` (`deliverWeeklyDigest`; `WEEKLY_DIGEST=draft` = borrador; una vez por
+semana, `pnpm digest:send [-- --force]` a mano; si el server no estaba prendido, corre apenas se levante ese lunes o cualquier día hábil
+siguiente de la semana) (`buildWeeklyDigest` en
 `lib/utils/weekly-digest.ts`: foco = 🔥 / en riesgo / bloqueada / esperando a Xtract / vencido mío con detalle, resto compacto; links con `APP_URL`;
 actualiza el mismo borrador si se repite); 08:30 sigue el mail semanal de objetivos.
 **Más atención** (`profile.attention`, cliente exigente; toggle `AttentionToggle` en el encabezado de `/cuentas/[id]`, `PATCH {profile: {attention}}`,

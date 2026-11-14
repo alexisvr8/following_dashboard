@@ -184,6 +184,8 @@ export function buildMimeMessage(input: {
   body: string;
   signatureHtml?: string;
   extraHeaders?: string[];
+  /** HTML propio (p. ej. el resumen semanal con tarjetas): reemplaza a `bodyToHtml(body)` y va sin firma. */
+  html?: string;
 }): string {
   const boundary = `xtract_${randomUUID().replace(/-/g, "")}`;
   const part = (type: string, content: string) => [
@@ -193,10 +195,10 @@ export function buildMimeMessage(input: {
     "",
     Buffer.from(content, "utf-8").toString("base64").replace(/(.{76})/g, "$1\r\n"),
   ];
-  const signature = input.signatureHtml?.trim();
+  const signature = input.html ? "" : input.signatureHtml?.trim();
   const text = bodyToPlain(input.body);
   const plain = signature ? `${text}\n\n-- \n${stripHtml(signature).trim()}` : text;
-  const html = `<div dir="ltr" style="${MAIL_STYLE}">${bodyToHtml(input.body)}${
+  const html = `<div dir="ltr" style="${MAIL_STYLE}">${input.html ?? bodyToHtml(input.body)}${
     // Sin la clase `gmail_signature`: con ella Gmail la trata como firma repetida y la esconde tras "…".
     // El último <p> ("Saludos") ya deja 12px: la firma va pegada, sin <br> extra.
     signature ? `<div dir="ltr">${signature}</div>` : ""
@@ -216,7 +218,7 @@ export function buildMimeMessage(input: {
   ].join("\r\n");
 }
 
-type MailInput = { threadId: string | null; to: string[]; cc?: string[]; subject: string; body: string };
+type MailInput = { threadId: string | null; to: string[]; cc?: string[]; subject: string; body: string; html?: string };
 
 /** La API no agrega la firma de Gmail como lo hace el redactor: se toma de la cuenta principal. */
 async function primarySignature(gmail: gmail_v1.Gmail): Promise<string> {

@@ -10,6 +10,9 @@ export interface WeeklyAIState {
   digestWeek?: string;
   digestAt?: string;
   digestDraftId?: string;
+  /** Cuándo se envió el resumen de esa semana (modo envío) y el id del mensaje. */
+  digestSentAt?: string;
+  digestMessageId?: string;
   error?: string | null;
 }
 
