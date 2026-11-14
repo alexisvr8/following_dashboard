@@ -8,6 +8,7 @@ import { Badge } from "@/components/ui/badge";
 import { FollowupPanel, type FollowupPanelData } from "@/components/dashboard/FollowupPanel";
 import { cn } from "@/lib/utils";
 import type { AccountAlert, AlertKind } from "@/lib/utils/followup-alerts";
+import { AttentionBadge } from "@/components/cuentas/AttentionToggle";
 
 const KIND: Record<
   AlertKind,
@@ -46,10 +47,10 @@ const KIND: Record<
   },
 };
 
-/** Primero las que esperan respuesta; dentro de cada grupo, más días hábiles primero. */
+/** Primero las de más atención, después las que esperan respuesta; dentro de cada grupo, más días hábiles primero. */
 function byUrgency(a: AccountAlert, b: AccountAlert) {
   const w = (x: AccountAlert) => (x.kind === "client_waiting" ? 0 : 1);
-  return w(a) - w(b) || b.businessDays - a.businessDays || a.name.localeCompare(b.name, "es");
+  return Number(Boolean(b.attention)) - Number(Boolean(a.attention)) || w(a) - w(b) || b.businessDays - a.businessDays || a.name.localeCompare(b.name, "es");
 }
 
 // Columna de Seguimiento del Dashboard: cuentas que llevan ≥N días hábiles sin actualización o
@@ -126,6 +127,7 @@ export function FollowupAlerts({
                     <span className="truncate text-sm font-medium text-foreground-strong" title={a.name}>
                       {a.name}
                     </span>
+                    {a.attention && <AttentionBadge size="sm" />}
                   </p>
                   <span className={cn("shrink-0 text-label-sm", k.tone)}>
                     {a.businessDays} día{a.businessDays === 1 ? "" : "s"} háb.

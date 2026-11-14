@@ -21,6 +21,7 @@ const SAMPLE: PostMeetingOutput = {
       status: "Pendiente",
       fecha: null,
       requiere_revision: false,
+      minutos_estimados: 30,
     },
     {
       titulo: "Confirmar aprobación de facturas sin OC",
@@ -31,6 +32,7 @@ const SAMPLE: PostMeetingOutput = {
       status: "Stand By",
       fecha: null,
       requiere_revision: false,
+      minutos_estimados: 30,
     },
   ],
   ya_avanzamos: [

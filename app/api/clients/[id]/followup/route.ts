@@ -13,6 +13,7 @@ import {
 } from "@/lib/store/clients-store";
 import { getSettings } from "@/lib/store/settings-store";
 import { getDraft } from "@/lib/utils/followup";
+import { generateStatusMails } from "@/lib/integrations/status-ai";
 
 // Borradores de la cuenta: `kind` "meeting" (follow-up de la reunión) o "status" (actualización /
 // seguimiento). PUT guarda la edición; POST crea el draft en Gmail o, con `send: true`, envía el
@@ -61,12 +62,15 @@ export async function PATCH(request: Request, { params }: { params: Promise<{ id
   if (!stale) return Response.json({ error: "not_found" }, { status: 404 });
   const synced = await refreshActivity({ client: stale, file: before }).catch(() => false);
 
+  const kind: FollowupKind = input.kind === "status" ? "status" : "meeting";
+  const settings = await getSettings();
+  // "Actualizar" del seguimiento: redacta con IA en el momento si cambió algo desde la última redacción.
+  if (kind === "status") await generateStatusMails(await getClientsFile(), settings, { ids: [stale.id], max: 1, force: true }).catch(() => undefined);
   const file = await getClientsFile();
   const client = file.clients.find((c) => c.id === stale.id);
   const meeting = client?.meetings.find((m) => m.id === input.meetingId);
   if (!client || !meeting) return Response.json({ error: "not_found" }, { status: 404 });
-  const kind: FollowupKind = input.kind === "status" ? "status" : "meeting";
-  const { generated } = getDraft(kind, client, meeting, file.ownerEmail ?? null, await getSettings());
+  const { generated } = getDraft(kind, client, meeting, file.ownerEmail ?? null, settings);
   const key = followupKey(kind, meeting.id);
   const saved = client.followups?.[key];
   if (saved && !saved.sentAt) {

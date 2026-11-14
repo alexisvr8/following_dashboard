@@ -92,7 +92,9 @@ export function accountActionables(client: ClientRecord): Actionable[] {
     const isDone = done.has(c.id);
     const doneAt = at[c.id] ?? null;
     if (isDone && (!doneAt || Date.parse(doneAt) < cutoff)) continue;
-    out.push({ id: c.id, meeting, step: edits[c.id] ?? c.title, carried: meeting.id !== latest.id, done: isDone, doneAt });
+    // Lo de la IA se cuelga de la última reunión al detectarse: es arrastrado solo si llegó una reunión después.
+    const carried = c.source === "ia" ? Date.parse(c.createdAt) < Date.parse(latest.date) : meeting.id !== latest.id;
+    out.push({ id: c.id, meeting, step: edits[c.id] ?? c.title, carried, done: isDone, doneAt });
   }
   return out;
 }

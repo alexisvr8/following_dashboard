@@ -19,6 +19,7 @@ import {
   Rows4,
   Search,
   Send,
+  Sparkles,
   Target,
   Trash2,
   Undo2,
@@ -32,6 +33,9 @@ import { cn } from "@/lib/utils";
 import type { DueKind, PlannedItem, SuggestedItem } from "@/lib/utils/deadlines";
 import { ActionablePanel, type PanelAction } from "@/components/accionables/ActionablePanel";
 import { SuggestionsDialog } from "@/components/accionables/SuggestionsSection";
+import { RewritesDialog } from "@/components/accionables/RewritesDialog";
+import { AttentionBadge } from "@/components/cuentas/AttentionToggle";
+import type { RewriteItem } from "@/lib/utils/account-analysis";
 import { CorrectionsDialog } from "@/components/accionables/CorrectionsDialog";
 import { FollowupPanel, type FollowupPanelData } from "@/components/dashboard/FollowupPanel";
 import {
@@ -91,10 +95,12 @@ export function ActionablesBoard({
   initialDensity,
   nowIso,
   suggestions,
+  rewrites = [],
   people,
   corrections,
   mailPanels,
 }: {
+  rewrites?: RewriteItem[];
   mailPanels: Record<string, FollowupPanelData>;
   initialView: View;
   initialDensity: Density;
@@ -347,6 +353,7 @@ export function ActionablesBoard({
           <History className="size-3.5" /> Solo arrastrados
         </button>
         <SuggestionsDialog suggestions={pendingSuggestionsList} busy={busy} onResolve={resolveSuggestion} />
+        <RewritesDialog rewrites={rewrites.filter((r) => !account || r.clientId === account)} />
         <CorrectionsDialog corrections={corrections} />
         <div className="ml-auto flex items-center gap-3">
           <span className="hidden text-xs text-muted-foreground lg:inline">
@@ -774,6 +781,8 @@ function ItemCard(props: ItemProps & { drag: DragProps; dragging: boolean }) {
           >
             {item.clientName}
           </span>
+          {item.attention && <AttentionBadge size="sm" />}
+          {item.aiAdded && <AiChip evidence={item.evidence} />}
           <CarriedChip item={item} nowMs={nowMs} iconOnly={compact} />
           <DoneBox item={item} busy={busy} onAct={props.onAct} closing={props.closing} onUndo={props.onUndo} />
         </div>
@@ -833,6 +842,8 @@ function ItemRow(props: ItemProps) {
         <span className="min-w-0">
           <span className="flex min-w-0 items-center gap-2">
             <span className="max-w-56 shrink-0 truncate text-xs font-semibold text-foreground 2xl:text-[13px]">{item.clientName}</span>
+            {item.attention && <AttentionBadge size="sm" />}
+            {item.aiAdded && <AiChip evidence={item.evidence} />}
             <CarriedChip item={item} nowMs={nowMs} iconOnly={compact} />
           </span>
           <span className={cn("block text-[13px] font-medium text-foreground-strong 2xl:text-sm", !expanded && "truncate")}>{item.title}</span>
@@ -900,5 +911,17 @@ function MailButton({ item, onMail }: { item: PlannedItem; onMail?: () => void }
     >
       <Send className="size-3.5" />
     </button>
+  );
+}
+
+/** Lo sumó el análisis semanal con IA (detectado en mails o la minuta y que faltaba en el tablero). */
+function AiChip({ evidence }: { evidence?: string }) {
+  return (
+    <span
+      title={`Agregado por el análisis IA${evidence ? ` · ${evidence}` : ""}`}
+      className="inline-flex shrink-0 items-center gap-0.5 rounded-sm border border-border px-1 text-[10.5px] font-medium text-muted-foreground"
+    >
+      <Sparkles className="size-2.5" /> IA
+    </span>
   );
 }

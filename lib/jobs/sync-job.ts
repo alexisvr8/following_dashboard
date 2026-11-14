@@ -1,5 +1,6 @@
 import { backfillMeetingNotes, backfillTranscripts, discoverGeminiMeetings } from "@/lib/integrations/gemini-mail";
 import { generateMeetingAI } from "@/lib/integrations/meeting-ai";
+import { generateStatusMails } from "@/lib/integrations/status-ai";
 import { createThreadDraft } from "@/lib/integrations/gmail";
 import { syncClientsActivity } from "@/lib/integrations/client-activity";
 import {
@@ -113,6 +114,8 @@ async function doSync({ drafts: withDrafts, trigger }: SyncOptions): Promise<Syn
       status.meetingDrafts = made.filter((d) => d.ok).length;
       drafts.push(...made);
     }
+    // 3b) Mail de seguimiento redactado con IA donde cambió lo tildado o llegó un mail (máx. 3 por corrida).
+    await generateStatusMails(file, settings).catch(() => undefined);
 
     // 4) Alertas; con `drafts` (lunes 08:30), el mail semanal de objetivos por cuenta.
     const alerts = computeAlerts(file.clients, settings);

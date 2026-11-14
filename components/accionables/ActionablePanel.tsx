@@ -385,6 +385,11 @@ function PanelBody({
               </button>
             ))}
           </div>
+          {item.estimateSource === "ai" && (
+            <p className="text-xs text-subtle-foreground">
+              Estimada por la IA con el contexto de la minuta y los mails ({fmtMinutes(item.estimateMinutes)}). Elegí otra para ajustarla.
+            </p>
+          )}
           {item.estimateSource === "learned" && (
             <p className="text-xs text-subtle-foreground">
               Aprendida de «{item.estimateFrom}» ({fmtMinutes(item.estimateMinutes)}). Elegí otra para ajustarla.

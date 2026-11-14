@@ -1,5 +1,6 @@
 import {
   changeActionable,
+  resolveRewrite,
   resolveSuggestion,
   setFollowupThread,
   setActionablePlan,
@@ -28,6 +29,7 @@ export async function PATCH(
     actionable?: ActionableChange;
     plan?: { ticketId?: unknown; due?: unknown; estimateMinutes?: unknown; side?: unknown };
     suggestion?: { suggestionId?: unknown; action?: unknown; title?: unknown; due?: unknown };
+    rewrite?: { ref?: unknown; action?: unknown; title?: unknown };
     followupThread?: { threadId?: unknown; subject?: unknown } | null;
   };
 
@@ -43,6 +45,22 @@ export async function PATCH(
     );
     if (!client) return Response.json({ error: "not_found" }, { status: 404 });
     return Response.json({ id: client.id, followupThread: client.profile?.followupThread ?? null });
+  }
+
+  // Reescritura del análisis semanal (modal "Mejoras IA"): aceptar = edición del texto; descartar = ocultar.
+  if (body.rewrite && typeof body.rewrite === "object") {
+    const { ref, action, title } = body.rewrite;
+    if (
+      typeof ref !== "string" ||
+      !/^A\d{1,3}$/.test(ref) ||
+      (action !== "accept" && action !== "dismiss") ||
+      (action === "accept" && (typeof title !== "string" || !title.trim()))
+    ) {
+      return Response.json({ error: "invalid_rewrite" }, { status: 400 });
+    }
+    const client = await resolveRewrite(decodeURIComponent(id), ref, action, typeof title === "string" ? title : undefined);
+    if (!client) return Response.json({ error: "not_found" }, { status: 404 });
+    return Response.json({ id: client.id });
   }
 
   // Sugerencia de la transcripción: aceptar (crea accionable propio) o descartar (enseña a no repetirla).
@@ -113,6 +131,7 @@ export async function PATCH(
     for (const k of ["emailName", "erp", "ownerEmail", "notes"] as const) {
       if (typeof p[k] === "string") patch[k] = p[k].slice(0, 2000);
     }
+    if (typeof p.attention === "boolean") patch.attention = p.attention;
     if (p.referentOverrides && typeof p.referentOverrides === "object") {
       patch.referentOverrides = Object.fromEntries(
         Object.entries(p.referentOverrides)

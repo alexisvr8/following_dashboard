@@ -281,7 +281,7 @@ descripcion, responsable, empresa cliente|xtract|ambas, status Pendiente|En curs
 ya_avanzamos, revision; `descripcion` = detalle completo para la card, `resumen_mail` = versión corta ≤~20 palabras que va al mail
 vía `ai.steps[i].mail`, salvo que el accionable se haya editado). Vista previa sin la app: `pnpm preview:postmeeting -- --json|--doc …`
 (`scripts/preview-postmeeting.ts`). `lib/integrations/meeting-ai.ts` `generateMeetingAI` (en `runSync`, tras transcripciones): reuniones
-≤7 días y desde `AI_SINCE` (env; default 13/11/2026 13:45, lo previo no se reprocesa) de asignados con Doc, sin `meeting.ai`, sin accionables tocados (`meetingHasTicketState`), máx. 3 por corrida y 3 intentos
+≤7 días y desde `AI_SINCE` (env; default 13/11/2026 13:45) de asignados con Doc, sin `meeting.ai`, máx. 3 por corrida y 3 intentos; si ya tiene accionables tocados (`meetingHasTicketState`: pasos por índice tildados/editados/con fecha o referenciados por `analysis.refs`; el `-followup` sintético no cuenta) `setMeetingAI` guarda solo contexto (`ai.contextOnly`, `steps: []`, sin tocar `nextSteps` ni `ticketsUpdatedAt`). Puesta al día de lo previo: `pnpm backfill:meeting-ai [-- --dry-run --id --limit]` (`backfillMeetingAI`, última reunión de cada asignado, A = reemplaza pasos / B = solo contexto)
 (`aiAttempts`/`aiError`); entrada = minuta + transcripción completa del Doc (`splitNotesAndTranscript`) + participantes con empresa,
 correcciones, ERP y abiertos previos. `setMeetingAI` guarda `meeting.ai` (status/empresa por índice en `steps`) y **reemplaza
 `nextSteps`** por `[Responsable] Título: descripción` (accionables + ya avanzado, éste tildado con su fecha; originales en
@@ -289,6 +289,37 @@ correcciones, ERP y abiertos previos. `setMeetingAI` guarda `meeting.ai` (status
 Template único `lib/utils/postmeeting-mail.ts` (`renderPostMeetingMail`, `actionableLine` =
 `• Título: Descripción. (Responsable) - Status: X ⏳|✅ (dd/mm)`), usado por `buildFollowup` con IA o por reglas.
 Tests: `pnpm test` (vitest, `tests/`); `RUN_LLM=1 LLM_DOC=<minuta.txt>` corre la prueba real contra la API.
+
+## Análisis semanal de cuentas con IA
+Por cuenta asignada: `analysisWindow` (base reunión ≤7 días / mails 21–45 días) → `collectAccountThreads` (`lib/integrations/account-mails.ts`,
+todos los hilos del período, texto completo, tope 100k caracteres) → `buildAnalysisInput` (`lib/utils/account-analysis.ts`: `plannedItems` con refs A1…,
+`refTexts`, reescribibles) → `generateAccountAnalysis` (`lib/llm/account-analysis*.ts`, JSON `AccountAnalysisSchema`) → `sanitizeRefs` → `setAccountAnalysis`
+(`client.analysis`; nuevos = `customActionables` con `source: "ia"` + `evidence`, dedupe ≥0.5 contra todo el tablero y ≥0.6 contra `aiLearned`; nunca tilda).
+Orquestación `analyzeAccounts` (`lib/integrations/account-analysis.ts`, 2 en paralelo, una vez por semana salvo `force`). Lo de la IA es arrastrado solo si
+llegó una reunión después de `createdAt`. Prioridad de cuenta `accountPriority` (`profile.priority` manual > IA > media; "alta" sube un nivel sus accionables).
+`nextMeetings` solo mira asignadas. Reescrituras (`output.reescrituras`) → modal "Mejoras IA" en `/accionables` (`RewritesDialog`, `pendingRewrites`:
+abiertos cuyo texto no cambió) → `PATCH /api/clients/[id] {rewrite: {ref, action, title?}}` (`resolveRewrite` → `actionableEdits`, `analysis.rewritesResolved`).
+Vista previa: `pnpm preview:analysis -- --id <cliente> [--json <salida>] [--save]`; todas: `pnpm analyze:accounts [-- --id --force]`;
+API `GET|POST /api/analysis {ids?, force?}`. La prioridad sugerida por la IA es **informativa** (solo 🔥/manual reordenan y suben accionables;
+prompt calibrado: ≤1 de cada 4 en "alta"). Pestaña **"Análisis IA"** en `/cuentas/[id]` (`AnalysisPanel`, `analysisView`: estado, resumen, próximo
+mail, posibles resueltos con botón Hecho, plan con "Nuevo", riesgos, conversaciones, Reanalizar; aviso si hubo reunión/mail del cliente
+después). Chip "IA" (`AiChip`, `PlannedItem.aiAdded/evidence`) en cards de `/accionables`.
+**Mail de seguimiento con IA** (`lib/llm/status-mail.ts`, `lib/integrations/status-ai.ts` `generateStatusMails`): `buildStatusUpdate` arma
+secciones con refs (H/C/M/N/Q/S/J/O); las reglas deciden qué va y el estado, la IA redacta apertura, cada punto y cierre (`client.statusAI`,
+válido mientras `statusKey` de la entrada coincida; si no, vuelve a reglas). Corre en `runSync` (máx. 3/corrida) y en "Actualizar"
+(`PATCH /followup`, kind status). `reviewNotes` suma "Redactado con IA", dudas, el próximo mail del análisis y los posibles resueltos. Tono: sin citar mails/asuntos
+("con lo que veníamos conversando"), secciones "Lo que avanzamos / En lo que estamos trabajando / Lo que necesitamos de su lado…";
+`effort: "low"`; en la sync no redacta si tildaste hace <20 min ni más de 1 vez cada 3 h por cuenta (Actualizar = `force`).
+**Estimación con IA**: `minutos_estimados` en el JSON de la minuta (accionables nuevos) y del análisis (todos los abiertos debo) →
+`client.aiEstimate` (ticketId → min, múltiplos de 5); `plannedItems`: manual → IA (`estimateSource: "ai"`) → aprendida → default; Capacidad la usa.
+**Lunes** (`scheduler.ts`, estado `app_state.weekly_ai`, `lib/store/weekly-ai-store.ts`): `CRON_ANALYSIS_AT` (07:00) sync + `analyzeAccounts`;
+`CRON_DIGEST_AT` (08:00) resumen como **borrador** en Gmail a `ownerEmail` (`createWeeklyDigestDraft`, `buildWeeklyDigest` en
+`lib/utils/weekly-digest.ts`: foco = 🔥 / en riesgo / bloqueada / esperando a Xtract / vencido mío con detalle, resto compacto; links con `APP_URL`;
+actualiza el mismo borrador si se repite); 08:30 sigue el mail semanal de objetivos.
+**Más atención** (`profile.attention`, cliente exigente; toggle `AttentionToggle` en el encabezado de `/cuentas/[id]`, `PATCH {profile: {attention}}`,
+chip `AttentionBadge` en cards de `/accionables`, directorio y Seguimiento): accionables en prioridad alta + `attention` (primero a igual fecha en
+`compareItems`, y por eso en Capacidad), meta interna `settings.attentionTargetDays` (1) hábil y vencido al siguiente; alerta desde
+`attentionStaleDays` (1) y primero en la lista; `accountPriority` = alta (source `atencion`); el prompt del análisis pide novedades proactivas. Pendiente: `profile.priority` manual en UI (hoy solo 🔥).
 
 ## Sincronización automática (scheduler interno + cron externo opcional)
 `lib/jobs/sync-job.ts` `runSync({drafts, trigger})`: minutas nuevas (`discoverGeminiMeetings(7d)` incremental +
@@ -325,8 +356,7 @@ instrucciones), no inventar fechas, credenciales solo en env. Campos nuevos siem
   (primeros/últimos días hábiles del mes) como contexto en alertas y Capacidad.
 - Minuta: asunto estándar `Xtract + <Cliente> | Integración | <ERP> | Seguimiento` y elegir ese hilo antes que el más reciente.
 - Seguridad: evaluar bajar `calendar.events` a `calendar.readonly` (no se escribe en Calendar).
-- Descartado: etiqueta Gmail "Minuta lista" (pide `gmail.modify`), WhatsApp, tablero compartido / multi-PM. LLM solo para el
-  mail post-reunión (ver "Mail post-reunión con IA").
+- Descartado: etiqueta Gmail "Minuta lista" (pide `gmail.modify`), WhatsApp, tablero compartido / multi-PM. LLM: mail post-reunión, análisis semanal de cuentas y redacción del mail de seguimiento (ver secciones de IA).
 
 ## Regla de tokens
 Para ahorrar tokens, proveer respuestas directas sin relleno, generar exclusivamente los

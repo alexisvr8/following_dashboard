@@ -3,10 +3,18 @@ import { getSettings } from "@/lib/store/settings-store";
 import { getSyncStatus } from "@/lib/store/sync-status-store";
 import { getClientsFile } from "@/lib/store/clients-store";
 import { listEventsBetween } from "@/lib/integrations/calendar";
+import { analyzeAccounts } from "@/lib/integrations/account-analysis";
+import { createWeeklyDigestDraft } from "@/lib/integrations/weekly-digest";
+import { getWeeklyAIState, saveWeeklyAIState } from "@/lib/store/weekly-ai-store";
+import { mondayKey } from "@/lib/utils/account-analysis";
 
 // Scheduler interno (sin dependencias): un tick por minuto contra la hora local del servidor (`TZ`).
 // - Lunes (`CRON_DRAFTS_DAY`, default 1) desde las `CRON_DRAFTS_AT` (default 08:30): sync + borrador semanal de
 //   objetivos por cuenta. Una vez por semana; si a esa hora la Mac estaba dormida, se hace al despertar ese día.
+// - Lunes desde `CRON_ANALYSIS_AT` (07:00): sync + análisis semanal con IA de las cuentas asignadas; desde
+//   `CRON_DIGEST_AT` (08:00), ya con el análisis hecho (o 2 h después aunque falle), el resumen de la semana como
+//   borrador en Gmail a mí mismo. Una vez por semana cada uno (estado en `app_state.weekly_ai`); si la Mac
+//   dormía, al despertar ese día.
 // - Siempre (cada sync): la minuta en borrador de cada reunión nueva.
 // - Todos los días (hábiles y fines de semana, si el servidor está prendido) entre `CRON_FROM` y `CRON_TO`
 //   (default 8–21), cada `CRON_INTERVAL_MINUTES` (15): sync.
@@ -36,6 +44,46 @@ export function startScheduler() {
   const [dH, dM] = (process.env.CRON_DRAFTS_AT ?? "08:30").split(":").map(Number);
   const draftsDay = num(process.env.CRON_DRAFTS_DAY, 1);
   let weeklyTriedAt = 0; // si la corrida semanal falla, se reintenta cada `interval` min (no cada minuto)
+  const hm = (v: string | undefined, def: string) => {
+    const [a, b] = (v ?? def).split(":").map(Number);
+    return (Number.isFinite(a) ? a : 0) * 60 + (Number.isFinite(b) ? b : 0);
+  };
+  const analysisAt = hm(process.env.CRON_ANALYSIS_AT, "07:00");
+  const digestAt = hm(process.env.CRON_DIGEST_AT, "08:00");
+  let weeklyAIRunning = false;
+  let analysisTriedAt = 0;
+  let digestTriedAt = 0;
+
+  // Rutina del lunes con IA en segundo plano (el análisis tarda ~10 min): no bloquea los ticks.
+  const weeklyAI = async (now: Date, minuteOfDay: number) => {
+    if (weeklyAIRunning) return;
+    const week = mondayKey(now);
+    const state = await getWeeklyAIState();
+    const retry = interval * 60_000;
+    if (minuteOfDay >= analysisAt && state.analysisWeek !== week && Date.now() - analysisTriedAt >= retry) {
+      analysisTriedAt = Date.now();
+      weeklyAIRunning = true;
+      void (async () => {
+        try {
+          await runSync({ drafts: false, trigger: "scheduler" });
+          const r = await analyzeAccounts({ now });
+          log(`análisis IA: ${r.analyzed} cuentas, ${r.added} accionables nuevos, ${r.failed} con error${r.error ? ` (${r.error})` : ""}`);
+          if (!r.error) await saveWeeklyAIState({ analysisWeek: week, analysisAt: new Date().toISOString() });
+        } catch (e) {
+          log(`análisis IA: error ${(e as Error).message}`);
+        } finally {
+          weeklyAIRunning = false;
+        }
+      })();
+      return;
+    }
+    const analysisDone = state.analysisWeek === week || minuteOfDay >= digestAt + 120;
+    if (minuteOfDay >= digestAt && analysisDone && state.digestWeek !== week && Date.now() - digestTriedAt >= retry) {
+      digestTriedAt = Date.now();
+      const r = await createWeeklyDigestDraft(now);
+      log(r.ok ? "resumen semanal: borrador creado en Gmail" : `resumen semanal: error ${r.error}`);
+    }
+  };
   let lastTick = Date.now();
 
   const log = (msg: string) => console.log(`[sync ${new Date().toLocaleString()}] ${msg}`);
@@ -75,6 +123,9 @@ export function startScheduler() {
     const minuteOfDay = h * 60 + m;
     const inWindow = minuteOfDay >= from * 60 && minuteOfDay <= to * 60;
 
+    if (workDays.includes(now.getDay()) && now.getDay() === draftsDay) {
+      await weeklyAI(now, minuteOfDay).catch((e) => log(`rutina IA: ${(e as Error).message}`));
+    }
     if (workDays.includes(now.getDay()) && now.getDay() === draftsDay && minuteOfDay >= dH * 60 + dM) {
       const { lastWeeklyDraftsAt } = await getSyncStatus();
       const dueAt = new Date(now.getFullYear(), now.getMonth(), now.getDate(), dH, dM).getTime();
@@ -99,7 +150,7 @@ export function startScheduler() {
   };
 
   const DAYS = ["domingos", "lunes", "martes", "miércoles", "jueves", "viernes", "sábados"];
-  log(`scheduler activo: cada ${interval} min (${from}–${to} h, todos los días), post-reunión cada ${fastInterval} min por ${fastMinutes} min, objetivos semanales ${DAYS[draftsDay] ?? draftsDay} ${process.env.CRON_DRAFTS_AT ?? "08:30"}`);
+  log(`scheduler activo: cada ${interval} min (${from}–${to} h, todos los días), post-reunión cada ${fastInterval} min por ${fastMinutes} min, objetivos semanales ${DAYS[draftsDay] ?? draftsDay} ${process.env.CRON_DRAFTS_AT ?? "08:30"}, análisis IA ${process.env.CRON_ANALYSIS_AT ?? "07:00"} y resumen ${process.env.CRON_DIGEST_AT ?? "08:00"}`);
   setInterval(() => void tick().catch((e) => log(`error ${(e as Error).message}`)), 60_000);
   // Recuperación al iniciar (en segundo plano, para no bloquear el arranque del servidor).
   setTimeout(() => void catchUp("inicio").catch((e) => log(`error ${(e as Error).message}`)), 10_000);

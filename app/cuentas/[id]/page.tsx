@@ -4,7 +4,10 @@ import { buttonVariants } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { ChurnRiskBadge } from "@/components/dashboard/ChurnRiskBadge";
 import { AccountWorkspace } from "@/components/cuentas/AccountWorkspace";
+import { AnalysisPanel } from "@/components/cuentas/AnalysisPanel";
+import { analysisView } from "@/lib/utils/account-analysis";
 import { AccountProfileForm } from "@/components/cuentas/AccountProfileForm";
+import { AttentionBadge, AttentionToggle } from "@/components/cuentas/AttentionToggle";
 import { ParticipantsList } from "@/components/cuentas/ParticipantsList";
 import { ActivityPanel } from "@/components/cuentas/ActivityPanel";
 import { FollowupComposer } from "@/components/cuentas/FollowupComposer";
@@ -67,6 +70,7 @@ function Workspace({
           <div className="flex flex-wrap items-center gap-2">
             <h1 className="truncate text-lg font-semibold text-foreground-strong">{client.name}</h1>
             <ChurnRiskBadge lastActivityAt={v.account.lastActivityAt} />
+            {client.profile?.attention && <AttentionBadge />}
             {client.profile?.erp && <Badge variant="outline">ERP {client.profile.erp}</Badge>}
           </div>
           <p className="truncate text-xs text-muted-foreground">
@@ -80,6 +84,7 @@ function Workspace({
       }
       actions={
         <>
+          {client.status === "assigned" && <AttentionToggle clientId={client.id} initial={Boolean(client.profile?.attention)} />}
           <a
             href={`/api/clients/${enc}/last-mail`}
             target="_blank"
@@ -167,6 +172,7 @@ function Workspace({
       }
       participants={<ParticipantsList clientId={client.id} participants={v.participants} />}
       meetingHistory={<MeetingsList meetings={v.meetings} />}
+      analysis={client.status === "assigned" ? <AnalysisPanel clientId={client.id} view={analysisView(client)} /> : null}
     />
   );
 }

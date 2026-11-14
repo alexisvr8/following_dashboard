@@ -35,6 +35,7 @@ export default async function CuentasLayout({ children }: { children: React.Reac
       meetingCount: meetings.filter((m) => m.accountId === account.id).length,
       actionablesDefined: own.length,
       pendingActionables: own.filter((t) => !t.isDone).length,
+      attention: Boolean(validated.find((c) => c.id === account.id)?.profile?.attention),
     };
   });
 

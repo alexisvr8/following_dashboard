@@ -25,7 +25,7 @@ import { classifyMail, extractCommitments, extractRequests, relatedActionables, 
 // - auto-tildado: follow-up de reunión (mail mío posterior a la reunión) y "Responder" del último
 //   mail del cliente (si hay un mail mío/del equipo posterior).
 
-const GEMINI_SENDER = process.env.GEMINI_NOTES_SENDER ?? "gemini-notes@google.com";
+export const GEMINI_SENDER = process.env.GEMINI_NOTES_SENDER ?? "gemini-notes@google.com";
 const LOOKBACK_DAYS = 180;
 const MAX_MAILS_CHECK = 30;
 const KEEP_MAILS = 8;
@@ -49,7 +49,7 @@ export const parseAddresses = (value: string) => [
   ...new Set((value.match(/[^\s<>,;"']+@[^\s<>,;"']+/g) ?? []).map((e) => e.toLowerCase())),
 ];
 
-function hasCalendarPart(part?: gmail_v1.Schema$MessagePart): boolean {
+export function hasCalendarPart(part?: gmail_v1.Schema$MessagePart): boolean {
   if (!part) return false;
   if (part.mimeType === "text/calendar" || part.mimeType === "application/ics") return true;
   if (/\.ics$/i.test(part.filename ?? "")) return true;
@@ -57,7 +57,7 @@ function hasCalendarPart(part?: gmail_v1.Schema$MessagePart): boolean {
 }
 
 /** Targets de búsqueda Gmail: dominio (si no es freemail) + emails de referentes de otro dominio. */
-function clientTargets(client: ClientRecord, ownerEmail: string | null, shared: Set<string>) {
+export function clientTargets(client: ClientRecord, ownerEmail: string | null, shared: Set<string>) {
   // Referentes + invitados externos exclusivos de esta cuenta (consultores, partners). Se excluyen
   // externos que aparecen en otras cuentas o que son otro cliente (evita mezclar cuentas).
   const referents = computeParticipants(client, ownerEmail)
@@ -282,7 +282,7 @@ async function syncOne(
 }
 
 /** Emails externos presentes en reuniones de ≥2 clientes, o que son el id/contacto de otro cliente. */
-function sharedExternals(all: ClientRecord[]): Set<string> {
+export function sharedExternals(all: ClientRecord[]): Set<string> {
   const seen = new Map<string, Set<string>>();
   const add = (email: string, id: string) => {
     const set = seen.get(email) ?? new Set<string>();
