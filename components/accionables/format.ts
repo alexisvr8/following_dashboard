@@ -90,11 +90,51 @@ export const isMailItem = (item: PlannedItem) =>
 export const MAIL_ACTION_LABEL = (item: PlannedItem) =>
   item.kind === "followup" ? "Borrador de minuta" : item.kind === "reply" || item.kind === "request" ? "Responder" : "Reclamar";
 
-/** Arrastrados primero (el más viejo arriba); el resto mantiene el orden de plazo/prioridad. */
-export function carriedFirst(items: PlannedItem[]): { carried: PlannedItem[]; fresh: PlannedItem[] } {
+const RANK: Record<Priority, number> = { alta: 0, media: 1, baja: 2 };
+/** Orden visual dentro de un grupo: prioridad → fecha → cuenta prioritaria → lo mío → más viejo primero. */
+const byPriority = (a: PlannedItem, b: PlannedItem) =>
+  RANK[a.priority] - RANK[b.priority] ||
+  a.due.localeCompare(b.due) ||
+  RANK[a.accountPriority] - RANK[b.accountPriority] ||
+  (a.side === b.side ? 0 : a.side === "debo" ? -1 : 1) ||
+  a.originDate.localeCompare(b.originDate);
+
+/**
+ * Grupos de cada columna / sección (solo visual; Capacidad sigue con `compareItems`): primero las cuentas de
+ * "Más atención", después los arrastrados y al final los nuevos; dentro de cada grupo por prioridad y luego fecha.
+ */
+export function boardGroups(items: PlannedItem[]): { attention: PlannedItem[]; carried: PlannedItem[]; fresh: PlannedItem[] } {
   return {
-    carried: items.filter((i) => i.carried).sort((a, b) => a.originDate.localeCompare(b.originDate)),
-    fresh: items.filter((i) => !i.carried),
+    attention: items.filter((i) => i.attention).sort(byPriority),
+    carried: items.filter((i) => !i.attention && i.carried).sort(byPriority),
+    fresh: items.filter((i) => !i.attention && !i.carried).sort(byPriority),
+  };
+}
+
+const DAY_FMT = new Intl.DateTimeFormat("es", { weekday: "short", day: "2-digit", month: "2-digit" });
+
+/**
+ * Cómo queda un accionable al soltarlo en otra columna con fecha manual `day` (AAAA-MM-DD), para moverlo al
+ * instante mientras se guarda (el servidor lo recalcula igual al refrescar).
+ */
+export function movedItem(item: PlannedItem, bucket: Bucket, day: string, now: Date, workDays: number[]): PlannedItem {
+  const [y, m, d] = day.split("-").map(Number);
+  const due = new Date(y, m - 1, d, 23, 59, 59);
+  const today = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+  let left = 0;
+  for (const c = new Date(today); c < new Date(y, m - 1, d); ) {
+    c.setDate(c.getDate() + 1);
+    if (workDays.includes(c.getDay())) left++;
+  }
+  const iso = due.toISOString();
+  return {
+    ...item,
+    bucket,
+    due: iso,
+    limit: iso,
+    dueKind: "manual",
+    dueLabel: DAY_FMT.format(due).replace(".", "").replace(",", ""),
+    businessDaysLeft: left,
   };
 }
 

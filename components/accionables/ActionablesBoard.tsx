@@ -30,7 +30,7 @@ import { Button } from "@/components/ui/button";
 import { Checkbox } from "@/components/ui/checkbox";
 import { inputClass } from "@/components/ui/input";
 import { cn } from "@/lib/utils";
-import type { DueKind, PlannedItem, SuggestedItem } from "@/lib/utils/deadlines";
+import type { Bucket, DueKind, PlannedItem, SuggestedItem } from "@/lib/utils/deadlines";
 import { ActionablePanel, type PanelAction } from "@/components/accionables/ActionablePanel";
 import { SuggestionsDialog } from "@/components/accionables/SuggestionsSection";
 import { RewritesDialog } from "@/components/accionables/RewritesDialog";
@@ -41,7 +41,8 @@ import { FollowupPanel, type FollowupPanelData } from "@/components/dashboard/Fo
 import {
   addWorkdays,
   carriedAge,
-  carriedFirst,
+  boardGroups,
+  movedItem,
   MAIL_ACTION_LABEL,
   isMailItem,
   CLOSE_DELAY_MS,
@@ -144,7 +145,19 @@ export function ActionablesBoard({
     () => [...new Map(items.map((i) => [i.clientId, i.clientName])).entries()].sort((a, b) => a[1].localeCompare(b[1], "es")),
     [items],
   );
-  const open = items.filter((i) => !hidden.has(i.id));
+  // Movidos a otra columna: se ven en su lugar nuevo al instante, mientras el PATCH y el refresh siguen de fondo.
+  // Al llegar datos nuevos del servidor se descartan los ya guardados (los pendientes siguen hasta guardarse).
+  const [moved, setMoved] = useState<Record<string, { bucket: Bucket; day: string; saved: boolean }>>({});
+  const [itemsSeen, setItemsSeen] = useState(items);
+  if (itemsSeen !== items) {
+    setItemsSeen(items);
+    setMoved((m) => Object.fromEntries(Object.entries(m).filter(([, v]) => !v.saved)));
+  }
+  const [landedId, setLandedId] = useState<string | null>(null);
+  const [moveError, setMoveError] = useState<string | null>(null);
+  const open = items
+    .filter((i) => !hidden.has(i.id))
+    .map((i) => (moved[i.id] ? movedItem(i, moved[i.id].bucket, moved[i.id].day, now, workDays) : i));
   const visible = open.filter((i) => {
     if (side !== "todo" && i.side !== side) return false;
     if (account && i.clientId !== account) return false;
@@ -246,6 +259,23 @@ export function ActionablesBoard({
   }
 
   const dragItem = dragId ? (open.find((i) => i.id === dragId) ?? null) : null;
+  async function moveTo(item: PlannedItem, bucket: Bucket, day: string) {
+    setMoved((m) => ({ ...m, [item.id]: { bucket, day, saved: false } }));
+    setLandedId(item.id);
+    setMoveError(null);
+    const ok = await patchClient(item.clientId, { plan: { ticketId: item.id, due: day } });
+    if (!ok) {
+      setMoved((m) => {
+        const next = { ...m };
+        delete next[item.id];
+        return next;
+      });
+      setMoveError(`No se pudo mover “${item.title}”: volvió a su columna.`);
+      return;
+    }
+    setMoved((m) => (m[item.id] ? { ...m, [item.id]: { ...m[item.id], saved: true } } : m));
+    router.refresh();
+  }
   const itemProps = (i: PlannedItem): ItemProps => ({
     item: i,
     busy: busy === i.id,
@@ -420,6 +450,12 @@ export function ActionablesBoard({
         </div>
       )}
 
+      {moveError && (
+        <p role="alert" className="rounded-md border border-critical/25 bg-critical-muted px-3 py-1.5 text-xs text-critical">
+          {moveError}
+        </p>
+      )}
+
       {visible.length === 0 ? (
         <p className="rounded-xl border border-dashed border-border py-12 text-center text-sm text-muted-foreground">
           No hay accionables con estos filtros.
@@ -427,8 +463,10 @@ export function ActionablesBoard({
       ) : view === "board" ? (
         <div className="grid items-start gap-3 md:grid-cols-2 xl:grid-cols-5">
           {COLUMNS.map((col) => {
-            const list = visible.filter((i) => i.bucket === col.key);
             const target = dragItem && dragItem.bucket !== col.key ? dropDue(col.key, now, workDays) : null;
+            // Vista previa: mientras se arrastra encima, la card aparece (punteada) donde va a quedar.
+            const preview = overCol === col.key && dragItem && target ? movedItem(dragItem, col.key, target, now, workDays) : null;
+            const list = visible.filter((i) => i.bucket === col.key).concat(preview ? [preview] : []);
             return (
               <section
                 key={col.key}
@@ -446,7 +484,7 @@ export function ActionablesBoard({
                   const item = dragItem;
                   setOverCol(null);
                   setDragId(null);
-                  if (item && target) act(item, { type: "due", due: target });
+                  if (item && target) void moveTo(item, col.key, target);
                 }}
                 className={cn(
                   "flex min-w-0 flex-col gap-2 rounded-xl border border-border bg-surface p-2 transition-colors",
@@ -464,7 +502,20 @@ export function ActionablesBoard({
                   <p className="px-1 py-6 text-center text-xs text-subtle-foreground">Nada acá</p>
                 ) : (
                   <ul className="flex flex-col gap-1.5">
-                    <Grouped items={list} render={(i) => <ItemCard key={i.id} {...itemProps(i)} drag={dragProps(i)} dragging={dragId === i.id} />} />
+                    <Grouped
+                      items={list}
+                      render={(i) => (
+                        <ItemCard
+                          key={i.id}
+                          {...itemProps(i)}
+                          drag={dragProps(i)}
+                          dragging={dragId === i.id && i !== preview}
+                          ghost={i === preview}
+                          landed={landedId === i.id}
+                          onLanded={() => setLandedId((cur) => (cur === i.id ? null : cur))}
+                        />
+                      )}
+                    />
                   </ul>
                 )}
               </section>
@@ -581,16 +632,16 @@ type DragProps = {
   onDragEnd: () => void;
 };
 
-/** Arrastrados arriba (con subtítulo si conviven con nuevos), después el resto en su orden. */
+/** Atención → Arrastrados → Nuevos (`boardGroups`), con subtítulo cuando conviven 2 o más grupos. */
 function Grouped({ items, render }: { items: PlannedItem[]; render: (i: PlannedItem) => React.ReactNode }) {
-  const { carried, fresh } = carriedFirst(items);
-  const split = carried.length > 0 && fresh.length > 0;
-  const label = (text: string, n: number, tone: "carried" | "muted") => (
+  const { attention, carried, fresh } = boardGroups(items);
+  const split = [attention, carried, fresh].filter((g) => g.length > 0).length > 1;
+  const label = (text: string, n: number, tone: "attention" | "carried" | "muted") => (
     <li
       role="presentation"
       className={cn(
         "flex items-center gap-2 px-1 pt-1 text-label-sm uppercase",
-        tone === "carried" ? "text-carried" : "text-subtle-foreground",
+        tone === "attention" ? "text-warning" : tone === "carried" ? "text-carried" : "text-subtle-foreground",
       )}
     >
       {text} <span className="tabular">{n}</span>
@@ -599,9 +650,11 @@ function Grouped({ items, render }: { items: PlannedItem[]; render: (i: PlannedI
   );
   return (
     <>
-      {split && label("Arrastrados", carried.length, "carried")}
+      {split && attention.length > 0 && label("Atención", attention.length, "attention")}
+      {attention.map(render)}
+      {split && carried.length > 0 && label("Arrastrados", carried.length, "carried")}
       {carried.map(render)}
-      {split && label("Nuevos", fresh.length, "muted")}
+      {split && fresh.length > 0 && label("Nuevos", fresh.length, "muted")}
       {fresh.map(render)}
     </>
   );
@@ -745,20 +798,24 @@ function Chevron({ expanded }: { expanded: boolean }) {
   return <ChevronDown className={cn("size-3.5 shrink-0 text-subtle-foreground transition-transform", expanded && "rotate-180")} />;
 }
 
-function ItemCard(props: ItemProps & { drag: DragProps; dragging: boolean }) {
-  const { item, busy, expanded, compact, nowMs, onToggle, drag, dragging } = props;
+function ItemCard(props: ItemProps & { drag: DragProps; dragging: boolean; ghost?: boolean; landed?: boolean; onLanded?: () => void }) {
+  const { item, busy, expanded, compact, nowMs, onToggle, drag, dragging, ghost, landed } = props;
   const OriginIcon = item.originKind === "mail" ? Mail : Users;
   const toggle = () => onToggle(item.id);
   const tone = cardTone(item) ?? "none";
   return (
     <li
-      {...drag}
+      {...(ghost ? {} : drag)}
+      aria-hidden={ghost || undefined}
+      onAnimationEnd={landed ? props.onLanded : undefined}
       className={cn(
-        "rounded-lg border border-l-2 transition-colors duration-150",
+        "rounded-lg border border-l-2 transition-[opacity,transform,border-color,background-color] duration-150",
         TONE_CARD[tone],
         expanded ? "shadow-highlight" : "hover:border-border-strong",
         busy && "opacity-60",
-        dragging && "opacity-40",
+        dragging && "scale-[0.98] opacity-40",
+        ghost && "pointer-events-none border-dashed border-ring opacity-60",
+        landed && "motion-safe:animate-card-landed",
       )}
     >
       <div

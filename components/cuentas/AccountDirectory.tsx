@@ -14,6 +14,7 @@ import { cn } from "@/lib/utils";
 import { byMovement, movementBucket } from "@/lib/utils/movement";
 import type { Account } from "@/types/account";
 import { AttentionBadge } from "@/components/cuentas/AttentionToggle";
+import { ClosedBadge } from "@/components/cuentas/AccountClosure";
 
 export type DirectoryRow = {
   account: Account;
@@ -23,9 +24,14 @@ export type DirectoryRow = {
   pendingActionables: number;
   /** Cuenta "Más atención" (`profile.attention`). */
   attention?: boolean;
+  /** Cuenta cerrada (pase a Soporte): va en la pestaña "Cerradas". */
+  closed?: boolean;
+  /** Reuniones que llegaron después del cierre (aviso para reabrir). */
+  newAfterClose?: number;
 };
 
-type Tab = "assigned" | "unassigned";
+type Tab = "assigned" | "unassigned" | "closed";
+const tabOfRow = (r: DirectoryRow): Tab => (r.closed ? "closed" : r.account.isAssigned ? "assigned" : "unassigned");
 const safeDecode = (s: string) => {
   try {
     return decodeURIComponent(s);
@@ -51,8 +57,10 @@ const sortRows = (rows: DirectoryRow[]) => rows.slice().sort((a, b) => byMovemen
 export function AccountDirectory({ rows }: { rows: DirectoryRow[] }) {
   const params = useParams<{ id?: string }>();
   const selectedId = params.id ? safeDecode(params.id) : null;
-  const tabOf = (id: string | null): Tab =>
-    rows.find((r) => r.account.id === id)?.account.isAssigned === false ? "unassigned" : "assigned";
+  const tabOf = (id: string | null): Tab => {
+    const row = rows.find((r) => r.account.id === id);
+    return row ? tabOfRow(row) : "assigned";
+  };
   const [query, setQuery] = useState("");
   const [current, setCurrent] = useState<Tab>(() => tabOf(selectedId));
   // Si se abre una cuenta de la otra pestaña (link externo, alerta), el directorio la sigue.
@@ -63,9 +71,11 @@ export function AccountDirectory({ rows }: { rows: DirectoryRow[] }) {
   }
   const q = norm(query.trim());
   const visible = sortRows(q ? rows.filter((r) => norm(`${r.account.name} ${r.account.id} ${r.account.erp ?? ""}`).includes(q)) : rows);
-  const assigned = visible.filter((r) => r.account.isAssigned);
-  const unassigned = visible.filter((r) => !r.account.isAssigned);
-  const inTab = current === "assigned" ? assigned : unassigned;
+  const byTab = (t: Tab) => visible.filter((r) => tabOfRow(r) === t);
+  const assigned = byTab("assigned");
+  const unassigned = byTab("unassigned");
+  const closedRows = byTab("closed");
+  const inTab = current === "assigned" ? assigned : current === "unassigned" ? unassigned : closedRows;
   const [risk, setRisk] = useState<RiskFilter>("all");
   const riskOf = (r: DirectoryRow) => computeChurnRisk(r.account.lastActivityAt);
   const counts = { all: inTab.length, red: 0, yellow: 0 };
@@ -85,6 +95,10 @@ export function AccountDirectory({ rows }: { rows: DirectoryRow[] }) {
           </TabsTrigger>
           <TabsTrigger value="unassigned">
             No asignadas <span className="tabular text-[11px]">{unassigned.length}</span>
+          </TabsTrigger>
+          <TabsTrigger value="closed" title="Cuentas pasadas a Soporte">
+            Cerradas <span className="tabular text-[11px]">{closedRows.length}</span>
+            {closedRows.some((r) => r.newAfterClose) && <StatusDot tone="warning" />}
           </TabsTrigger>
         </TabsList>
       </Tabs>
@@ -178,7 +192,13 @@ function Row({ row, active }: { row: DirectoryRow; active: boolean }) {
       <div className="flex items-center gap-2">
         <span className={cn("min-w-0 flex-1 truncate text-[15px] font-medium leading-snug", active && "text-foreground-strong")}>{a.name}</span>
         {row.attention && <AttentionBadge size="sm" />}
-        <ChurnRiskBadge lastActivityAt={a.lastActivityAt} size="sm" />
+        {row.closed && <ClosedBadge size="sm" />}
+        {row.newAfterClose ? (
+          <Badge variant="warning" className="px-1.5 text-[10.5px]" title="Hubo reuniones después del cierre">
+            Reunión nueva
+          </Badge>
+        ) : null}
+        {!row.closed && <ChurnRiskBadge lastActivityAt={a.lastActivityAt} size="sm" />}
       </div>
       <p className="flex gap-1 text-xs text-muted-foreground" title={a.lastMovementLabel ?? undefined}>
         {a.lastMovementAt ? (

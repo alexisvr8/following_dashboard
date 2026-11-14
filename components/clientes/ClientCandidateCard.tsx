@@ -5,6 +5,8 @@ import { useRouter } from "next/navigation";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader } from "@/components/ui/card";
 import type { ClientRecord, ClientStatus } from "@/lib/store/clients-store";
+import { NewMeetingsNotice, ReopenButton } from "@/components/cuentas/AccountClosure";
+import { meetingsAfterClosure } from "@/lib/utils/closure";
 
 const ACTIONS: { status: ClientStatus; label: string }[] = [
   { status: "assigned", label: "Asignado" },
@@ -63,6 +65,15 @@ export function ClientCandidateCard({ client }: { client: ClientRecord }) {
             </p>
           )}
         </div>
+        {client.status === "closed" ? (
+          <div className="space-y-2">
+            <p className="text-muted-foreground">
+              Cerrada el {formatDate(client.profile?.closure?.at ?? "")} · pasó a {client.profile?.closure?.handedTo ?? "Soporte"}
+            </p>
+            {meetingsAfterClosure(client).length > 0 && <NewMeetingsNotice meetings={meetingsAfterClosure(client)} />}
+            <ReopenButton clientId={client.id} />
+          </div>
+        ) : (
         <div className="flex flex-wrap gap-2">
           {ACTIONS.map(({ status, label }) => (
             <Button
@@ -76,6 +87,7 @@ export function ClientCandidateCard({ client }: { client: ClientRecord }) {
             </Button>
           ))}
         </div>
+        )}
       </CardContent>
     </Card>
   );

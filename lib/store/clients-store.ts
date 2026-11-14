@@ -16,7 +16,8 @@ export { mailTicketId };
 
 // Clientes descubiertos desde Gemini Notes. Persistencia: ver "Persistencia" más abajo.
 
-export type ClientStatus = "pending" | "assigned" | "unassigned" | "ignored";
+/** `closed` = cuenta cerrada (pasó a Soporte): sale de Capacidad, accionables, alertas, IA y sync; datos congelados. */
+export type ClientStatus = "pending" | "assigned" | "unassigned" | "ignored" | "closed";
 
 export interface MeetingAttendee {
   email: string;
@@ -297,6 +298,8 @@ export interface ClientProfile {
    * `settings.attentionTargetDays` (1) día hábil, alerta de seguimiento al 1er día hábil sin novedades y la IA lo sabe.
    */
   attention?: boolean;
+  /** Cierre de la cuenta (pase a Soporte, `status: "closed"`): cuándo, a quién y nota. Se borra al reabrir. */
+  closure?: { at: string; handedTo: string; note?: string };
 }
 
 export interface ClientsFile {
@@ -612,6 +615,35 @@ export async function updateClientProfile(
     if (naming(profile) !== namingBefore) client.profileUpdatedAt = new Date().toISOString();
   });
   return m?.client ?? null;
+}
+
+/**
+ * Cierra la cuenta (pase a Soporte): `status: "closed"` + `profile.closure`. Los accionables quedan congelados
+ * tal cual (no se tildan ni se quitan); como todo filtra por `assigned`, libera Capacidad, alertas, IA y sync.
+ */
+export async function closeClient(id: string, opts: { note?: string; handedTo?: string } = {}): Promise<ClientRecord | null> {
+  const m = await mutateClient(id, (client) => {
+    if (client.status === "closed") return SKIP;
+    const note = opts.note?.trim();
+    client.profile = {
+      ...client.profile,
+      closure: { at: new Date().toISOString(), handedTo: opts.handedTo?.trim() || "Soporte", ...(note && { note: note.slice(0, 2000) }) },
+    };
+    client.status = "closed";
+  });
+  return m?.client ?? (await getClient(id)).client;
+}
+
+/** Reabre una cuenta cerrada: vuelve a asignada y se borra `profile.closure`. */
+export async function reopenClient(id: string): Promise<ClientRecord | null> {
+  const m = await mutateClient(id, (client) => {
+    if (client.status !== "closed") return SKIP;
+    const profile = { ...client.profile };
+    delete profile.closure;
+    client.profile = profile;
+    client.status = "assigned";
+  });
+  return m?.client ?? (await getClient(id)).client;
 }
 
 /**

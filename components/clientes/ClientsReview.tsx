@@ -7,11 +7,13 @@ import { Button } from "@/components/ui/button";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { ClientCandidateCard } from "@/components/clientes/ClientCandidateCard";
 import type { ClientsFile, ClientStatus } from "@/lib/store/clients-store";
+import { meetingsAfterClosure } from "@/lib/utils/closure";
 
 const TABS: { status: ClientStatus; label: string }[] = [
   { status: "pending", label: "Por validar" },
   { status: "assigned", label: "Asignados" },
   { status: "unassigned", label: "No asignados" },
+  { status: "closed", label: "Cerrados" },
   { status: "ignored", label: "Ignorados" },
 ];
 
@@ -68,8 +70,17 @@ export function ClientsReview({ file }: { file: ClientsFile }) {
     (b.meetings[0]?.date ?? "").localeCompare(a.meetings[0]?.date ?? ""),
   );
 
+  // Cerradas con reuniones después del cierre: Soporte la puede haber devuelto.
+  const reopenHints = file.clients.filter((c) => meetingsAfterClosure(c).length > 0);
+
   return (
     <div className="space-y-4">
+      {reopenHints.length > 0 && (
+        <p className="rounded-lg border border-warning/25 bg-warning-muted px-4 py-2 text-sm text-foreground">
+          Reuniones nuevas en cuentas cerradas: {reopenHints.map((c) => c.name).join(", ")}. Revisalas en “Cerrados” por si hay que
+          reabrirlas.
+        </p>
+      )}
       <div className="flex flex-wrap items-center gap-3">
         <Button onClick={scan} disabled={scanning}>
           <RefreshCw className={scanning ? "animate-spin" : undefined} />
