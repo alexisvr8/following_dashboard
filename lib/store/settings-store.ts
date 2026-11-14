@@ -1,3 +1,4 @@
+import { DEFAULT_ESTIMATE_GUIDE, type EstimateGuide } from "@/lib/utils/task-kind";
 import { getState, setState } from "@/lib/store/backend";
 
 export type PersonRole = "me" | "team" | "client" | "partner";
@@ -44,6 +45,8 @@ export interface WorkSettings {
   autoMeetingDrafts: boolean;
   /** Rol aprendido por persona (clave `personKey`): decide debo / me deben y de qué lado va en los mails. */
   people: Record<string, PersonRole>;
+  /** Tus tiempos por tipo de tarea (min): base de la estimación de cada accionable (ver `lib/utils/task-kind.ts`). */
+  estimateGuide: EstimateGuide;
 }
 
 export const DEFAULT_SETTINGS: WorkSettings = {
@@ -62,6 +65,7 @@ export const DEFAULT_SETTINGS: WorkSettings = {
   limitBusinessDays: 4,
   corrections: [],
   people: {},
+  estimateGuide: DEFAULT_ESTIMATE_GUIDE,
   autoMeetingDrafts: true,
 };
 
@@ -91,6 +95,14 @@ export async function updateSettings(patch: Partial<WorkSettings>): Promise<Work
     next.ownerAliases = patch.ownerAliases.map((s) => String(s).trim()).filter(Boolean).slice(0, 10);
   }
   if (typeof patch.includeGroupTasks === "boolean") next.includeGroupTasks = patch.includeGroupTasks;
+  if (patch.estimateGuide && typeof patch.estimateGuide === "object") {
+    const g = { ...(next.estimateGuide ?? DEFAULT_ESTIMATE_GUIDE) };
+    for (const k of ["comms", "review", "config", "build"] as const) {
+      const m = (patch.estimateGuide as Partial<EstimateGuide>)[k];
+      if (typeof m === "number" && m >= 5 && m <= 480) g[k] = Math.round(m / 5) * 5;
+    }
+    next.estimateGuide = g;
+  }
   if (typeof patch.staleBusinessDays === "number" && patch.staleBusinessDays >= 1 && patch.staleBusinessDays <= 15) {
     next.staleBusinessDays = Math.round(patch.staleBusinessDays);
   }

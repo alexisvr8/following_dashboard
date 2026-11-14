@@ -5,6 +5,7 @@ import type { AccountAnalysisOutput } from "@/lib/llm/account-analysis-schema";
 import { accountActionables, executedHistory, stepTicketId } from "@/lib/utils/actionables";
 import { plannedItems } from "@/lib/utils/deadlines";
 import { isOwnActionable } from "@/lib/utils/capacity";
+import { DEFAULT_ESTIMATE_GUIDE, guideText } from "@/lib/utils/task-kind";
 
 // Partes puras del análisis semanal por cuenta (sin Gmail ni API): base y período, entrada del modelo y
 // accionables nuevos a agregar. La orquestación vive en `lib/integrations/account-analysis.ts`.
@@ -89,6 +90,7 @@ export function buildAnalysisInput(
       erp: client.profile?.erp ?? null,
       manualPriority: client.profile?.priority ?? null,
       attention: Boolean(client.profile?.attention),
+      estimateGuide: guideText(settings.estimateGuide ?? DEFAULT_ESTIMATE_GUIDE),
       notes: client.profile?.notes ?? null,
       basis,
       periodFrom: shortDate(since),

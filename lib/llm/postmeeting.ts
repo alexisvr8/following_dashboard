@@ -22,6 +22,8 @@ export interface PostMeetingInput {
   openActionables: string[];
   corrections: { from: string; to: string }[];
   erp?: string | null;
+  /** Tiempos de referencia del PM por tipo de tarea (`guideText`). */
+  estimateGuide?: string;
   notes: string | null;
   transcript: string | null;
 }
@@ -36,6 +38,7 @@ export function buildUserMessage(input: PostMeetingInput): string {
     `Reunión: ${input.meetingTitle}`,
     `Fecha de la reunión: ${input.meetingDate}`,
     ...(input.erp ? [`ERP del cliente: ${input.erp}`] : []),
+    ...(input.estimateGuide ? [`Tiempos de referencia del PM: ${input.estimateGuide}`] : []),
     "Participantes:",
     ...(input.participants.length
       ? input.participants.map((p) => `- ${p.name}${p.email ? ` <${p.email}>` : ""} (${p.company})`)
