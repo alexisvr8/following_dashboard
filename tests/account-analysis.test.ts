@@ -244,15 +244,19 @@ describe("resumen del lunes", () => {
 });
 
 describe("estimación con IA", () => {
-  it("la manual manda; si no, la de la IA; si no, el default", async () => {
+  it("manual > tus tiempos por tipo (mails fijo, el resto IA acotada) > default", async () => {
     const { plannedItems } = await import("@/lib/utils/deadlines");
-    const t0 = stepTicketId("acme.com", "m1", 0);
-    const t1 = stepTicketId("acme.com", "m1", 1);
-    const c = client({ aiEstimate: { [t0]: 90, [t1]: 20 }, actionableEstimate: { [t1]: 60 } });
-    const items = plannedItems([c], settings, NOW);
-    const a = items.find((i) => i.id === t0)!;
-    const b = items.find((i) => i.id === t1)!;
-    expect([a.estimateMinutes, a.estimateSource]).toEqual([90, "ai"]);
-    expect([b.estimateMinutes, b.estimateSource]).toEqual([60, "manual"]);
+    const t0 = stepTicketId("acme.com", "m1", 0); // "Enviar accesos" → mails
+    const t1 = stepTicketId("acme.com", "m1", 1); // "Configurar mapeo" → configurar
+    const t2 = stepTicketId("acme.com", "m1", 2); // "Parametrizar proveedores" → configurar
+    const base = { meetings: [meeting("m1", 3, ["[Ana Pérez] Enviar accesos", "[Alexis Vásquez R] Configurar mapeo", "[Alexis Vásquez R] Parametrizar proveedores"])] };
+    const g = { ...settings, estimateGuide: { comms: 15, review: 20, config: 45, build: 60 } };
+    const items = plannedItems([client({ ...base, aiEstimate: { [t0]: 90, [t1]: 240, [t2]: 30 } })], g, NOW);
+    const get = (id: string) => items.find((i) => i.id === id)!;
+    expect([get(t0).estimateMinutes, get(t0).estimateSource]).toEqual([15, "guide"]);
+    expect([get(t1).estimateMinutes, get(t1).estimateSource]).toEqual([70, "ai"]); // tope = 1,5 × 45
+    expect(get(t2).estimateMinutes).toBe(35); // piso = 0,75 × 45
+    const manual = plannedItems([client({ ...base, actionableEstimate: { [t1]: 120 } })], g, NOW);
+    expect(manual.find((i) => i.id === t1)!.estimateSource).toBe("manual");
   });
 });

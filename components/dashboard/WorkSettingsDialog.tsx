@@ -1,6 +1,7 @@
 "use client";
 
 import { useState } from "react";
+import { DEFAULT_ESTIMATE_GUIDE } from "@/lib/utils/task-kind";
 import { useRouter } from "next/navigation";
 import { Loader2 } from "lucide-react";
 import { Button } from "@/components/ui/button";
@@ -108,6 +109,36 @@ export function WorkSettingsDialog({
             <Label htmlFor="hpa" className="text-xs">Horas estimadas por accionable</Label>
             <input id="hpa" type="number" min={0} max={40} step={0.25} className={inputClass} value={v.hoursPerActionable} onChange={(e) => setV({ ...v, hoursPerActionable: Number(e.target.value) })} />
             <p className="text-[11px] text-muted-foreground">Las minutas no traen estimación; se usa este promedio.</p>
+          </div>
+
+          <div className="space-y-1.5">
+            <Label className="text-xs">Tus tiempos por tipo de tarea (min)</Label>
+            <div className="grid grid-cols-2 gap-2">
+              {(
+                [
+                  ["comms", "Mails y seguimiento"],
+                  ["review", "Revisar / analizar"],
+                  ["config", "Configurar / ajustar"],
+                  ["build", "Desarrollo / pruebas"],
+                ] as const
+              ).map(([k, label]) => (
+                <label key={k} className="space-y-1 text-[11px] text-muted-foreground">
+                  {label}
+                  <input
+                    type="number"
+                    min={5}
+                    max={480}
+                    step={5}
+                    className={inputClass}
+                    value={(v.estimateGuide ?? DEFAULT_ESTIMATE_GUIDE)[k]}
+                    onChange={(e) => setV({ ...v, estimateGuide: { ...(v.estimateGuide ?? DEFAULT_ESTIMATE_GUIDE), [k]: Number(e.target.value) } })}
+                  />
+                </label>
+              ))}
+            </div>
+            <p className="text-[11px] text-muted-foreground">
+              Mails y seguimiento usan este tiempo tal cual; en el resto la IA ajusta entre 0,75× y 1,5× según la complejidad. Lo que corrijas a mano en un accionable manda.
+            </p>
           </div>
 
           <div className="space-y-1.5">

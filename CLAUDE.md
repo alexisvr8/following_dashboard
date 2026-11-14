@@ -311,7 +311,10 @@ válido mientras `statusKey` de la entrada coincida; si no, vuelve a reglas). Co
 ("con lo que veníamos conversando"), secciones "Lo que avanzamos / En lo que estamos trabajando / Lo que necesitamos de su lado…";
 `effort: "low"`; en la sync no redacta si tildaste hace <20 min ni más de 1 vez cada 3 h por cuenta (Actualizar = `force`).
 **Estimación con IA**: `minutos_estimados` en el JSON de la minuta (accionables nuevos) y del análisis (todos los abiertos debo) →
-`client.aiEstimate` (ticketId → min, múltiplos de 5); `plannedItems`: manual → IA (`estimateSource: "ai"`) → aprendida → default; Capacidad la usa.
+`client.aiEstimate` (ticketId → min, múltiplos de 5). `plannedItems`: manual → aprendida (parecido que corregiste) → **tus tiempos por tipo**
+(`settings.estimateGuide` {comms 15, review 20, config 45, build 60}, ⚙ de Capacidad; `taskKind` por verbo en `lib/utils/task-kind.ts`, mails/
+follow-up = comms): comms usa tu tiempo fijo (`guide`); review/config/build usan la IA acotada a 0,75–1,5× tu tiempo (`guidedMinutes`) → default.
+Los prompts reciben tus tiempos (`guideText`). Capacidad reparte solo lo vencido + lo que vence dentro de la semana planificada (`planEnd`).
 **Lunes** (`scheduler.ts`, estado `app_state.weekly_ai`, `lib/store/weekly-ai-store.ts`): `CRON_ANALYSIS_AT` (07:00) sync + `analyzeAccounts`;
 `CRON_DIGEST_AT` (08:00) resumen **enviado** solo a `ownerEmail` (`deliverWeeklyDigest`; `WEEKLY_DIGEST=draft` = borrador; una vez por
 semana, `pnpm digest:send [-- --force]` a mano; si el server no estaba prendido, corre apenas se levante ese lunes o cualquier día hábil

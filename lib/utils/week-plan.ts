@@ -286,8 +286,11 @@ export function computeWeekPlan(
 
   // ---- accionables pendientes: uno por uno, por fecha de entrega (deadlines.ts) ----
   const items = plannedItems(clients, settings, now, new Map([...nextMeeting].map(([id, at]) => [id, new Date(at).toISOString()])));
+  // Solo lo vencido y lo que vence dentro de la semana planificada: lo de más adelante se reparte en su semana
+  // (sigue en `items` para el tablero de /accionables).
+  const planEnd = new Date(start.getTime() + 7 * 86_400_000).toISOString();
   const queue = items
-    .filter((i) => i.side === "debo")
+    .filter((i) => i.side === "debo" && i.due < planEnd)
     .map((i) => ({ item: i, left: Math.max(MIN, i.estimateMinutes * MIN), finishAt: null as number | null }));
   const allTasks = [...queue];
 

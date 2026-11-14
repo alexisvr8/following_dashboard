@@ -8,6 +8,7 @@ import { isAutoTicket } from "@/lib/utils/auto-ticket";
 import { keywordSimilarity } from "@/lib/utils/mail-classify";
 import { addBusinessDays, parseStep, rollToWorkday, type StepDue } from "@/lib/utils/gemini-notes-parser";
 import { ACCOUNT_PRIORITY_RANK, accountPriority } from "@/lib/utils/account-priority";
+import { DEFAULT_ESTIMATE_GUIDE, guidedMinutes, taskKind } from "@/lib/utils/task-kind";
 
 // Plazo de cada accionable pendiente (meta: cerrar todo dentro de la semana hábil con el cliente).
 // Fecha, por orden: manual (`client.actionableDue`) → acordada (dicha en la reunión o el mail, resuelta
@@ -51,7 +52,8 @@ export interface PlannedItem {
   estimateMinutes: number;
   estimateManual: boolean;
   /** De dónde sale la estimación: manual, aprendida de un accionable parecido o el default. */
-  estimateSource: "manual" | "ai" | "learned" | "default";
+  /** manual → aprendida de un parecido que corregiste → tus tiempos por tipo (`guide`) / IA acotada → default. */
+  estimateSource: "manual" | "learned" | "guide" | "ai" | "default";
   /** Accionable parecido del que se aprendió la estimación. */
   estimateFrom?: string;
   sideManual: boolean;
@@ -342,8 +344,12 @@ export function plannedItems(
       dueKind = "target";
     }
     const estimate = c.actionableEstimate?.[r.id];
-    const aiMinutes = estimate == null ? c.aiEstimate?.[r.id] : undefined;
     const fromLearned = estimate == null ? learnEstimate(r) : null;
+    // Tus correcciones mandan; después tus tiempos por tipo de tarea, con la IA ajustando dentro de un rango.
+    const guided =
+      estimate == null && !fromLearned
+        ? guidedMinutes(taskKind(r.title, r.kind === "step" || r.kind === "custom" ? null : "reply"), c.aiEstimate?.[r.id], settings.estimateGuide ?? DEFAULT_ESTIMATE_GUIDE)
+        : null;
     const sideOverride = c.actionableSide?.[r.id];
     const base = {
       bucket: bucketOf(due, limit, dueKind, now),
@@ -371,9 +377,9 @@ export function plannedItems(
       dueLabel: label(due),
       dueKind,
       limit: limit.toISOString(),
-      estimateMinutes: estimate ?? aiMinutes ?? fromLearned?.minutes ?? defaultMinutes,
+      estimateMinutes: estimate ?? fromLearned?.minutes ?? guided?.minutes ?? defaultMinutes,
       estimateManual: estimate != null,
-      estimateSource: estimate != null ? "manual" : aiMinutes ? "ai" : fromLearned ? "learned" : "default",
+      estimateSource: estimate != null ? "manual" : fromLearned ? "learned" : guided ? guided.source : "default",
       ...(fromLearned && { estimateFrom: fromLearned.title }),
       sideManual: sideOverride != null,
       priority: c.profile?.attention ? "alta" : bumpForAccount(priorityOf(base, now, workDays), accountLevel.get(c.id) ?? "media"),

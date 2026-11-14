@@ -48,6 +48,8 @@ export interface AnalysisInput {
   manualPriority: string | null;
   /** Cuenta "Más atención" (cliente exigente). */
   attention: boolean;
+  /** "mails y seguimiento 15 min · revisar 20 min · …" (tiempos de referencia del PM). */
+  estimateGuide?: string;
   notes: string | null;
   basis: AnalysisBasis;
   /** "02/11/2026": desde cuándo se leyeron los mails. */
@@ -84,6 +86,7 @@ export function buildAnalysisMessage(input: AnalysisInput): string {
     `Próxima reunión agendada: ${input.nextMeeting ?? "ninguna"}`,
     ...(input.erp ? [`ERP: ${input.erp}`] : []),
     ...(input.attention ? ["MÁS ATENCIÓN: cliente exigente marcado por el PM (ver reglas)"] : []),
+    ...(input.estimateGuide ? [`Tiempos de referencia del PM: ${input.estimateGuide}`] : []),
     ...(input.manualPriority ? [`Prioridad marcada por el PM: ${input.manualPriority}`] : []),
     ...(input.notes ? [`Notas del PM: ${input.notes}`] : []),
   ];

@@ -11,6 +11,7 @@ import {
 } from "@/lib/store/clients-store";
 import { getSettings, type WorkSettings } from "@/lib/store/settings-store";
 import { accountActionables } from "@/lib/utils/actionables";
+import { DEFAULT_ESTIMATE_GUIDE, guideText } from "@/lib/utils/task-kind";
 import { applyCorrections, splitNotesAndTranscript } from "@/lib/utils/transcript";
 
 // Mail post-reunión con IA: en cada sync, para las reuniones recientes de cuentas asignadas que todavía no
@@ -68,6 +69,7 @@ export function buildPostMeetingInput(
       .map((a) => a.step),
     corrections: settings.corrections.map((c) => ({ from: c.from, to: c.to })),
     erp: client.profile?.erp ?? null,
+    estimateGuide: guideText(settings.estimateGuide ?? DEFAULT_ESTIMATE_GUIDE),
     notes,
     transcript,
   };
