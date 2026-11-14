@@ -5,6 +5,10 @@ import { GET as getNotionStatus } from "@/app/api/integrations/notion/route";
 import { GET as getXtractStatus } from "@/app/api/integrations/xtract/route";
 import { GET as getGeminiNotesStatus } from "@/app/api/integrations/gemini-notes/route";
 import type { IntegrationStatus } from "@/types/integration";
+import { AIUsageCard } from "@/components/conexiones/AIUsageCard";
+import { aiEnabled, postMeetingModel } from "@/lib/llm/postmeeting";
+import { getAIUsage } from "@/lib/store/ai-usage-store";
+import { summarizeAIUsage } from "@/lib/utils/ai-usage-summary";
 
 // El estado depende de .data/google-tokens.json (archivo local, no cacheable):
 // forzamos render dinámico.
@@ -22,7 +26,9 @@ async function loadIntegrations(): Promise<IntegrationStatus[]> {
 }
 
 export default async function ConexionesPage() {
-  const integrations = await loadIntegrations();
+  const [integrations, usage] = await Promise.all([loadIntegrations(), getAIUsage().catch(() => [])]);
+  const now = new Date();
+  const month = summarizeAIUsage(usage, 30, now);
 
   return (
     <div className="space-y-6 px-6 py-8">
@@ -34,6 +40,13 @@ export default async function ConexionesPage() {
         </p>
       </div>
       <IntegrationsGrid integrations={integrations} />
+      <AIUsageCard
+        enabled={aiEnabled()}
+        model={postMeetingModel()}
+        today={month.byDay[now.toLocaleDateString("en-CA")]}
+        week={summarizeAIUsage(usage, 7, now)}
+        month={month}
+      />
     </div>
   );
 }
