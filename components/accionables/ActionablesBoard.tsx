@@ -1,6 +1,6 @@
 "use client";
 
-import { useMemo, useRef, useState } from "react";
+import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import {
@@ -42,6 +42,8 @@ import {
   addWorkdays,
   carriedAge,
   boardGroups,
+  groupOf,
+  type BoardGroup,
   movedItem,
   MAIL_ACTION_LABEL,
   isMailItem,
@@ -100,7 +102,9 @@ export function ActionablesBoard({
   people,
   corrections,
   mailPanels,
+  boardOrder,
 }: {
+  boardOrder?: Record<string, number>;
   rewrites?: RewriteItem[];
   mailPanels: Record<string, FollowupPanelData>;
   initialView: View;
@@ -130,6 +134,9 @@ export function ActionablesBoard({
   const [expandedId, setExpandedId] = useState<string | null>(null);
   const [dragId, setDragId] = useState<string | null>(null);
   const [overCol, setOverCol] = useState<string | null>(null);
+  // Orden manual del tablero (arrastrar dentro de la columna): ticketId → posición en su grupo.
+  const [order, setOrder] = useState<Record<string, number>>(boardOrder ?? {});
+  const [dropIndex, setDropIndex] = useState<number | null>(null);
   const now = useMemo(() => new Date(nowIso), [nowIso]);
 
   const changeView = (v: View) => {
@@ -259,6 +266,121 @@ export function ActionablesBoard({
   }
 
   const dragItem = dragId ? (open.find((i) => i.id === dragId) ?? null) : null;
+
+  // Motion del traspaso (FLIP). Mientras se arrastra, la card real sigue al cursor (overlay `floatRef`, sin la
+  // imagen nativa del navegador) y las cards de la columna destino se corren para hacerle lugar a la vista previa.
+  // En cada render se guarda la posición de layout (`offsetLeft/Top`, relativa al tablero) de cada card; si cambió
+  // durante un arrastre, se anima desde la posición anterior. Al soltar, la card vuela desde el cursor a su lugar
+  // (si se suelta fuera de una columna válida, vuelve a la suya). Respeta prefers-reduced-motion.
+  const boardRef = useRef<HTMLDivElement>(null);
+  const floatRef = useRef<HTMLUListElement>(null);
+  const grabOffset = useRef({ x: 0, y: 0 });
+  const [dragGeom, setDragGeom] = useState<{ w: number; x: number; y: number } | null>(null);
+  const layoutPos = useRef(new Map<string, { x: number; y: number }>());
+  const animateNext = useRef(false);
+  const flyFrom = useRef<{ id: string; x: number; y: number } | null>(null);
+  const dropped = useRef(false);
+  const emptyImg = useRef<HTMLImageElement | null>(null);
+  useEffect(() => {
+    const img = new Image();
+    img.src = "data:image/gif;base64,R0lGODlhAQABAIAAAAAAAP///yH5BAEAAAAALAAAAAABAAEAAAIBRAA7";
+    emptyImg.current = img;
+  }, []);
+  useEffect(() => {
+    if (!dragId) return;
+    const onOver = (e: DragEvent) => {
+      const el = floatRef.current;
+      if (!el || (e.clientX === 0 && e.clientY === 0)) return;
+      el.style.transform = `translate(${e.clientX - grabOffset.current.x}px, ${e.clientY - grabOffset.current.y}px) rotate(2deg) scale(1.03)`;
+    };
+    document.addEventListener("dragover", onOver);
+    return () => document.removeEventListener("dragover", onOver);
+  }, [dragId]);
+  function flyFromPointer(id: string, clientX: number, clientY: number) {
+    const b = boardRef.current?.getBoundingClientRect();
+    if (b) flyFrom.current = { id, x: clientX - grabOffset.current.x - b.left, y: clientY - grabOffset.current.y - b.top };
+    animateNext.current = true;
+  }
+  useLayoutEffect(() => {
+    const board = boardRef.current;
+    if (!board) {
+      layoutPos.current = new Map();
+      return;
+    }
+    const prev = layoutPos.current;
+    const next = new Map<string, { x: number; y: number }>();
+    const animate =
+      (dragId !== null || animateNext.current) && !window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+    const fly = flyFrom.current;
+    animateNext.current = false;
+    flyFrom.current = null;
+    const b = board.getBoundingClientRect();
+    const easing = "cubic-bezier(0.2, 0, 0, 1)";
+    board.querySelectorAll<HTMLElement>("[data-card-id]").forEach((el) => {
+      const id = el.dataset.cardId!;
+      // Oculta (la card de origen mientras se reordena en su columna): conserva su última posición visible.
+      if (el.offsetParent === null) {
+        const p = prev.get(id);
+        if (p) next.set(id, p);
+        return;
+      }
+      const pos = { x: el.offsetLeft, y: el.offsetTop };
+      next.set(id, pos);
+      if (!animate) return;
+      const isFly = fly?.id === id;
+      let from: { x: number; y: number };
+      if (isFly) from = fly;
+      else {
+        const p = prev.get(id);
+        if (!p) {
+          // La vista previa entra con un fade corto.
+          if (id.startsWith("ghost:"))
+            el.animate([{ opacity: 0, transform: "scale(0.96)" }, { opacity: 1, transform: "none" }], { duration: 200, easing });
+          return;
+        }
+        // Si ya se estaba moviendo, parte de donde se ve ahora (no de su layout anterior "puro").
+        const r = el.getBoundingClientRect();
+        from = { x: p.x + (r.left - b.left - pos.x), y: p.y + (r.top - b.top - pos.y) };
+      }
+      const dx = from.x - pos.x;
+      const dy = from.y - pos.y;
+      if (Math.abs(dx) < 1 && Math.abs(dy) < 1) return;
+      el.getAnimations().forEach((a) => a.id === "flip" && a.cancel());
+      if (isFly) {
+        el.style.position = "relative";
+        el.style.zIndex = "20";
+      }
+      const anim = el.animate(
+        isFly
+          ? [
+              { transform: `translate(${dx}px, ${dy}px) rotate(2deg) scale(1.03)`, boxShadow: "var(--shadow-popover)" },
+              { transform: "none", boxShadow: "none" },
+            ]
+          : [{ transform: `translate(${dx}px, ${dy}px)` }, { transform: "none" }],
+        { id: "flip", duration: isFly ? 360 : 260, easing },
+      );
+      if (isFly)
+        anim.onfinish = anim.oncancel = () => {
+          el.style.position = "";
+          el.style.zIndex = "";
+        };
+    });
+    layoutPos.current = next;
+  });
+
+  function saveOrder(patch: Record<string, number>) {
+    setOrder((o) => ({ ...o, ...patch }));
+    void fetch("/api/board-order", {
+      method: "PUT",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ order: patch, keep: items.map((i) => i.id) }),
+    })
+      .then((r) => {
+        if (!r.ok) throw new Error(String(r.status));
+      })
+      .catch(() => setMoveError("No se pudo guardar el orden del tablero (queda solo en esta pantalla)."));
+  }
+
   async function moveTo(item: PlannedItem, bucket: Bucket, day: string) {
     setMoved((m) => ({ ...m, [item.id]: { bucket, day, saved: false } }));
     setLandedId(item.id);
@@ -295,11 +417,21 @@ export function ActionablesBoard({
     onDragStart: (e: React.DragEvent) => {
       e.dataTransfer.effectAllowed = "move";
       e.dataTransfer.setData("text/plain", i.id);
+      const r = (e.currentTarget as HTMLElement).getBoundingClientRect();
+      grabOffset.current = { x: e.clientX - r.left, y: e.clientY - r.top };
+      if (emptyImg.current) e.dataTransfer.setDragImage(emptyImg.current, 0, 0);
+      dropped.current = false;
+      setDragGeom({ w: r.width, x: r.left, y: r.top });
       setDragId(i.id);
     },
-    onDragEnd: () => {
+    onDragEnd: (e: React.DragEvent) => {
+      // Soltada fuera de una columna válida: vuelve a su lugar desde donde quedó.
+      if (!dropped.current && (e.clientX !== 0 || e.clientY !== 0)) flyFromPointer(i.id, e.clientX, e.clientY);
+      else animateNext.current = true;
+      dropped.current = false;
       setDragId(null);
       setOverCol(null);
+      setDropIndex(null);
     },
   });
 
@@ -461,20 +593,53 @@ export function ActionablesBoard({
           No hay accionables con estos filtros.
         </p>
       ) : view === "board" ? (
-        <div className="grid items-start gap-3 md:grid-cols-2 xl:grid-cols-5">
+        <div ref={boardRef} className="relative grid items-start gap-3 md:grid-cols-2 xl:grid-cols-5">
+          {dragItem && dragGeom && (
+            <ul
+              ref={floatRef}
+              aria-hidden
+              className="pointer-events-none fixed left-0 top-0 z-50 origin-top-left rounded-lg bg-card"
+              style={{ width: dragGeom.w, transform: `translate(${dragGeom.x}px, ${dragGeom.y}px) rotate(2deg) scale(1.03)` }}
+            >
+              <ItemCard
+                item={dragItem}
+                busy={false}
+                expanded={false}
+                compact={density === "compact"}
+                nowMs={now.getTime()}
+                workDays={workDays}
+                onToggle={noop}
+                onEdit={noop}
+                onAct={noop}
+                onUndo={noop}
+                drag={NO_DRAG}
+                dragging={false}
+                floating
+              />
+            </ul>
+          )}
           {COLUMNS.map((col) => {
-            const target = dragItem && dragItem.bucket !== col.key ? dropDue(col.key, now, workDays) : null;
+            // Misma columna = reordenar; otra columna = cambiar la fecha (y quedar en la posición donde se suelta).
+            const own = dragItem?.bucket === col.key;
+            const target = dragItem && !own ? dropDue(col.key, now, workDays) : null;
+            const accepts = !!dragItem && (own || !!target);
+            const isOver = accepts && overCol === col.key;
             // Vista previa: mientras se arrastra encima, la card aparece (punteada) donde va a quedar.
-            const preview = overCol === col.key && dragItem && target ? movedItem(dragItem, col.key, target, now, workDays) : null;
-            const list = visible.filter((i) => i.bucket === col.key).concat(preview ? [preview] : []);
+            const preview = isOver && dragItem ? (own ? { ...dragItem } : movedItem(dragItem, col.key, target!, now, workDays)) : null;
+            const base = visible.filter((i) => i.bucket === col.key);
+            const insert = preview && dropIndex !== null ? insertAt(base, preview, dropIndex, order) : null;
+            const colOrder = insert ? { ...order, ...insert } : order;
+            const list = preview ? base.concat([preview]) : base;
             return (
               <section
                 key={col.key}
                 onDragOver={(e) => {
-                  if (!target) return;
+                  if (!accepts || !dragItem) return;
                   e.preventDefault();
                   e.dataTransfer.dropEffect = "move";
                   if (overCol !== col.key) setOverCol(col.key);
+                  const idx = dropSlot(e.currentTarget, e.clientY, groupOf(dragItem), dragItem.id);
+                  if (idx !== dropIndex) setDropIndex(idx);
                 }}
                 onDragLeave={(e) => {
                   if (!e.currentTarget.contains(e.relatedTarget as Node | null)) setOverCol((c) => (c === col.key ? null : c));
@@ -483,17 +648,22 @@ export function ActionablesBoard({
                   e.preventDefault();
                   const item = dragItem;
                   setOverCol(null);
+                  setDropIndex(null);
                   setDragId(null);
-                  if (item && target) void moveTo(item, col.key, target);
+                  if (!item || !accepts) return;
+                  dropped.current = true;
+                  flyFromPointer(item.id, e.clientX, e.clientY);
+                  if (insert) saveOrder(insert);
+                  if (target) void moveTo(item, col.key, target);
                 }}
                 className={cn(
                   "flex min-w-0 flex-col gap-2 rounded-xl border border-border bg-surface p-2 transition-colors",
-                  dragItem && !target && "opacity-60",
-                  overCol === col.key && "border-ring bg-accent/60",
+                  dragItem && !accepts && "opacity-60",
+                  isOver && target && "border-ring bg-accent/60",
                 )}
               >
-                <ColumnHeader label={col.label} tone={col.tone} items={list} />
-                {overCol === col.key && target && (
+                <ColumnHeader label={col.label} tone={col.tone} items={own ? base : list} />
+                {isOver && target && (
                   <p className="rounded-md border border-dashed border-ring px-2 py-1.5 text-center text-label-sm text-foreground">
                     Soltar → entrega {fmtShortDate(`${target}T12:00:00`)}
                   </p>
@@ -504,12 +674,14 @@ export function ActionablesBoard({
                   <ul className="flex flex-col gap-1.5">
                     <Grouped
                       items={list}
+                      order={colOrder}
                       render={(i) => (
                         <ItemCard
-                          key={i.id}
+                          key={i === preview ? "ghost" : i.id}
                           {...itemProps(i)}
                           drag={dragProps(i)}
                           dragging={dragId === i.id && i !== preview}
+                          collapsed={own && !!preview && dragId === i.id && i !== preview}
                           ghost={i === preview}
                           landed={landedId === i.id}
                           onLanded={() => setLandedId((cur) => (cur === i.id ? null : cur))}
@@ -531,7 +703,7 @@ export function ActionablesBoard({
               <section key={col.key} className="space-y-1.5">
                 <ColumnHeader label={col.label} tone={col.tone} items={list} />
                 <ul className="divide-y divide-border overflow-hidden rounded-xl border border-border bg-card">
-                  <Grouped items={list} render={(i) => <ItemRow key={i.id} {...itemProps(i)} />} />
+                  <Grouped items={list} order={order} render={(i) => <ItemRow key={i.id} {...itemProps(i)} />} />
                 </ul>
               </section>
             );
@@ -629,12 +801,41 @@ type Closing = "done" | "remove";
 type DragProps = {
   draggable: boolean;
   onDragStart: (e: React.DragEvent) => void;
-  onDragEnd: () => void;
+  onDragEnd: (e: React.DragEvent) => void;
 };
+const noop = () => {};
+
+/** Posición (dentro de su grupo) donde caería la card según el cursor: cuántas cards del grupo quedan arriba. */
+function dropSlot(section: HTMLElement, clientY: number, group: BoardGroup, dragId: string): number {
+  let n = 0;
+  section.querySelectorAll<HTMLElement>(`[data-card-id][data-group="${group}"]`).forEach((el) => {
+    const id = el.dataset.cardId!;
+    if (id === dragId || id.startsWith("ghost:")) return;
+    const r = el.getBoundingClientRect();
+    if (r.height > 0 && clientY > r.top + r.height / 2) n++;
+  });
+  return n;
+}
+
+/** Orden del grupo de `item` en la columna con `item` en la posición `index` (todo el grupo pasa a orden manual). */
+function insertAt(base: PlannedItem[], item: PlannedItem, index: number, order: Record<string, number>): Record<string, number> {
+  const seq = boardGroups(base.filter((i) => i.id !== item.id), order)[groupOf(item)];
+  seq.splice(Math.min(index, seq.length), 0, item);
+  return Object.fromEntries(seq.map((i, k) => [i.id, k]));
+}
+const NO_DRAG: DragProps = { draggable: false, onDragStart: noop, onDragEnd: noop };
 
 /** Atención → Arrastrados → Nuevos (`boardGroups`), con subtítulo cuando conviven 2 o más grupos. */
-function Grouped({ items, render }: { items: PlannedItem[]; render: (i: PlannedItem) => React.ReactNode }) {
-  const { attention, carried, fresh } = boardGroups(items);
+function Grouped({
+  items,
+  order,
+  render,
+}: {
+  items: PlannedItem[];
+  order?: Record<string, number>;
+  render: (i: PlannedItem) => React.ReactNode;
+}) {
+  const { attention, carried, fresh } = boardGroups(items, order);
   const split = [attention, carried, fresh].filter((g) => g.length > 0).length > 1;
   const label = (text: string, n: number, tone: "attention" | "carried" | "muted") => (
     <li
@@ -798,22 +999,36 @@ function Chevron({ expanded }: { expanded: boolean }) {
   return <ChevronDown className={cn("size-3.5 shrink-0 text-subtle-foreground transition-transform", expanded && "rotate-180")} />;
 }
 
-function ItemCard(props: ItemProps & { drag: DragProps; dragging: boolean; ghost?: boolean; landed?: boolean; onLanded?: () => void }) {
-  const { item, busy, expanded, compact, nowMs, onToggle, drag, dragging, ghost, landed } = props;
+function ItemCard(
+  props: ItemProps & {
+    drag: DragProps;
+    dragging: boolean;
+    ghost?: boolean;
+    floating?: boolean;
+    collapsed?: boolean;
+    landed?: boolean;
+    onLanded?: () => void;
+  },
+) {
+  const { item, busy, expanded, compact, nowMs, onToggle, drag, dragging, ghost, floating, collapsed, landed } = props;
   const OriginIcon = item.originKind === "mail" ? Mail : Users;
   const toggle = () => onToggle(item.id);
   const tone = cardTone(item) ?? "none";
   return (
     <li
-      {...(ghost ? {} : drag)}
-      aria-hidden={ghost || undefined}
+      {...(ghost || floating ? {} : drag)}
+      aria-hidden={ghost || floating || undefined}
+      data-card-id={floating ? undefined : ghost ? `ghost:${item.bucket}` : item.id}
+      data-group={groupOf(item)}
       onAnimationEnd={landed ? props.onLanded : undefined}
       className={cn(
         "rounded-lg border border-l-2 transition-[opacity,transform,border-color,background-color] duration-150",
         TONE_CARD[tone],
         expanded ? "shadow-highlight" : "hover:border-border-strong",
         busy && "opacity-60",
-        dragging && "scale-[0.98] opacity-40",
+        dragging && "scale-[0.98] border-dashed opacity-30",
+        floating && "shadow-popover",
+        collapsed && "hidden",
         ghost && "pointer-events-none border-dashed border-ring opacity-60",
         landed && "motion-safe:animate-card-landed",
       )}

@@ -9,6 +9,7 @@ import { getClientsFileCached, getSettingsCached } from "@/lib/server/cached-dat
 import { computeWeekPlan, hasWorkLeftThisWeek, planWeekBounds } from "@/lib/utils/week-plan";
 import { pendingSuggestions } from "@/lib/utils/deadlines";
 import { pendingRewrites } from "@/lib/utils/account-analysis";
+import { getBoardOrder } from "@/lib/store/board-order-store";
 
 // Tablero de accionables por plazo: cada pendiente de las cuentas asignadas con su fecha de entrega
 // (manual → acordada en la reunión/mail → meta interna de N días hábiles), estimación y prioridad.
@@ -16,7 +17,12 @@ import { pendingRewrites } from "@/lib/utils/account-analysis";
 export const dynamic = "force-dynamic";
 
 export default async function AccionablesPage() {
-  const [{ clients, ownerEmail }, settings, jar] = await Promise.all([getClientsFileCached(), getSettingsCached(), cookies()]);
+  const [{ clients, ownerEmail }, settings, jar, boardOrder] = await Promise.all([
+    getClientsFileCached(),
+    getSettingsCached(),
+    cookies(),
+    getBoardOrder().catch(() => ({})),
+  ]);
   const initialView = jar.get(VIEW_COOKIE)?.value === "list" ? "list" : "board";
   const initialDensity = jar.get(DENSITY_COOKIE)?.value === "compact" ? "compact" : "comfy";
   const now = new Date();
@@ -65,6 +71,7 @@ export default async function AccionablesPage() {
         workDays={settings.workDays}
         targetDays={settings.targetBusinessDays}
         limitDays={settings.limitBusinessDays}
+        boardOrder={boardOrder}
       />
     </div>
   );
