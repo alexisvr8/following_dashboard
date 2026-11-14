@@ -21,7 +21,8 @@ export type StateKey =
   | "google_tokens"
   | "notion_tokens"
   | "weekly_ai"
-  | "ai_usage";
+  | "ai_usage"
+  | "board_order";
 
 /** Archivo local equivalente a cada clave (modo `file`). */
 const STATE_FILES: Partial<Record<StateKey, string>> = {
@@ -31,6 +32,7 @@ const STATE_FILES: Partial<Record<StateKey, string>> = {
   notion_tokens: "notion-tokens.json",
   weekly_ai: "weekly-ai.json",
   ai_usage: "ai-usage.json",
+  board_order: "board-order.json",
 };
 
 /** Lee una clave de `app_state` (o su archivo). `null` si no existe. */

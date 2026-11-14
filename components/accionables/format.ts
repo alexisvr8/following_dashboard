@@ -102,12 +102,28 @@ const byPriority = (a: PlannedItem, b: PlannedItem) =>
 /**
  * Grupos de cada columna / sección (solo visual; Capacidad sigue con `compareItems`): primero las cuentas de
  * "Más atención", después los arrastrados y al final los nuevos; dentro de cada grupo por prioridad y luego fecha.
+ * `order` = orden manual (arrastrar dentro de la columna): lo ordenado a mano va según su posición y lo que nunca
+ * se ordenó (nuevo) queda arriba, por prioridad.
  */
-export function boardGroups(items: PlannedItem[]): { attention: PlannedItem[]; carried: PlannedItem[]; fresh: PlannedItem[] } {
+export type BoardGroup = "attention" | "carried" | "fresh";
+export const groupOf = (i: PlannedItem): BoardGroup => (i.attention ? "attention" : i.carried ? "carried" : "fresh");
+
+export function boardGroups(
+  items: PlannedItem[],
+  order?: Record<string, number>,
+): { attention: PlannedItem[]; carried: PlannedItem[]; fresh: PlannedItem[] } {
+  const cmp = (a: PlannedItem, b: PlannedItem) => {
+    const ra = order?.[a.id];
+    const rb = order?.[b.id];
+    if (ra !== undefined && rb !== undefined) return ra - rb || byPriority(a, b);
+    if (ra !== undefined) return 1;
+    if (rb !== undefined) return -1;
+    return byPriority(a, b);
+  };
   return {
-    attention: items.filter((i) => i.attention).sort(byPriority),
-    carried: items.filter((i) => !i.attention && i.carried).sort(byPriority),
-    fresh: items.filter((i) => !i.attention && !i.carried).sort(byPriority),
+    attention: items.filter((i) => groupOf(i) === "attention").sort(cmp),
+    carried: items.filter((i) => groupOf(i) === "carried").sort(cmp),
+    fresh: items.filter((i) => groupOf(i) === "fresh").sort(cmp),
   };
 }
 
