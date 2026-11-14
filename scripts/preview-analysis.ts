@@ -66,7 +66,7 @@ async function main() {
     const pre = buildAnalysisInput(client, settings, threads, now, nextAt);
     writeFileSync(`${base}.input.txt`, buildAnalysisMessage(pre.input), "utf8");
     const t1 = Date.now();
-    const res = await generateAccountAnalysis(pre.input);
+    const res = await generateAccountAnalysis(pre.input, { clientId: client.id, clientName: client.name, trigger: "preview" });
     output = res.output;
     usage = res.usage;
     console.log(`Claude (${postMeetingModel()}): ${Date.now() - t1} ms · ${JSON.stringify(usage)}`);

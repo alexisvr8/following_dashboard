@@ -3,6 +3,7 @@ import { zodOutputFormat } from "@anthropic-ai/sdk/helpers/zod";
 import { ACCOUNT_ANALYSIS_SYSTEM_PROMPT } from "@/lib/llm/account-analysis-prompt";
 import { AccountAnalysisSchema, type AccountAnalysisOutput } from "@/lib/llm/account-analysis-schema";
 import { postMeetingModel } from "@/lib/llm/postmeeting";
+import { recordResponse, type UsageMeta } from "@/lib/store/ai-usage-store";
 
 // Análisis semanal de UNA cuenta: última reunión + tablero + trazabilidad completa de mails → JSON fijo
 // (`AccountAnalysisSchema`). Mismo modelo y clave que el mail post-reunión (`ANTHROPIC_MODEL`).
@@ -131,15 +132,17 @@ export interface AnalysisUsage {
   cache_creation_input_tokens?: number | null;
 }
 
-export async function generateAccountAnalysis(input: AnalysisInput): Promise<{ output: AccountAnalysisOutput; usage: AnalysisUsage }> {
+export async function generateAccountAnalysis(input: AnalysisInput, meta?: UsageMeta): Promise<{ output: AccountAnalysisOutput; usage: AnalysisUsage }> {
   const client = new Anthropic();
+  const model = postMeetingModel();
   const response = await client.messages.parse({
-    model: postMeetingModel(),
+    model,
     max_tokens: 16000,
     system: [{ type: "text", text: ACCOUNT_ANALYSIS_SYSTEM_PROMPT, cache_control: { type: "ephemeral" } }],
     messages: [{ role: "user", content: buildAnalysisMessage(input) }],
     output_config: { format: zodOutputFormat(AccountAnalysisSchema) },
   });
+  await recordResponse("analysis", model, response, meta);
   if (response.stop_reason === "refusal") throw new Error("modelo_rechazo");
   if (response.stop_reason === "max_tokens") throw new Error("respuesta_cortada");
   if (!response.parsed_output) throw new Error("json_invalido");

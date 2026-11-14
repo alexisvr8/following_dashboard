@@ -2,6 +2,7 @@ import Anthropic from "@anthropic-ai/sdk";
 import { zodOutputFormat } from "@anthropic-ai/sdk/helpers/zod";
 import { z } from "zod";
 import { postMeetingModel } from "@/lib/llm/postmeeting";
+import { recordResponse, type UsageMeta } from "@/lib/store/ai-usage-store";
 
 // Mail de seguimiento (actualización de avance) redactado con Claude. La app decide QUÉ va (hecho / pendiente /
 // de quién, por lo tildado) y la IA solo redacta: apertura, versión corta de cada punto y cierre. El estado de
@@ -64,16 +65,18 @@ export function buildStatusMessage(input: StatusMailInput): string {
   ].join("\n\n");
 }
 
-export async function generateStatusMail(input: StatusMailInput): Promise<StatusMailOutput> {
+export async function generateStatusMail(input: StatusMailInput, meta?: UsageMeta): Promise<StatusMailOutput> {
   const client = new Anthropic();
+  const model = postMeetingModel();
   const response = await client.messages.parse({
-    model: postMeetingModel(),
+    model,
     max_tokens: 4000,
     system: [{ type: "text", text: SYSTEM, cache_control: { type: "ephemeral" } }],
     messages: [{ role: "user", content: buildStatusMessage(input) }],
     // Redacción corta sobre datos ya decididos: esfuerzo bajo (menos razonamiento = menos tokens de salida).
     output_config: { format: zodOutputFormat(StatusMailSchema), effort: "low" },
   });
+  await recordResponse("status", model, response, meta);
   if (response.stop_reason === "refusal") throw new Error("modelo_rechazo");
   if (response.stop_reason === "max_tokens") throw new Error("respuesta_cortada");
   if (!response.parsed_output) throw new Error("json_invalido");

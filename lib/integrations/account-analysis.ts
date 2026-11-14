@@ -65,7 +65,8 @@ async function run({ ids, force = false, now = new Date() }: { ids?: string[]; f
       const { since, basis } = analysisWindow(client, now);
       const mails = await collectAccountThreads(gmail, client, ownerEmail, shared, since.getTime());
       const { input, refs, refTexts, rewritable, existing } = buildAnalysisInput(client, settings, mails.threads, now, upcoming.get(client.id) ?? null);
-      const output = sanitizeRefs((await generateAccountAnalysis(input)).output, refs, rewritable);
+      const meta = { clientId: client.id, clientName: client.name, trigger: force ? "reanalizar" : "semanal" };
+      const output = sanitizeRefs((await generateAccountAnalysis(input, meta)).output, refs, rewritable);
       const added = await setAccountAnalysis(
         client.id,
         {

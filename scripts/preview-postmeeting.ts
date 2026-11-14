@@ -42,7 +42,7 @@ async function main() {
       erp: arg("erp") ?? null,
       notes,
       transcript,
-    });
+    }, { clientName: client, trigger: "preview" });
     writeFileSync(out.replace(/\.html?$/, "") + ".json", JSON.stringify(data, null, 2), "utf8");
     source = `Generado ahora con ${postMeetingModel()} desde ${arg("doc")}`;
   } else {
