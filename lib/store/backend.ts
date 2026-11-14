@@ -19,7 +19,8 @@ export type StateKey =
   | "settings"
   | "sync_status"
   | "google_tokens"
-  | "notion_tokens";
+  | "notion_tokens"
+  | "weekly_ai";
 
 /** Archivo local equivalente a cada clave (modo `file`). */
 const STATE_FILES: Partial<Record<StateKey, string>> = {
@@ -27,6 +28,7 @@ const STATE_FILES: Partial<Record<StateKey, string>> = {
   sync_status: "sync-status.json",
   google_tokens: "google-tokens.json",
   notion_tokens: "notion-tokens.json",
+  weekly_ai: "weekly-ai.json",
 };
 
 /** Lee una clave de `app_state` (o su archivo). `null` si no existe. */

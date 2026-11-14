@@ -8,6 +8,7 @@ import { listEventsBetween } from "@/lib/integrations/calendar";
 import { getClientsFileCached, getSettingsCached } from "@/lib/server/cached-data";
 import { computeWeekPlan, hasWorkLeftThisWeek, planWeekBounds } from "@/lib/utils/week-plan";
 import { pendingSuggestions } from "@/lib/utils/deadlines";
+import { pendingRewrites } from "@/lib/utils/account-analysis";
 
 // Tablero de accionables por plazo: cada pendiente de las cuentas asignadas con su fecha de entrega
 // (manual → acordada en la reunión/mail → meta interna de N días hábiles), estimación y prioridad.
@@ -58,6 +59,7 @@ export default async function AccionablesPage() {
         mailPanels={mailPanels}
         nowIso={now.toISOString()}
         suggestions={pendingSuggestions(clients, settings, now, ownerEmail ?? null)}
+        rewrites={pendingRewrites(clients)}
         people={settings.people}
         corrections={settings.corrections}
         workDays={settings.workDays}

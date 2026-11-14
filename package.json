@@ -13,7 +13,10 @@
     "autostart:restart": "sh scripts/autostart.sh restart",
     "autostart:logs": "sh scripts/autostart.sh logs",
     "test": "vitest run",
-    "preview:postmeeting": "node --env-file=.env.local --import tsx scripts/preview-postmeeting.ts"
+    "preview:postmeeting": "node --env-file=.env.local --import tsx scripts/preview-postmeeting.ts",
+    "preview:analysis": "node --env-file=.env.local --import tsx scripts/preview-analysis.ts",
+    "backfill:meeting-ai": "node --env-file=.env.local --import tsx scripts/backfill-meeting-ai.ts",
+    "analyze:accounts": "node --env-file=.env.local --import tsx scripts/analyze-accounts.ts"
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^1.8.0",

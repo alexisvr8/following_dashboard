@@ -7,6 +7,7 @@ import { mailTickets } from "@/lib/utils/mail-tickets";
 import { isAutoTicket } from "@/lib/utils/auto-ticket";
 import { keywordSimilarity } from "@/lib/utils/mail-classify";
 import { addBusinessDays, parseStep, rollToWorkday, type StepDue } from "@/lib/utils/gemini-notes-parser";
+import { ACCOUNT_PRIORITY_RANK, accountPriority } from "@/lib/utils/account-priority";
 
 // Plazo de cada accionable pendiente (meta: cerrar todo dentro de la semana hábil con el cliente).
 // Fecha, por orden: manual (`client.actionableDue`) → acordada (dicha en la reunión o el mail, resuelta
@@ -50,7 +51,7 @@ export interface PlannedItem {
   estimateMinutes: number;
   estimateManual: boolean;
   /** De dónde sale la estimación: manual, aprendida de un accionable parecido o el default. */
-  estimateSource: "manual" | "learned" | "default";
+  estimateSource: "manual" | "ai" | "learned" | "default";
   /** Accionable parecido del que se aprendió la estimación. */
   estimateFrom?: string;
   sideManual: boolean;
@@ -63,6 +64,14 @@ export interface PlannedItem {
   nextMeetingAt: string | null;
   /** No entra en los huecos libres antes de su fecha (lo completa `computeWeekPlan`). */
   atRisk?: boolean;
+  /** Prioridad de la cuenta que ordena el tablero: solo la que marcaste (🔥 o manual); la de la IA es informativa. */
+  accountPriority: Priority;
+  /** Cuenta "Más atención" (`profile.attention`): prioridad alta, meta interna corta, va primero a igual fecha. */
+  attention?: boolean;
+  /** Lo agregó el análisis semanal con IA (detectado en mails o la minuta y que faltaba en el tablero). */
+  aiAdded?: boolean;
+  /** De dónde lo sacó la IA. */
+  evidence?: string;
 }
 
 const DAY_FMT = new Intl.DateTimeFormat("es", { weekday: "short", day: "2-digit", month: "2-digit" });
@@ -85,7 +94,8 @@ export function accountMatcher(clients: ClientRecord[]) {
 /** Próxima reunión futura de cada cuenta. */
 export function nextMeetings(clients: ClientRecord[], events: CalendarEventLite[] | null, now = new Date()) {
   const out = new Map<string, string>();
-  const match = accountMatcher(clients);
+  // Solo asignadas: un partner o cliente ignorado con invitados en común no se queda con la reunión.
+  const match = accountMatcher(clients.filter((c) => c.status === "assigned"));
   for (const e of events ?? []) {
     if (Date.parse(e.start) <= now.getTime()) continue;
     const acc = match(e);
@@ -131,11 +141,19 @@ function priorityOf(item: Pick<PlannedItem, "bucket" | "kind" | "businessDaysLef
 
 const PRIORITY_RANK: Record<Priority, number> = { alta: 0, media: 1, baja: 2 };
 
-/** Orden de trabajo: primero lo que vence antes; a igual fecha, prioridad y luego lo mío. */
+/** Cuenta prioritaria: sus accionables suben un nivel (baja → media → alta). Nunca baja una prioridad. */
+export function bumpForAccount(priority: Priority, account: Priority): Priority {
+  if (account !== "alta") return priority;
+  return priority === "baja" ? "media" : "alta";
+}
+
+/** Orden de trabajo: primero lo que vence antes; a igual fecha, prioridad, cuenta prioritaria y luego lo mío. */
 export function compareItems(a: PlannedItem, b: PlannedItem): number {
   return (
     a.due.localeCompare(b.due) ||
+    Number(Boolean(b.attention)) - Number(Boolean(a.attention)) ||
     PRIORITY_RANK[a.priority] - PRIORITY_RANK[b.priority] ||
+    ACCOUNT_PRIORITY_RANK[a.accountPriority] - ACCOUNT_PRIORITY_RANK[b.accountPriority] ||
     (a.side === b.side ? 0 : a.side === "debo" ? -1 : 1) ||
     a.originDate.localeCompare(b.originDate)
   );
@@ -189,14 +207,17 @@ interface RawItem {
   /** Texto donde buscar la fecha dicha (sin el "[Dueño]"). */
   dueText: string | null;
   quick: boolean;
+  evidence?: string;
 }
 
 function rawItems(client: ClientRecord, settings: WorkSettings, now: Date): RawItem[] {
   const out: RawItem[] = [];
   const done = new Set(client.doneTicketIds ?? []);
+  const aiCustom = new Map((client.customActionables ?? []).filter((c) => c.source === "ia").map((c) => [c.id, c]));
   for (const a of accountActionables(client)) {
     if (a.done) continue;
     const parsed = parseStep(a.step, a.meeting.date, settings.workDays);
+    const ai = aiCustom.get(a.id);
     out.push({
       id: a.id,
       ...splitTitle(parsed.text),
@@ -204,11 +225,13 @@ function rawItems(client: ClientRecord, settings: WorkSettings, now: Date): RawI
       owners: parsed.owners,
       side: isOwnActionable(a.step, settings) ? "debo" : "me_deben",
       kind: a.id.includes(":custom-") ? "custom" : "step",
-      originTitle: a.meeting.title,
-      originDate: a.meeting.date,
+      originTitle: ai ? `Análisis IA${ai.evidence ? ` · ${ai.evidence}` : ""}` : a.meeting.title,
+      // Lo de la IA cuenta desde que se detectó (la meta interna no arranca en la reunión vieja).
+      originDate: ai ? ai.createdAt : a.meeting.date,
       carried: a.carried,
       dueText: a.step,
       quick: false,
+      ...(ai && { evidence: ai.evidence ?? "" }),
     });
   }
   const latest = [...client.meetings].sort((a, b) => b.date.localeCompare(a.date))[0];
@@ -290,6 +313,13 @@ export function plannedItems(
     return best;
   };
 
+  // Solo lo que marcaste vos (🔥 / manual) reordena y sube accionables; la sugerida por la IA queda informativa.
+  const accountLevel = new Map(
+    clients.map((c) => {
+      const p = accountPriority(c);
+      return [c.id, p.source === "atencion" || p.source === "manual" ? p.level : "media"] as const;
+    }),
+  );
   for (const { c, r } of raws) {
     const origin = new Date(r.originDate);
     const manual = c.actionableDue?.[r.id];
@@ -304,11 +334,15 @@ export function plannedItems(
       due = limit = agreed.until;
       dueKind = "agreed";
     } else {
-      due = addBusinessDays(origin, r.quick ? 1 : target, workDays);
-      limit = addBusinessDays(origin, r.quick ? 1 : limitDays, workDays);
+      // Más atención: meta interna corta (1 día hábil) y vencido al día siguiente.
+      const t = c.profile?.attention ? Math.min(target, settings.attentionTargetDays ?? 1) : target;
+      const l = c.profile?.attention ? Math.min(limitDays, t + 1) : limitDays;
+      due = addBusinessDays(origin, r.quick ? 1 : t, workDays);
+      limit = addBusinessDays(origin, r.quick ? 1 : l, workDays);
       dueKind = "target";
     }
     const estimate = c.actionableEstimate?.[r.id];
+    const aiMinutes = estimate == null ? c.aiEstimate?.[r.id] : undefined;
     const fromLearned = estimate == null ? learnEstimate(r) : null;
     const sideOverride = c.actionableSide?.[r.id];
     const base = {
@@ -337,12 +371,15 @@ export function plannedItems(
       dueLabel: label(due),
       dueKind,
       limit: limit.toISOString(),
-      estimateMinutes: estimate ?? fromLearned?.minutes ?? defaultMinutes,
+      estimateMinutes: estimate ?? aiMinutes ?? fromLearned?.minutes ?? defaultMinutes,
       estimateManual: estimate != null,
-      estimateSource: estimate != null ? "manual" : fromLearned ? "learned" : "default",
+      estimateSource: estimate != null ? "manual" : aiMinutes ? "ai" : fromLearned ? "learned" : "default",
       ...(fromLearned && { estimateFrom: fromLearned.title }),
       sideManual: sideOverride != null,
-      priority: priorityOf(base, now, workDays),
+      priority: c.profile?.attention ? "alta" : bumpForAccount(priorityOf(base, now, workDays), accountLevel.get(c.id) ?? "media"),
+      ...(c.profile?.attention && { attention: true }),
+      accountPriority: accountLevel.get(c.id) ?? "media",
+      ...(r.evidence !== undefined && { aiAdded: true, evidence: r.evidence }),
       ...base,
     });
   }

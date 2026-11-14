@@ -30,6 +30,7 @@ export function AccountWorkspace({
   trace,
   participants,
   meetingHistory,
+  analysis,
 }: {
   header: React.ReactNode;
   clientId: string;
@@ -50,6 +51,8 @@ export function AccountWorkspace({
   trace: React.ReactNode;
   participants: React.ReactNode;
   meetingHistory: React.ReactNode;
+  /** Pestaña "Análisis IA" (solo cuentas asignadas). */
+  analysis?: React.ReactNode;
 }) {
   const router = useRouter();
   const [changes, setChanges] = useState(0);
@@ -113,6 +116,7 @@ export function AccountWorkspace({
               <TabsTrigger value="actions">
                 Accionables <span className="tabular text-[11px]">{total - doneCount}</span>
               </TabsTrigger>
+              {analysis && <TabsTrigger value="analysis">Análisis IA</TabsTrigger>}
               <TabsTrigger value="trace">Trazabilidad</TabsTrigger>
               <TabsTrigger value="meetings">
                 Reuniones <span className="tabular text-[11px]">{totalMeetings}</span>
@@ -149,6 +153,11 @@ export function AccountWorkspace({
               </CardContent>
             </Card>
           </TabsContent>
+          {analysis && (
+            <TabsContent value="analysis" keepMounted className={panel}>
+              {analysis}
+            </TabsContent>
+          )}
           <TabsContent value="trace" keepMounted className={panel}>
             {trace}
           </TabsContent>

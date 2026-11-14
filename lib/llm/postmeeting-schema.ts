@@ -21,6 +21,10 @@ const Accionable = z.object({
   status: z.enum(AI_STATUSES),
   fecha: z.string().nullable().describe("dd/mm solo si se acordó una fecha; si no, null"),
   requiere_revision: z.boolean(),
+  minutos_estimados: z
+    .number()
+    .int()
+    .describe("Minutos de trabajo efectivo que le lleva al responsable si es de Xtract (0 si es del cliente); ver la guía de estimación"),
 });
 
 const Avance = z.object({

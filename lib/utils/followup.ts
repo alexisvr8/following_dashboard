@@ -26,6 +26,7 @@ import {
 import { actionableLine, renderPostMeetingMail, statusSuffix, type MailStatus } from "@/lib/utils/postmeeting-mail";
 import type { Actionable } from "@/lib/utils/actionables";
 import type { AISide } from "@/lib/llm/postmeeting-schema";
+import { statusKey, type StatusMailInput } from "@/lib/llm/status-mail";
 
 // Borradores recalculados con cada mail, reunión o accionable tildado. El de la minuta (`buildFollowup`) usa el
 // contenido generado por Claude cuando la reunión lo tiene (`meeting.ai`) y, si no, el armado por reglas; en ambos
@@ -514,6 +515,8 @@ export function buildStatusUpdate(
   meeting: DiscoveredMeeting,
   ownerEmail: string | null,
   settings: WorkSettings,
+  /** Si se pasa, recibe la entrada de la IA (`statusAIRequest`). */
+  capture?: { input?: StatusMailInput },
 ): FollowupDraft {
   const now = new Date();
   const steps = accountActionables(client).map((a) => ({
@@ -560,43 +563,80 @@ export function buildStatusUpdate(
   const requests = openRequests(client, interaction);
   const recipients = interactionRecipients(client, meeting, interaction, ownerEmail, settings);
   const meetingRef = `la reunión ${meetingWhen(meeting.date, now).text}`;
+  // Sin citar mails ni asuntos: seguimiento amigable de lo que veníamos hablando.
+  const one = recipients.length === 1;
   const progress = !steps.length
-    ? `Les escribo para retomar lo conversado en ${meetingRef}.`
+    ? `${one ? "Te" : "Les"} escribo para retomar lo que veníamos conversando.`
     : pending.length
-      ? `Les comparto ${completed.length ? "los avances sobre" : "cómo venimos con"} lo acordado en ${meetingRef}:`
-      : `Les confirmo que quedaron completos todos los puntos acordados en ${meetingRef}.`;
+      ? `${one ? "Te" : "Les"} comparto ${completed.length ? "los avances" : "cómo venimos"} con lo que veníamos conversando.`
+      : `${one ? "Te" : "Les"} confirmo que quedaron completos todos los puntos que veníamos trabajando.`;
+  void meetingRef;
+
+  // Secciones del mail con refs: las reglas deciden qué va y con qué estado; la IA (si hay) solo redacta.
+  type Line = { ref: string; text: string; suffix: string; bullet: "✓" | "•" };
+  const section = (title: string, prefix: string, items: Omit<Line, "ref">[]) => ({
+    title,
+    lines: items.map((it, i) => ({ ...it, ref: `${prefix}${i + 1}` })),
+  });
+  const sections = [
+    section(
+      "Lo que avanzamos:",
+      "H",
+      advanced.map((c) => ({ text: c.text, suffix: doneStatus(c.doneAt), bullet: "✓" })),
+    ),
+    section("Ya completado:", "C", completedBefore.map((c) => ({ text: c.text, suffix: doneStatus(c.doneAt), bullet: "✓" }))),
+    section(
+      "En curso, ya lo veníamos hablando:",
+      "M",
+      related.map((s) => ({ text: s.text, suffix: `${tag(s)}${STATUS_PENDING}`, bullet: "•" })),
+    ),
+    section("En lo que estamos trabajando:", "N", ours.map((s) => ({ text: s.text, suffix: `${tag(s)}${STATUS_PENDING}`, bullet: "•" }))),
+    section(
+      "Sobre sus consultas, lo estamos revisando:",
+      "Q",
+      requests.map((r) => ({ text: r.title, suffix: STATUS_PENDING, bullet: "•" })),
+    ),
+    section("Lo que necesitamos de su lado para avanzar:", "S", theirs.map((s) => ({ text: s.text, suffix: `${tag(s)}${STATUS_PENDING}`, bullet: "•" }))),
+    section("Para resolver en conjunto:", "J", shared.map((s) => ({ text: s.text, suffix: `${tag(s)}${STATUS_PENDING}`, bullet: "•" }))),
+    section("Otros pendientes:", "O", other.map((s) => ({ text: s.text, suffix: `${tag(s)}${STATUS_PENDING}`, bullet: "•" }))),
+  ].filter((sec) => sec.lines.length);
+  const lastInteraction = anchorMail
+    ? `${anchorMail.direction === "me" ? "Mi mail" : `Mail de ${anchorMail.fromName ?? anchorMail.from}`} del ${fmtDate(anchorMail.date)} «${cleanSubject(anchorMail.subject)}»: ${anchorMail.excerpt.replace(/\s+/g, " ").trim().slice(0, 1200)}`
+    : null;
+  const aiInput: StatusMailInput = {
+    clientName: companyName(client),
+    ownerName: settings.ownerAliases[0] ?? "Alexis Vásquez R",
+    today: fmtDate(now.toISOString()),
+    recipients: recipients.map((r) => r.name ?? r.email),
+    lastInteraction,
+    meeting: { title: meeting.title, date: fmtDate(meeting.date), objetivo: meeting.ai?.objetivo ?? meeting.summary ?? null },
+    sections: sections.map((sec) => ({ title: sec.title, items: sec.lines.map((l) => ({ ref: l.ref, text: l.text })) })),
+    guidance: client.analysis?.output.proximo_mail ?? null,
+    attention: Boolean(client.profile?.attention),
+  };
+  if (capture) capture.input = aiInput;
+  const aiKey = statusKey(aiInput);
+  const ai = client.statusAI?.meetingId === meeting.id && client.statusAI.key === aiKey ? client.statusAI : null;
+  const aiText = new Map(Object.entries(ai?.items ?? {}));
 
   const lines = [greet(recipients, client), ""];
-  if (anchorMail?.direction === "client") {
-    lines.push(`Gracias por el mail del ${fmtDate(anchorMail.date)} sobre “${cleanSubject(anchorMail.subject)}”.`, "", progress);
-  } else if (anchorMail) {
-    lines.push(`Retomo mi mail del ${fmtDate(anchorMail.date)} sobre “${cleanSubject(anchorMail.subject)}”.`, "", progress);
-  } else {
-    lines.push(progress);
+  lines.push(ai?.apertura ?? progress);
+  for (const sec of sections) {
+    lines.push("", sec.title, ...sec.lines.map((l) => `${l.bullet} ${(aiText.get(l.ref) ?? l.text).replace(/[.\s]+$/, "")}${l.suffix}`));
   }
-  if (advanced.length) {
-    lines.push(
-      "",
-      lastMine ? `Avanzamos desde mi último mail (${fmtShort(lastMine.date)}):` : "Avanzamos desde la reunión:",
-      ...advanced.map((c) => `✓ ${c.text}${doneStatus(c.doneAt)}`),
-    );
-  }
-  if (completedBefore.length) lines.push("", "Ya completado:", ...completedBefore.map((c) => `✓ ${c.text}${doneStatus(c.doneAt)}`));
-  if (related.length) {
-    lines.push(
-      "",
-      "Conversado por mail desde la reunión:",
-      ...related.map((s) => `• ${s.text} (mail del ${fmtShort(trace.get(s.id)!.date)})${tag(s)}${STATUS_PENDING}`),
-    );
-  }
-  if (ours.length) lines.push("", "En curso de nuestro lado:", ...ours.map((s) => `• ${s.text}${tag(s)}${STATUS_PENDING}`));
-  if (requests.length) lines.push("", "Sobre lo que nos consultaron, lo estamos revisando:", ...requests.map((r) => `• ${r.title}${STATUS_PENDING}`));
-  if (theirs.length) lines.push("", "Pendiente de su lado (para poder avanzar):", ...theirs.map((s) => `• ${s.text}${tag(s)}${STATUS_PENDING}`));
-  if (shared.length) lines.push("", "Para resolver en conjunto:", ...shared.map((s) => `• ${s.text}${tag(s)}${STATUS_PENDING}`));
-  if (other.length) lines.push("", "Otros pendientes acordados:", ...other.map((s) => `• ${s.text}${tag(s)}${STATUS_PENDING}`));
-  lines.push("", "Cualquier duda o si hay algo para priorizar, me avisan.", "", "Saludos");
+  lines.push("", ai?.cierre ?? `Cualquier duda o si hay algo para priorizar, ${one ? "avisame" : "me avisan"}.`, "", "Saludos");
 
   const reviewNotes = lastTalkNote(interaction);
+  if (ai) reviewNotes.unshift(`Redactado con IA (${fmtShort(ai.generatedAt)}): revisalo antes de enviar.`, ...ai.revision);
+  const analysis = client.analysis;
+  if (analysis) {
+    reviewNotes.push(`Análisis IA (${fmtShort(analysis.generatedAt)}) · próximo mail: ${analysis.output.proximo_mail}`);
+    for (const r of analysis.output.posibles_resueltos) {
+      const id = analysis.refs[r.ref];
+      const step = steps.find((x) => x.id === id && !x.done);
+      if (step) reviewNotes.push(`Posible resuelto (tildalo si es así): ${step.text} — ${r.evidencia}`);
+    }
+  }
   if (requests.length) reviewNotes.push(`Agregá la respuesta a ${requests.length} consulta(s) del cliente.`);
   if (lastMine && anchorMail === lastMine && !advanced.length) {
     reviewNotes.push("Sin avances nuevos desde tu último mail: evaluá si hace falta enviarlo ahora.");
@@ -761,4 +801,18 @@ export function buildWeeklyPlan(
     body: lines.join("\n"),
     reviewNotes: [],
   };
+}
+
+/** Entrada de la IA para el mail de seguimiento vigente (la misma que arma `buildStatusUpdate`) y su huella. */
+export function statusAIRequest(
+  client: ClientRecord,
+  meeting: DiscoveredMeeting,
+  ownerEmail: string | null,
+  settings: WorkSettings,
+): { input: StatusMailInput; key: string; worth: boolean } {
+  const captured: { input?: StatusMailInput } = {};
+  buildStatusUpdate(client, meeting, ownerEmail, settings, captured);
+  const input = captured.input!;
+  // Vale la pena redactar con IA si hay algo que contar (avances, consultas o pendientes) .
+  return { input, key: statusKey(input), worth: input.sections.length > 0 };
 }

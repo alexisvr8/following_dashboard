@@ -13,6 +13,7 @@ import { daysAgo, formatMinutes, formatShortDate } from "@/lib/utils/format";
 import { cn } from "@/lib/utils";
 import { byMovement, movementBucket } from "@/lib/utils/movement";
 import type { Account } from "@/types/account";
+import { AttentionBadge } from "@/components/cuentas/AttentionToggle";
 
 export type DirectoryRow = {
   account: Account;
@@ -20,6 +21,8 @@ export type DirectoryRow = {
   meetingCount: number;
   actionablesDefined: number;
   pendingActionables: number;
+  /** Cuenta "Más atención" (`profile.attention`). */
+  attention?: boolean;
 };
 
 type Tab = "assigned" | "unassigned";
@@ -174,6 +177,7 @@ function Row({ row, active }: { row: DirectoryRow; active: boolean }) {
     >
       <div className="flex items-center gap-2">
         <span className={cn("min-w-0 flex-1 truncate text-[15px] font-medium leading-snug", active && "text-foreground-strong")}>{a.name}</span>
+        {row.attention && <AttentionBadge size="sm" />}
         <ChurnRiskBadge lastActivityAt={a.lastActivityAt} size="sm" />
       </div>
       <p className="flex gap-1 text-xs text-muted-foreground" title={a.lastMovementLabel ?? undefined}>

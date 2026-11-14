@@ -15,6 +15,8 @@ export type AlertKind = "client_waiting" | "awaiting_client" | "no_progress";
 export interface AccountAlert {
   clientId: string;
   name: string;
+  /** Cuenta "Más atención": alerta desde `attentionStaleDays` (1) día hábil y va primero. */
+  attention?: boolean;
   kind: AlertKind;
   businessDays: number;
   lastMovementAt: string;
@@ -93,7 +95,16 @@ export function computeAlerts(clients: ClientRecord[], settings: WorkSettings, n
     const { done, pendingOwn, pendingClient } = accountPending(c, settings, now);
     const last = lastMovement(c, now);
     if (!last) continue;
-    const base = { clientId: c.id, name: c.name, lastMovementAt: last.at, lastMovementLabel: last.label, pendingOwn, pendingClient };
+    const attention = Boolean(c.profile?.attention);
+    const base = {
+      clientId: c.id,
+      name: c.name,
+      ...(attention && { attention: true }),
+      lastMovementAt: last.at,
+      lastMovementLabel: last.label,
+      pendingOwn,
+      pendingClient,
+    };
 
     const reply = mailTickets(c).find((t) => t.id.endsWith("-reply"));
     if (reply && !done.has(reply.id)) {
@@ -104,10 +115,13 @@ export function computeAlerts(clients: ClientRecord[], settings: WorkSettings, n
       }
     }
     const days = businessDaysSince(last.at, now, settings.workDays);
-    if (days >= settings.staleBusinessDays && pendingOwn + pendingClient > 0) {
+    const stale = attention ? Math.min(settings.staleBusinessDays, settings.attentionStaleDays ?? 1) : settings.staleBusinessDays;
+    if (days >= stale && pendingOwn + pendingClient > 0) {
       alerts.push({ ...base, kind: last.mine ? "awaiting_client" : "no_progress", businessDays: days });
     }
   }
   const ORDER: Record<AlertKind, number> = { client_waiting: 0, no_progress: 1, awaiting_client: 2 };
-  return alerts.sort((x, y) => ORDER[x.kind] - ORDER[y.kind] || y.businessDays - x.businessDays);
+  return alerts.sort(
+    (x, y) => Number(Boolean(y.attention)) - Number(Boolean(x.attention)) || ORDER[x.kind] - ORDER[y.kind] || y.businessDays - x.businessDays,
+  );
 }

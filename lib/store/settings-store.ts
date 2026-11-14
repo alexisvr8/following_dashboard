@@ -31,6 +31,9 @@ export interface WorkSettings {
   includeGroupTasks: boolean;
   /** Días hábiles sin avance/actualización con el cliente antes de alertar (default 2). */
   staleBusinessDays: number;
+  /** Cuentas "Más atención": meta interna (días hábiles) y días sin novedades para alertar. Default 1 y 1. */
+  attentionTargetDays?: number;
+  attentionStaleDays?: number;
   /** Meta interna de un accionable sin fecha dicha en la reunión: N días hábiles desde la reunión/mail (default 3). */
   targetBusinessDays: number;
   /** Desde ahí pasa a "Vencido" (default 4). */

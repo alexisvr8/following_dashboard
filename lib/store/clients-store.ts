@@ -7,8 +7,10 @@ import type { MeetingDecision } from "@/lib/utils/gemini-notes-parser";
 import { applyCorrections, type TranscriptSuggestion } from "@/lib/utils/transcript";
 import type { Correction } from "@/lib/store/settings-store";
 import { collectMailItems, mailTicketId, type MailItem } from "@/lib/utils/mail-items";
-import { stepTicketId } from "@/lib/utils/actionables";
 import type { AISide, AIStatus, PostMeetingOutput } from "@/lib/llm/postmeeting-schema";
+import type { AccountAnalysisOutput, Level } from "@/lib/llm/account-analysis-schema";
+import { keywordSimilarity } from "@/lib/utils/mail-classify";
+import { accountActionables, stepTicketId } from "@/lib/utils/actionables";
 
 export { mailTicketId };
 
@@ -69,6 +71,11 @@ export interface MeetingAI {
   revision: string[];
   /** `nextSteps` originales de Gemini, antes de reemplazarlos por los de la IA. */
   geminiNextSteps: string[];
+  /**
+   * Solo contexto (objetivo / puntos / charlamos / revisión): la reunión ya tenía accionables tocados, así que
+   * `nextSteps` no se reemplazó (los ids dependen del índice) y `steps` queda vacío (status/lado por reglas).
+   */
+  contextOnly?: true;
 }
 
 export interface CustomActionable {
@@ -77,6 +84,48 @@ export interface CustomActionable {
   /** Reunión a la que queda asociado (para fechas y arrastre). */
   meetingId: string;
   createdAt: string;
+  /** "ia" = lo agregó el análisis semanal (`setAccountAnalysis`); sin valor = a mano o sugerencia aceptada. */
+  source?: "ia";
+  /** De dónde lo sacó la IA ("Mail de Facundo 12/11: «Accesos»"). */
+  evidence?: string;
+}
+
+export interface StatusAI {
+  meetingId: string;
+  /** Huella de la entrada (`statusKey`): si cambió lo tildado o llegó un mail, deja de aplicarse. */
+  key: string;
+  generatedAt: string;
+  model: string;
+  apertura: string;
+  /** Ref del punto ("H1", "N2"…) → texto redactado. */
+  items: Record<string, string>;
+  cierre: string;
+  revision: string[];
+  error?: string;
+}
+
+/** Análisis semanal de la cuenta con IA (`lib/integrations/account-analysis.ts`). */
+export interface AccountAnalysis {
+  /** Lunes de la semana analizada (AAAA-MM-DD). */
+  week: string;
+  generatedAt: string;
+  model: string;
+  basis: "reunion" | "mails";
+  /** Desde cuándo se leyeron los mails (ISO). */
+  since: string;
+  threadsRead: number;
+  mailsRead: number;
+  /** Quedaron hilos afuera por el tope de texto. */
+  truncated?: boolean;
+  /** Ref del prompt ("A3") → id del ticket. */
+  refs: Record<string, string>;
+  output: AccountAnalysisOutput;
+  /** Accionables nuevos que el análisis agregó al tablero. */
+  addedTicketIds: string[];
+  /** Texto de cada ref al analizar: una reescritura solo se ofrece si el accionable no cambió desde entonces. */
+  refTexts?: Record<string, string>;
+  /** Reescrituras ya resueltas en el modal "Mejoras IA" (por ref). */
+  rewritesResolved?: Record<string, "accepted" | "dismissed">;
 }
 
 export interface ClientRecord {
@@ -118,6 +167,16 @@ export interface ClientRecord {
   activity?: ClientActivity;
   /** Follow-ups editados / enviados a Gmail, por id de meeting. */
   followups?: Record<string, FollowupDraft>;
+  /** Último análisis semanal con IA. */
+  analysis?: AccountAnalysis;
+  /** Último error del análisis (se reintenta en la próxima corrida). */
+  analysisError?: { at: string; message: string };
+  /** Textos que la IA ya agregó alguna vez (aunque después se quitaron): no se vuelven a agregar. */
+  aiLearned?: string[];
+  /** Minutos estimados por la IA (minuta post-reunión o análisis semanal) por ticket; la estimación manual manda. */
+  aiEstimate?: Record<string, number>;
+  /** Redacción con IA del mail de seguimiento vigente (`lib/integrations/status-ai.ts`); vale mientras `key` coincida. */
+  statusAI?: StatusAI;
 }
 
 /** Mail real (no invitación, no auto-respuesta, no minuta) intercambiado con referentes. */
@@ -229,6 +288,13 @@ export interface ClientProfile {
   contactNames?: Record<string, string>;
   /** Hilo de seguimiento fijado (⭐ en el composer): los borradores post-reunión van siempre acá. */
   followupThread?: { threadId: string; subject: string; pinnedAt: string };
+  /** Prioridad marcada a mano (manda sobre la sugerida por la IA en `analysis.output.prioridad`). */
+  priority?: Level;
+  /**
+   * "Más atención" (cliente exigente): sus accionables van siempre en prioridad alta y con meta interna de
+   * `settings.attentionTargetDays` (1) día hábil, alerta de seguimiento al 1er día hábil sin novedades y la IA lo sabe.
+   */
+  attention?: boolean;
 }
 
 export interface ClientsFile {
@@ -532,6 +598,9 @@ export async function updateClientProfile(
           else delete names[email];
         }
         profile.contactNames = names;
+      } else if (k === "attention") {
+        if (v === true) profile.attention = true;
+        else delete profile.attention;
       } else if (typeof v === "string") {
         if (v.trim()) (profile[k] as string) = v.trim();
         else delete profile[k];
@@ -742,8 +811,11 @@ export function meetingHasTicketState(client: ClientRecord, meetingId: string): 
     ...Object.keys(client.actionableDue ?? {}),
     ...Object.keys(client.actionableEstimate ?? {}),
     ...Object.keys(client.actionableSide ?? {}),
+    // El análisis semanal nombra los pasos por ref → id por índice (y las reescrituras dependen de eso).
+    ...Object.values(client.analysis?.refs ?? {}),
   ];
-  return keys.some((k) => k.startsWith(prefix));
+  // Solo los pasos por índice (`-0`, `-1`…): el follow-up sintético (`-followup`, auto-tildado) no cuenta.
+  return keys.some((k) => k.startsWith(prefix) && /^\d+$/.test(k.slice(prefix.length)));
 }
 
 /** "[Facundo Miguel Zingone] Revisar endpoints: Analizar…" (formato de `nextSteps` que usa toda la app). */
@@ -770,11 +842,33 @@ export function ddmmToIso(ddmm: string | null, meetingDate: string): string | nu
  * avanzado, tildado con su fecha): mail y módulo de accionables usan la misma lista. No pisa reuniones cuyos
  * accionables ya se tocaron (los ids dependen del índice). Devuelve false si no aplicó.
  */
-export async function setMeetingAI(clientId: string, meetingId: string, out: PostMeetingOutput, model: string): Promise<boolean> {
-  const res = await mutateClient(clientId, (client) => {
+export async function setMeetingAI(
+  clientId: string,
+  meetingId: string,
+  out: PostMeetingOutput,
+  model: string,
+): Promise<"full" | "context" | false> {
+  const res = await mutateClient(clientId, (client): "full" | "context" | typeof SKIP => {
     const m = client.meetings.find((x) => x.id === meetingId);
-    if (!m || m.ai || meetingHasTicketState(client, meetingId)) return SKIP;
+    if (!m || m.ai) return SKIP;
     const now = new Date().toISOString();
+    // Accionables ya tocados (tildados, editados, con fecha…): se guarda solo el contexto, sin cambiar los pasos.
+    if (meetingHasTicketState(client, meetingId)) {
+      m.ai = {
+        model,
+        generatedAt: now,
+        objetivo: out.objetivo,
+        puntos: out.puntos_importantes,
+        charlamos: out.lo_que_charlamos,
+        steps: [],
+        revision: out.revision,
+        geminiNextSteps: m.nextSteps,
+        contextOnly: true,
+      };
+      delete m.aiError;
+      // Sin `ticketsUpdatedAt`: no cambió ningún accionable y así no se regenera un borrador editado.
+      return "context";
+    }
     const open = out.accionables;
     m.ai = {
       model,
@@ -805,6 +899,10 @@ export async function setMeetingAI(clientId: string, meetingId: string, out: Pos
       }),
     );
     if (Object.keys(due).length) client.actionableDue = { ...client.actionableDue, ...due };
+    const estimates = Object.fromEntries(
+      open.flatMap((a, i) => (a.minutos_estimados > 0 ? [[id(i), Math.min(480, Math.max(5, Math.round(a.minutos_estimados / 5) * 5))]] : [])),
+    );
+    if (Object.keys(estimates).length) client.aiEstimate = { ...client.aiEstimate, ...estimates };
     if (out.ya_avanzamos.length) {
       const doneAt = Object.fromEntries(
         out.ya_avanzamos.map((a, j) => {
@@ -816,9 +914,9 @@ export async function setMeetingAI(clientId: string, meetingId: string, out: Pos
       client.doneTicketAt = { ...client.doneTicketAt, ...doneAt };
     }
     client.ticketsUpdatedAt = now;
-    return true;
+    return "full";
   });
-  return Boolean(res);
+  return res?.result ?? false;
 }
 
 /** Registra un intento fallido de generación (se reintenta en la próxima sync hasta `AI_MAX_ATTEMPTS`). */
@@ -903,4 +1001,119 @@ export async function saveFollowup(
     client.followups = { ...client.followups, [key]: draft };
   });
   return m?.client ?? null;
+}
+
+/** Parecido mínimo para considerar que un accionable nuevo de la IA ya existe en el tablero. */
+const AI_DUPLICATE = 0.5;
+/** Parecido mínimo con algo que la IA ya agregó antes (aunque se haya quitado): no se repite. */
+const AI_LEARNED = 0.6;
+
+export interface AnalysisNewItem {
+  /** "[Responsable] Título: descripción" (formato de `nextSteps`). */
+  text: string;
+  /** AAAA-MM-DD solo si la fecha se acordó. */
+  due: string | null;
+  /** Lado según la IA: se fija a mano solo si el texto no lo deduce igual. */
+  side: "debo" | "me_deben";
+  /** Lado que deduciría la app por el "[Dueño]" del texto (`isOwnActionable`). */
+  detectedSide: "debo" | "me_deben";
+  evidence: string;
+  /** Minutos estimados por la IA (0 = sin estimación). */
+  minutes?: number;
+}
+
+/**
+ * Guarda el análisis semanal y agrega al tablero los accionables nuevos que detectó (como propios con origen
+ * "ia", asociados a la última reunión). No duplica lo que ya está (parecido a un vigente) ni lo que la IA agregó
+ * alguna vez (si lo quitaste, no vuelve). Nunca tilda ni modifica accionables existentes.
+ */
+export async function setAccountAnalysis(
+  clientId: string,
+  analysis: Omit<AccountAnalysis, "addedTicketIds" | "rewritesResolved">,
+  items: AnalysisNewItem[],
+  /** Textos de todo lo pendiente del tablero (`plannedItems`: minuta, propios y mails) para no duplicar. */
+  existing: string[] = [],
+  /** Minutos estimados por la IA para accionables existentes (ticketId → minutos). */
+  estimates: Record<string, number> = {},
+): Promise<string[] | null> {
+  const res = await mutateClient(clientId, (client): string[] => {
+    const now = new Date().toISOString();
+    const latest = client.meetings.reduce<DiscoveredMeeting | null>((max, m) => (!max || m.date > max.date ? m : max), null);
+    const current = accountActionables(client)
+      .filter((a) => !a.done)
+      .map((a) => a.step)
+      .concat(existing);
+    const learned = client.aiLearned ?? [];
+    const added: string[] = [];
+    if (latest) {
+      for (const item of items) {
+        const text = item.text.trim().slice(0, 500);
+        if (!text) continue;
+        if (current.some((c) => keywordSimilarity(c, text) >= AI_DUPLICATE)) continue;
+        if (learned.some((l) => keywordSimilarity(l, text) >= AI_LEARNED)) continue;
+        const id = `${client.id}:custom-ia-${randomUUID().slice(0, 8)}`;
+        client.customActionables = [
+          ...(client.customActionables ?? []),
+          { id, title: text, meetingId: latest.id, createdAt: now, source: "ia", evidence: item.evidence.slice(0, 300) },
+        ];
+        if (item.due) client.actionableDue = { ...client.actionableDue, [id]: item.due };
+        if (item.side !== item.detectedSide) client.actionableSide = { ...client.actionableSide, [id]: item.side };
+        if (item.minutes) estimates[id] = item.minutes;
+        learned.push(text);
+        current.push(text);
+        added.push(id);
+      }
+    }
+    if (Object.keys(estimates).length) client.aiEstimate = { ...client.aiEstimate, ...estimates };
+    client.aiLearned = learned.slice(-300);
+    client.analysis = { ...analysis, addedTicketIds: added };
+    delete client.analysisError;
+    if (added.length) client.ticketsUpdatedAt = now;
+    return added;
+  });
+  return res?.result ?? null;
+}
+
+/** Registra un análisis fallido (se reintenta en la próxima corrida). */
+export async function markAnalysisFailed(clientId: string, message: string): Promise<void> {
+  await mutateClient(clientId, (client) => {
+    client.analysisError = { at: new Date().toISOString(), message: message.slice(0, 300) };
+  });
+}
+
+/**
+ * Reescritura propuesta por el análisis semanal (modal "Mejoras IA"): aceptar guarda el texto como edición del
+ * accionable (`actionableEdits`, no cambia ids ni estado); descartar solo la marca como vista.
+ */
+export async function resolveRewrite(
+  clientId: string,
+  ref: string,
+  action: "accept" | "dismiss",
+  title?: string,
+): Promise<ClientRecord | null> {
+  const res = await mutateClient(clientId, (client) => {
+    const analysis = client.analysis;
+    const ticketId = analysis?.refs[ref];
+    if (!analysis || !ticketId || analysis.rewritesResolved?.[ref]) return SKIP;
+    const proposal = analysis.output.reescrituras?.find((r) => r.ref === ref);
+    if (!proposal) return SKIP;
+    if (action === "accept") {
+      const text = title?.trim().slice(0, 500);
+      if (!text) return SKIP;
+      client.actionableEdits = { ...client.actionableEdits, [ticketId]: text };
+      client.ticketsUpdatedAt = new Date().toISOString();
+    }
+    analysis.rewritesResolved = { ...analysis.rewritesResolved, [ref]: action === "accept" ? "accepted" : "dismissed" };
+    return true;
+  });
+  return res?.client ?? null;
+}
+
+/** Guarda la redacción con IA del mail de seguimiento (solo si la huella sigue siendo la misma que se pidió). */
+export async function setStatusAI(clientId: string, value: StatusAI): Promise<boolean> {
+  const res = await mutateClient(clientId, (client) => {
+    client.statusAI = value;
+    return true;
+  });
+  return Boolean(res);
 }
