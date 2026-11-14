@@ -177,6 +177,8 @@ export interface ClientRecord {
   aiEstimate?: Record<string, number>;
   /** Redacción con IA del mail de seguimiento vigente (`lib/integrations/status-ai.ts`); vale mientras `key` coincida. */
   statusAI?: StatusAI;
+  /** Fallos seguidos al redactar el mail de seguimiento para la huella `key` (la sync corta tras `STATUS_AI_MAX_ATTEMPTS`). */
+  statusAIError?: { key: string; attempts: number; at: string; message: string };
 }
 
 /** Mail real (no invitación, no auto-respuesta, no minuta) intercambiado con referentes. */
@@ -1113,7 +1115,17 @@ export async function resolveRewrite(
 export async function setStatusAI(clientId: string, value: StatusAI): Promise<boolean> {
   const res = await mutateClient(clientId, (client) => {
     client.statusAI = value;
+    delete client.statusAIError;
     return true;
   });
   return Boolean(res);
+}
+
+/** Registra un fallo de redacción con IA; si la huella cambió, el contador vuelve a empezar. */
+export async function markStatusAIFailed(clientId: string, key: string, error: string): Promise<void> {
+  await mutateClient(clientId, (client) => {
+    const prev = client.statusAIError?.key === key ? client.statusAIError.attempts : 0;
+    client.statusAIError = { key, attempts: prev + 1, at: new Date().toISOString(), message: error.slice(0, 200) };
+    return true;
+  });
 }

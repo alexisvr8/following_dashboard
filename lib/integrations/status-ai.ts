@@ -1,6 +1,6 @@
 import { aiEnabled, postMeetingModel } from "@/lib/llm/postmeeting";
 import { generateStatusMail } from "@/lib/llm/status-mail";
-import { setStatusAI, type ClientRecord, type ClientsFile } from "@/lib/store/clients-store";
+import { markStatusAIFailed, setStatusAI, type ClientRecord, type ClientsFile } from "@/lib/store/clients-store";
 import type { WorkSettings } from "@/lib/store/settings-store";
 import { currentFollowupKind, statusAIRequest } from "@/lib/utils/followup";
 
@@ -13,6 +13,9 @@ const PER_RUN = 3;
 /** En la sync: no redactar mientras seguís tildando (últimos 20 min) ni más de una vez cada 3 h por cuenta. */
 const SETTLE_MS = 20 * 60_000;
 const MIN_GAP_MS = 3 * 3_600_000;
+/** Fallos con la misma entrada: la sync reintenta hasta 3 veces, con 30 min entre intentos (Actualizar no tiene tope). */
+export const STATUS_AI_MAX_ATTEMPTS = 3;
+const RETRY_GAP_MS = 30 * 60_000;
 
 const latestMeeting = (c: ClientRecord) => [...c.meetings].sort((a, b) => b.date.localeCompare(a.date))[0] ?? null;
 
@@ -35,6 +38,8 @@ export async function generateStatusMails(
         const now = Date.now();
         if (client.ticketsUpdatedAt && now - Date.parse(client.ticketsUpdatedAt) < SETTLE_MS) return [];
         if (client.statusAI && now - Date.parse(client.statusAI.generatedAt) < MIN_GAP_MS) return [];
+        const err = client.statusAIError;
+        if (err?.key === req.key && (err.attempts >= STATUS_AI_MAX_ATTEMPTS || now - Date.parse(err.at) < RETRY_GAP_MS)) return [];
       }
       return [{ client, meeting, req }];
     })
@@ -57,7 +62,8 @@ export async function generateStatusMails(
         revision: out.revision,
       });
       generated++;
-    } catch {
+    } catch (error) {
+      await markStatusAIFailed(client.id, req.key, (error as Error).message || "error").catch(() => undefined);
       failed++;
     }
   }

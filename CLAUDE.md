@@ -309,7 +309,8 @@ secciones con refs (H/C/M/N/Q/S/J/O); las reglas deciden qué va y el estado, la
 válido mientras `statusKey` de la entrada coincida; si no, vuelve a reglas). Corre en `runSync` (máx. 3/corrida) y en "Actualizar"
 (`PATCH /followup`, kind status). `reviewNotes` suma "Redactado con IA", dudas, el próximo mail del análisis y los posibles resueltos. Tono: sin citar mails/asuntos
 ("con lo que veníamos conversando"), secciones "Lo que avanzamos / En lo que estamos trabajando / Lo que necesitamos de su lado…";
-`effort: "low"`; en la sync no redacta si tildaste hace <20 min ni más de 1 vez cada 3 h por cuenta (Actualizar = `force`).
+`effort: "low"`; en la sync no redacta si tildaste hace <20 min ni más de 1 vez cada 3 h por cuenta (Actualizar = `force`); fallos en
+`client.statusAIError` (`markStatusAIFailed`, por huella): la sync reintenta cada 30 min hasta 3 veces, una huella nueva reinicia el contador.
 **Estimación con IA**: `minutos_estimados` en el JSON de la minuta (accionables nuevos) y del análisis (todos los abiertos debo) →
 `client.aiEstimate` (ticketId → min, múltiplos de 5). `plannedItems`: manual → aprendida (parecido que corregiste) → **tus tiempos por tipo**
 (`settings.estimateGuide` {comms 15, review 20, config 45, build 60}, ⚙ de Capacidad; `taskKind` por verbo en `lib/utils/task-kind.ts`, mails/
