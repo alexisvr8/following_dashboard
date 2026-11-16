@@ -1,7 +1,8 @@
 "use client";
 
 import { useMemo, useState } from "react";
-import { Check, CheckCircle2, Loader2, Pencil, Plus, Trash2, X } from "lucide-react";
+import Link from "next/link";
+import { Check, CheckCircle2, Columns3, Loader2, Pencil, Plus, Trash2, X } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { TicketItem } from "@/components/dashboard/TicketItem";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
@@ -41,7 +42,10 @@ export function ActionablesList({
   emptyText = "No hay accionables.",
   editable,
   dense = false,
+  boardLink = false,
 }: {
+  /** Acceso directo de cada pendiente a su card en /accionables (`?item=`). Solo cuentas asignadas. */
+  boardLink?: boolean;
   tickets: Ticket[];
   /** Cerradas de reuniones que ya no están vigentes: solo lectura. */
   history?: ExecutedEntry[];
@@ -148,9 +152,22 @@ export function ActionablesList({
 
   const box = dense ? "divide-y divide-row-divider overflow-hidden rounded-lg border bg-card" : "space-y-2";
 
+  const iconBtn = "rounded-md p-1 text-muted-foreground transition-colors hover:bg-muted hover:text-foreground";
+  const boardBtn = (t: Ticket) =>
+    boardLink && !t.isDone ? (
+      <Link
+        href={`/accionables?item=${encodeURIComponent(t.id)}`}
+        className={iconBtn}
+        title="Ver en el tablero de accionables"
+        aria-label="Ver en el tablero de accionables"
+        onClick={(e) => e.stopPropagation()}
+      >
+        <Columns3 className="size-3.5" />
+      </Link>
+    ) : null;
   const actionsFor = (t: Ticket) => {
-    if (!editable || isAutoTicket(t.id)) return undefined;
-    const iconBtn = "rounded-md p-1 text-muted-foreground transition-colors hover:bg-muted hover:text-foreground";
+    const board = boardBtn(t);
+    if (!editable || isAutoTicket(t.id)) return board ?? undefined;
     if (confirmRemove === t.id) {
       return (
         <span className="flex shrink-0 items-center gap-1 text-[11px]">
@@ -166,6 +183,7 @@ export function ActionablesList({
     }
     return (
       <span className="flex shrink-0 items-center">
+        {board}
         <button type="button" className={iconBtn} title="Editar punto" aria-label="Editar punto" onClick={() => setEditing({ id: t.id, title: t.title })}>
           <Pencil className="size-3.5" />
         </button>

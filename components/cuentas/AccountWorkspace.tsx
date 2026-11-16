@@ -31,7 +31,10 @@ export function AccountWorkspace({
   participants,
   meetingHistory,
   analysis,
+  onBoard = false,
 }: {
+  /** Cuenta asignada: sus pendientes tienen card en /accionables (acceso directo "Ver en tablero"). */
+  onBoard?: boolean;
   header: React.ReactNode;
   clientId: string;
   meeting: {
@@ -138,6 +141,7 @@ export function AccountWorkspace({
                   onSaved={onSaved}
                   editable={{ clientId, onChanged: () => router.refresh() }}
                   emptyText="No se generaron accionables en la última reunión."
+                  boardLink={onBoard}
                   dense
                 />
                 {changes > 0 && (

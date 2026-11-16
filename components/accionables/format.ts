@@ -100,31 +100,35 @@ const byPriority = (a: PlannedItem, b: PlannedItem) =>
   a.originDate.localeCompare(b.originDate);
 
 /**
- * Grupos de cada columna / sección (solo visual; Capacidad sigue con `compareItems`): primero las cuentas de
- * "Más atención", después los arrastrados y al final los nuevos; dentro de cada grupo por prioridad y luego fecha.
- * `order` = orden manual (arrastrar dentro de la columna): lo ordenado a mano va según su posición y lo que nunca
- * se ordenó (nuevo) queda arriba, por prioridad.
+ * Grupos de cada columna / sección (solo visual): primero las cuentas de "Más atención", después las cuentas con
+ * reunión próxima (`meetingSoonAt`, la más cercana arriba), los arrastrados y al final los nuevos; dentro de cada
+ * grupo por prioridad y luego fecha. `order` = orden manual (arrastrar dentro de la columna): lo ordenado a mano va
+ * según su posición y lo que nunca se ordenó (nuevo) queda arriba.
  */
-export type BoardGroup = "attention" | "carried" | "fresh";
-export const groupOf = (i: PlannedItem): BoardGroup => (i.attention ? "attention" : i.carried ? "carried" : "fresh");
+export type BoardGroup = "attention" | "meeting" | "carried" | "fresh";
+export const BOARD_GROUPS: BoardGroup[] = ["attention", "meeting", "carried", "fresh"];
+export const groupOf = (i: PlannedItem): BoardGroup =>
+  i.attention ? "attention" : i.meetingSoonAt ? "meeting" : i.carried ? "carried" : "fresh";
+/** Grupos plegados (en todas las columnas): preferencia del navegador. */
+export const COLLAPSED_KEY = "accionables_collapsed";
 
-export function boardGroups(
-  items: PlannedItem[],
-  order?: Record<string, number>,
-): { attention: PlannedItem[]; carried: PlannedItem[]; fresh: PlannedItem[] } {
+/** "Reunión jue 10:00" del chip de las cards. */
+export const meetingChip = (iso: string) =>
+  `${new Date(iso).toLocaleDateString("es", { weekday: "short" }).replace(".", "")} ${new Date(iso).toLocaleTimeString("es", { hour: "2-digit", minute: "2-digit", hour12: false })}`;
+
+export function boardGroups(items: PlannedItem[], order?: Record<string, number>): Record<BoardGroup, PlannedItem[]> {
   const cmp = (a: PlannedItem, b: PlannedItem) => {
     const ra = order?.[a.id];
     const rb = order?.[b.id];
     if (ra !== undefined && rb !== undefined) return ra - rb || byPriority(a, b);
     if (ra !== undefined) return 1;
     if (rb !== undefined) return -1;
-    return byPriority(a, b);
+    return (a.meetingSoonAt ?? "~").localeCompare(b.meetingSoonAt ?? "~") || byPriority(a, b);
   };
-  return {
-    attention: items.filter((i) => groupOf(i) === "attention").sort(cmp),
-    carried: items.filter((i) => groupOf(i) === "carried").sort(cmp),
-    fresh: items.filter((i) => groupOf(i) === "fresh").sort(cmp),
-  };
+  return Object.fromEntries(BOARD_GROUPS.map((g) => [g, items.filter((i) => groupOf(i) === g).sort(cmp)])) as Record<
+    BoardGroup,
+    PlannedItem[]
+  >;
 }
 
 const DAY_FMT = new Intl.DateTimeFormat("es", { weekday: "short", day: "2-digit", month: "2-digit" });

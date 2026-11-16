@@ -2,7 +2,7 @@ import type { ClientRecord } from "@/lib/store/clients-store";
 import type { WorkSettings } from "@/lib/store/settings-store";
 import type { CalendarEventLite } from "@/lib/integrations/calendar";
 import { toMinutes } from "@/lib/utils/capacity";
-import { accountMatcher, plannedItems, type PlannedItem } from "@/lib/utils/deadlines";
+import { accountMatcher, nextMeetings, plannedItems, type PlannedItem } from "@/lib/utils/deadlines";
 
 // Planificador semanal (meta: cerrar los accionables pendientes antes del viernes).
 // Por día: ventana flexible [workStart, workEnd] con un horario normal [coreStart, coreEnd].
@@ -26,6 +26,8 @@ export interface PlanBlock {
   soft?: boolean;
   /** Accionables proyectados en el bloque (kind "task"). */
   itemIds?: string[];
+  /** Preparación de la reunión con la cuenta: cuándo es ("jue 10:00"). */
+  prepFor?: string;
 }
 
 export interface FreeGap {
@@ -84,6 +86,9 @@ export interface WeekPlan {
     verdict: Verdict;
     /** Accionables propios que no llegan a su fecha límite con los huecos de la semana. */
     atRiskCount: number;
+    /** Preparación de reuniones próximas: accionables míos y cuántos no llegan antes de la reunión. */
+    prepCount: number;
+    prepLateCount: number;
   };
   /** Todos los pendientes con plazo (debo y me deben), ordenados por fecha de entrega. */
   items: PlannedItem[];
@@ -96,6 +101,9 @@ const r1 = (n: number) => Math.round(n * 10) / 10;
 const hhmm = (ms: number) =>
   new Date(ms).toLocaleTimeString("es", { hour: "2-digit", minute: "2-digit", hour12: false });
 const dayLabel = (d: Date) => d.toLocaleDateString("es", { weekday: "short", day: "numeric" }).replace(".", "");
+/** "jue 10:00" (reunión a preparar). */
+export const meetingLabel = (iso: string) =>
+  `${new Date(iso).toLocaleDateString("es", { weekday: "short" }).replace(".", "")} ${hhmm(Date.parse(iso))}`;
 
 type Interval = [number, number];
 
@@ -173,7 +181,6 @@ export function computeWeekPlan(
   type Slot = { from: number; to: number; flex: boolean; used: number };
   type DayCtx = PlanDay & { ws: number; slots: Slot[] };
   const days: DayCtx[] = [];
-  const nextMeeting = new Map<string, number>();
   let meetingCount = 0;
   let clientMeetingCount = 0;
   let upcomingCount = 0;
@@ -219,9 +226,6 @@ export function computeWeekPlan(
       if (account) {
         clientMeetingCount++;
         clientMs += clip[1] - clip[0];
-        if (a > nowMs && (!nextMeeting.has(account.id) || a < nextMeeting.get(account.id)!)) {
-          nextMeeting.set(account.id, a);
-        }
       } else {
         otherMs += clip[1] - clip[0];
       }
@@ -284,8 +288,9 @@ export function computeWeekPlan(
     });
   }
 
-  // ---- accionables pendientes: uno por uno, por fecha de entrega (deadlines.ts) ----
-  const items = plannedItems(clients, settings, now, new Map([...nextMeeting].map(([id, at]) => [id, new Date(at).toISOString()])));
+  // ---- accionables pendientes: uno por uno, en el orden de foco de `compareItems` (deadlines.ts) ----
+  // Próxima reunión por cuenta con todos los eventos recibidos (la página pide una semana más para ver las del lunes).
+  const items = plannedItems(clients, settings, now, nextMeetings(clients, events, now));
   // Solo lo vencido y lo que vence dentro de la semana planificada: lo de más adelante se reparte en su semana
   // (sigue en `items` para el tablero de /accionables).
   const planEnd = new Date(start.getTime() + 7 * 86_400_000).toISOString();
@@ -330,6 +335,7 @@ export function computeWeekPlan(
               accountName: task.item.clientName,
               soft: flexPass,
               itemIds: [task.item.id],
+              ...(task.item.prep && task.item.meetingSoonAt && { prepFor: meetingLabel(task.item.meetingSoonAt) }),
             });
           }
           day.taskHours += take / HOUR;
@@ -348,12 +354,17 @@ export function computeWeekPlan(
   }
 
   // En riesgo: lo planificado después de su fecha límite, o lo que no entró y vence dentro de la semana.
+  // Preparación: el límite efectivo es el inicio de la reunión (`prepLate` si no llega).
   const weekEnd = start.getTime() + 7 * 86_400_000;
   for (const t of allTasks) {
     const limit = Date.parse(t.item.limit);
-    t.item.atRisk = t.finishAt != null ? t.finishAt > limit : limit < weekEnd;
+    const meeting = t.item.prep && t.item.meetingSoonAt ? Date.parse(t.item.meetingSoonAt) : Infinity;
+    t.item.atRisk = t.finishAt != null ? t.finishAt > Math.min(limit, meeting) : Math.min(limit, meeting) < weekEnd;
+    if (meeting !== Infinity) t.item.prepLate = t.finishAt != null ? t.finishAt > meeting : meeting < weekEnd;
   }
   const atRiskCount = allTasks.filter((t) => t.item.atRisk).length;
+  const prepCount = allTasks.filter((t) => t.item.prep).length;
+  const prepLateCount = allTasks.filter((t) => t.item.prepLate).length;
 
   for (const day of days) {
     day.taskCount = new Set(day.blocks.flatMap((b) => b.itemIds ?? [])).size;
@@ -410,6 +421,8 @@ export function computeWeekPlan(
       finishLabel: finish && !unscheduledMs ? dayLabel(new Date(finish)) : null,
       verdict,
       atRiskCount,
+      prepCount,
+      prepLateCount,
     },
     items,
   };

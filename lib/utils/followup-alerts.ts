@@ -1,16 +1,24 @@
 import { followupTicketId, type ClientRecord } from "@/lib/store/clients-store";
 import type { WorkSettings } from "@/lib/store/settings-store";
 import { isOwnActionable } from "@/lib/utils/capacity";
-import { mailTickets } from "@/lib/utils/mail-tickets";
+import { actionableMailTickets, mailTickets, openMailRequests } from "@/lib/utils/mail-tickets";
 import { accountActionables } from "@/lib/utils/actionables";
 
 // Alertas de seguimiento: que ninguna cuenta asignada pase más de `staleBusinessDays` días
 // hábiles sin actualización sobre lo último acordado.
 // - client_waiting: el último mail es del cliente y no se respondió (≥1 día hábil).
+// - client_request: pedidos del cliente por mail sin resolver (≥1 día hábil); no van al tablero de accionables.
 // - awaiting_client: el último movimiento es un mail nuestro sin respuesta y hay pendientes.
 // - no_progress: sin mails ni reuniones hace N días hábiles y hay accionables abiertos.
 
-export type AlertKind = "client_waiting" | "awaiting_client" | "no_progress";
+export type AlertKind = "client_waiting" | "client_request" | "awaiting_client" | "no_progress";
+
+export interface AlertRequest {
+  id: string;
+  title: string;
+  date: string;
+  subject: string;
+}
 
 export interface AccountAlert {
   clientId: string;
@@ -23,6 +31,8 @@ export interface AccountAlert {
   lastMovementLabel: string;
   pendingOwn: number;
   pendingClient: number;
+  /** Pedidos del cliente por mail sin resolver (más viejo primero); se tildan desde la tarjeta. */
+  requests?: AlertRequest[];
 }
 
 /** Días hábiles completos transcurridos desde `iso` (sin contar ese día) hasta hoy inclusive. */
@@ -53,7 +63,7 @@ export function accountPending(client: ClientRecord, settings: WorkSettings, now
   if (latest && now.getTime() - Date.parse(latest.date) <= 14 * 86_400_000 && !done.has(followupTicketId(client.id, latest.id))) {
     pendingOwn++;
   }
-  for (const t of mailTickets(client)) if (!done.has(t.id)) pendingOwn++;
+  for (const t of actionableMailTickets(client)) if (!done.has(t.id)) pendingOwn++;
   return { latest, done, pendingOwn, pendingClient };
 }
 
@@ -105,6 +115,10 @@ export function computeAlerts(clients: ClientRecord[], settings: WorkSettings, n
       pendingOwn,
       pendingClient,
     };
+    const requests = openMailRequests(c)
+      .sort((x, y) => x.date.localeCompare(y.date))
+      .map((t) => ({ id: t.id, title: t.title, date: t.date, subject: t.subject }));
+    if (requests.length) Object.assign(base, { requests });
 
     const reply = mailTickets(c).find((t) => t.id.endsWith("-reply"));
     if (reply && !done.has(reply.id)) {
@@ -114,13 +128,20 @@ export function computeAlerts(clients: ClientRecord[], settings: WorkSettings, n
         continue;
       }
     }
+    if (requests.length) {
+      const days = businessDaysSince(requests[0].date, now, settings.workDays);
+      if (days >= 1) {
+        alerts.push({ ...base, kind: "client_request", businessDays: days });
+        continue;
+      }
+    }
     const days = businessDaysSince(last.at, now, settings.workDays);
     const stale = attention ? Math.min(settings.staleBusinessDays, settings.attentionStaleDays ?? 1) : settings.staleBusinessDays;
     if (days >= stale && pendingOwn + pendingClient > 0) {
       alerts.push({ ...base, kind: last.mine ? "awaiting_client" : "no_progress", businessDays: days });
     }
   }
-  const ORDER: Record<AlertKind, number> = { client_waiting: 0, no_progress: 1, awaiting_client: 2 };
+  const ORDER: Record<AlertKind, number> = { client_waiting: 0, client_request: 1, no_progress: 2, awaiting_client: 3 };
   return alerts.sort(
     (x, y) => Number(Boolean(y.attention)) - Number(Boolean(x.attention)) || ORDER[x.kind] - ORDER[y.kind] || y.businessDays - x.businessDays,
   );

@@ -3,7 +3,7 @@ import type { WorkSettings } from "@/lib/store/settings-store";
 import type { CalendarEventLite } from "@/lib/integrations/calendar";
 import { accountActionables } from "@/lib/utils/actionables";
 import { isOwnActionable, learnedRole } from "@/lib/utils/capacity";
-import { mailTickets } from "@/lib/utils/mail-tickets";
+import { actionableMailTickets } from "@/lib/utils/mail-tickets";
 import { isAutoTicket } from "@/lib/utils/auto-ticket";
 import { keywordSimilarity } from "@/lib/utils/mail-classify";
 import { addBusinessDays, parseStep, rollToWorkday, type StepDue } from "@/lib/utils/gemini-notes-parser";
@@ -64,6 +64,12 @@ export interface PlannedItem {
   /** Días hábiles hasta la entrega (0 = hoy, negativo = atrasado). */
   businessDaysLeft: number;
   nextMeetingAt: string | null;
+  /** Reunión con la cuenta dentro de `PREP_BUSINESS_DAYS` (ISO): agrupa el tablero y, si es mío, es preparación. */
+  meetingSoonAt?: string;
+  /** Mío y con reunión próxima: Capacidad lo cierra antes de la reunión (orden y límite efectivo). */
+  prep?: boolean;
+  /** Preparación que no llega a terminarse antes de la reunión (lo completa `computeWeekPlan`). */
+  prepLate?: boolean;
   /** No entra en los huecos libres antes de su fecha (lo completa `computeWeekPlan`). */
   atRisk?: boolean;
   /** Prioridad de la cuenta que ordena el tablero: solo la que marcaste (🔥 o manual); la de la IA es informativa. */
@@ -143,15 +149,31 @@ function priorityOf(item: Pick<PlannedItem, "bucket" | "kind" | "businessDaysLef
 
 const PRIORITY_RANK: Record<Priority, number> = { alta: 0, media: 1, baja: 2 };
 
+/** Ventana de "reunión próxima": días hábiles desde hoy hasta la reunión con la cuenta. */
+export const PREP_BUSINESS_DAYS = 5;
+
+/**
+ * Nivel de foco (menor = primero): 0 vencido (ya está atrasado) → 1 preparación de reunión próxima (debo) →
+ * 2 cuenta de "Más atención" → 3 el resto.
+ */
+export function focusTier(i: Pick<PlannedItem, "bucket" | "prep" | "attention">): number {
+  return i.bucket === "overdue" ? 0 : i.prep ? 1 : i.attention ? 2 : 3;
+}
+
 /** Cuenta prioritaria: sus accionables suben un nivel (baja → media → alta). Nunca baja una prioridad. */
 export function bumpForAccount(priority: Priority, account: Priority): Priority {
   if (account !== "alta") return priority;
   return priority === "baja" ? "media" : "alta";
 }
 
-/** Orden de trabajo: primero lo que vence antes; a igual fecha, prioridad, cuenta prioritaria y luego lo mío. */
+/**
+ * Orden de trabajo (Capacidad reparte los huecos en este orden): foco (`focusTier`: vencido → preparar la reunión
+ * más cercana → más atención → resto); después lo que vence antes; a igual fecha, prioridad, cuenta prioritaria y lo mío.
+ */
 export function compareItems(a: PlannedItem, b: PlannedItem): number {
   return (
+    focusTier(a) - focusTier(b) ||
+    (a.prep && b.prep ? (a.meetingSoonAt ?? "").localeCompare(b.meetingSoonAt ?? "") : 0) ||
     a.due.localeCompare(b.due) ||
     Number(Boolean(b.attention)) - Number(Boolean(a.attention)) ||
     PRIORITY_RANK[a.priority] - PRIORITY_RANK[b.priority] ||
@@ -256,7 +278,7 @@ function rawItems(client: ClientRecord, settings: WorkSettings, now: Date): RawI
       });
     }
   }
-  for (const t of mailTickets(client)) {
+  for (const t of actionableMailTickets(client)) {
     if (done.has(t.id)) continue;
     if (t.kind !== "reply" && isGreetingOnly(t.title)) continue;
     const author = t.description.match(AUTHOR)?.[1];
@@ -351,12 +373,14 @@ export function plannedItems(
         ? guidedMinutes(taskKind(r.title, r.kind === "step" || r.kind === "custom" ? null : "reply"), c.aiEstimate?.[r.id], settings.estimateGuide ?? DEFAULT_ESTIMATE_GUIDE)
         : null;
     const sideOverride = c.actionableSide?.[r.id];
+    const meetingAt = meetingsByClient.get(c.id) ?? null;
+    const meetingSoon = meetingAt != null && businessDaysBetween(now, new Date(meetingAt), workDays) <= PREP_BUSINESS_DAYS;
     const base = {
       bucket: bucketOf(due, limit, dueKind, now),
       kind: r.kind,
       side: sideOverride ?? r.side,
       businessDaysLeft: businessDaysBetween(now, dueKind === "target" && due < endOfDay(now) ? limit : due, workDays),
-      nextMeetingAt: meetingsByClient.get(c.id) ?? null,
+      nextMeetingAt: meetingAt,
     };
     items.push({
       id: r.id,
@@ -384,6 +408,7 @@ export function plannedItems(
       sideManual: sideOverride != null,
       priority: c.profile?.attention ? "alta" : bumpForAccount(priorityOf(base, now, workDays), accountLevel.get(c.id) ?? "media"),
       ...(c.profile?.attention && { attention: true }),
+      ...(meetingSoon && { meetingSoonAt: meetingAt, ...(base.side === "debo" && { prep: true }) }),
       accountPriority: accountLevel.get(c.id) ?? "media",
       ...(r.evidence !== undefined && { aiAdded: true, evidence: r.evidence }),
       ...base,
