@@ -6,9 +6,10 @@ import { GET as getXtractStatus } from "@/app/api/integrations/xtract/route";
 import { GET as getGeminiNotesStatus } from "@/app/api/integrations/gemini-notes/route";
 import type { IntegrationStatus } from "@/types/integration";
 import { AIUsageCard } from "@/components/conexiones/AIUsageCard";
-import { aiEnabled, postMeetingModel } from "@/lib/llm/postmeeting";
+import { aiEnabled, postMeetingModel, statusMailModel } from "@/lib/llm/postmeeting";
+import { getSettings } from "@/lib/store/settings-store";
 import { getAIUsage } from "@/lib/store/ai-usage-store";
-import { summarizeAIUsage } from "@/lib/utils/ai-usage-summary";
+import { spentSince, summarizeAIUsage } from "@/lib/utils/ai-usage-summary";
 
 // El estado depende de .data/google-tokens.json (archivo local, no cacheable):
 // forzamos render dinámico.
@@ -26,7 +27,8 @@ async function loadIntegrations(): Promise<IntegrationStatus[]> {
 }
 
 export default async function ConexionesPage() {
-  const [integrations, usage] = await Promise.all([loadIntegrations(), getAIUsage().catch(() => [])]);
+  const [integrations, usage, settings] = await Promise.all([loadIntegrations(), getAIUsage().catch(() => []), getSettings()]);
+  const credit = settings.aiCredit ?? null;
   const now = new Date();
   const month = summarizeAIUsage(usage, 30, now);
 
@@ -43,6 +45,9 @@ export default async function ConexionesPage() {
       <AIUsageCard
         enabled={aiEnabled()}
         model={postMeetingModel()}
+        statusModel={statusMailModel()}
+        credit={credit}
+        spent={credit ? spentSince(usage, credit.since) : { costUsd: 0, calls: 0 }}
         today={month.byDay[now.toLocaleDateString("en-CA")]}
         week={summarizeAIUsage(usage, 7, now)}
         month={month}

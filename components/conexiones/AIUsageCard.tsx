@@ -1,13 +1,15 @@
 import { Card, CardAction, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge, StatusDot } from "@/components/ui/badge";
 import type { UsageBucket, UsageSummary } from "@/lib/utils/ai-usage-summary";
+import type { AICredit } from "@/lib/store/settings-store";
+import { AICreditPanel } from "@/components/conexiones/AICreditPanel";
 
 // Consumo de IA en `/conexiones`: costo estimado de hoy / 7 / 30 días, desglose por tipo de llamada, por origen
 // y las cuentas que más consumen. Datos del registro `app_state.ai_usage` (ver `lib/store/ai-usage-store.ts`).
 
 const KIND_LABEL: Record<string, { name: string; hint: string }> = {
   postmeeting: { name: "Mail post-reunión", hint: "1 por reunión nueva" },
-  status: { name: "Mail de seguimiento", hint: "Al cambiar el contenido · máx. 1 c/3 h por cuenta" },
+  status: { name: "Mail de seguimiento", hint: "Al cambiar el contenido · máx. 1 c/3 h por cuenta · modelo barato" },
   analysis: { name: "Análisis semanal", hint: "Lunes 07:00 · 1 por cuenta" },
 };
 
@@ -39,12 +41,18 @@ function Figure({ label, bucket }: { label: string; bucket: UsageBucket | undefi
 export function AIUsageCard({
   enabled,
   model,
+  statusModel,
+  credit,
+  spent,
   today,
   week,
   month,
 }: {
   enabled: boolean;
   model: string;
+  statusModel: string;
+  credit: AICredit | null;
+  spent: { costUsd: number; calls: number };
   today: UsageBucket | undefined;
   week: UsageSummary;
   month: UsageSummary;
@@ -58,7 +66,7 @@ export function AIUsageCard({
       <CardHeader>
         <CardTitle className="text-sm">Consumo de IA (Claude)</CardTitle>
         <CardDescription className="text-xs">
-          Modelo <span className="font-mono">{model}</span> · costo estimado con precios de lista
+          Post-reunión y análisis <span className="font-mono">{model}</span> · seguimiento <span className="font-mono">{statusModel}</span> · costo estimado con precios de lista
         </CardDescription>
         <CardAction>
           <Badge variant={enabled ? "success" : "outline"}>
@@ -68,6 +76,7 @@ export function AIUsageCard({
         </CardAction>
       </CardHeader>
       <CardContent className="space-y-5">
+        <AICreditPanel credit={credit} spent={spent} />
         <div className="grid grid-cols-1 gap-2 sm:grid-cols-3">
           <Figure label="Hoy" bucket={today} />
           <Figure label="Últimos 7 días" bucket={week.total} />

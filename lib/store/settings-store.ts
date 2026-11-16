@@ -47,6 +47,14 @@ export interface WorkSettings {
   people: Record<string, PersonRole>;
   /** Tus tiempos por tipo de tarea (min): base de la estimación de cada accionable (ver `lib/utils/task-kind.ts`). */
   estimateGuide: EstimateGuide;
+  /** Saldo de la API cargado a mano (la API no expone el saldo): monto en US$ y desde cuándo se descuenta el gasto. */
+  aiCredit?: AICredit | null;
+}
+
+export interface AICredit {
+  amountUsd: number;
+  /** ISO: se descuenta lo registrado desde acá (`spentSince`). */
+  since: string;
 }
 
 export const DEFAULT_SETTINGS: WorkSettings = {
@@ -122,6 +130,11 @@ export async function updateSettings(patch: Partial<WorkSettings>): Promise<Work
       .slice(0, 300);
   }
   if (typeof patch.autoMeetingDrafts === "boolean") next.autoMeetingDrafts = patch.autoMeetingDrafts;
+  if (patch.aiCredit === null) next.aiCredit = null;
+  else if (patch.aiCredit && typeof patch.aiCredit.amountUsd === "number" && patch.aiCredit.amountUsd >= 0 && patch.aiCredit.amountUsd < 1e6) {
+    const since = typeof patch.aiCredit.since === "string" && !Number.isNaN(Date.parse(patch.aiCredit.since)) ? patch.aiCredit.since : new Date().toISOString();
+    next.aiCredit = { amountUsd: Math.round(patch.aiCredit.amountUsd * 100) / 100, since };
+  }
   if (patch.people && typeof patch.people === "object") {
     const ROLES: PersonRole[] = ["me", "team", "client", "partner"];
     next.people = Object.fromEntries(

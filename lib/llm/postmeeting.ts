@@ -11,6 +11,9 @@ export const DEFAULT_POSTMEETING_MODEL = "claude-sonnet-5-5";
 
 export const aiEnabled = () => Boolean(process.env.ANTHROPIC_API_KEY);
 export const postMeetingModel = () => process.env.ANTHROPIC_MODEL || DEFAULT_POSTMEETING_MODEL;
+/** Redacción del mail de seguimiento: corre en cada sync y solo redacta sobre datos ya decididos → modelo barato. */
+export const DEFAULT_STATUS_MODEL = "claude-haiku-5-5";
+export const statusMailModel = () => process.env.ANTHROPIC_MODEL_STATUS || DEFAULT_STATUS_MODEL;
 
 export interface PostMeetingInput {
   clientName: string;

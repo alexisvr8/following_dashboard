@@ -109,7 +109,8 @@ se vuelve menú desplegable `MobileNav`). Sin sidebar. 5 secciones. Navegación 
   `IntegrationStatusCard`, reusados del Dashboard original), llamando directamente a los
   handlers `GET` de `/api/integrations/*` (sin fetch HTTP, in-process). Debajo, `AIUsageCard`
   (`components/conexiones/`): consumo de IA estimado hoy / 7 / 30 días, por tipo, por origen y top 5 cuentas
-  (`summarizeAIUsage`, `lib/utils/ai-usage-summary.ts`, el mismo que usa `GET /api/ai-usage`).
+  (`summarizeAIUsage`, `lib/utils/ai-usage-summary.ts`, el mismo que usa `GET /api/ai-usage`) + **saldo estimado** (`AICreditPanel`:
+  saldo de la consola cargado a mano en `settings.aiCredit {amountUsd, since}` menos `spentSince`; la API no expone el saldo).
 
 Dark mode vía `next-themes` (`ThemeProvider`/`ThemeToggleButton` en
 `components/layout/`), toggle en `AppHeader`; tokens OKLCH ya definidos en
@@ -282,7 +283,8 @@ Pendiente explícito: análisis de sentimiento real, envío
 automático de emails (el envío es manual, desde `/cuentas/[id]`).
 
 ## Mail post-reunión con IA (Claude, única llamada a un LLM)
-`ANTHROPIC_API_KEY` + `ANTHROPIC_MODEL` (default `claude-sonnet-5-5`) en `.env.local`; sin clave todo sigue por reglas.
+`ANTHROPIC_API_KEY` + `ANTHROPIC_MODEL` (default `claude-sonnet-5-5`: post-reunión y análisis) + `ANTHROPIC_MODEL_STATUS` (default `claude-haiku-5-5`:
+redacción del mail de seguimiento, `statusMailModel`) en `.env.local`; sin clave todo sigue por reglas.
 `lib/llm/postmeeting.ts` (`generatePostMeeting`, `messages.parse` + `zodOutputFormat`) con prompt único + ejemplo de Salvita
 en `postmeeting-prompt.ts` y JSON fijo en `postmeeting-schema.ts` (objetivo, puntos, charlamos, accionables {titulo,
 descripcion, responsable, empresa cliente|xtract|ambas, status Pendiente|En curso|Stand By, fecha, requiere_revision},
@@ -350,6 +352,10 @@ nuestro lado [incl. consultas/compromisos por mail] / de su lado / en conjunto /
 `followups["week:<lunes>"]` (`weekKey`), actualiza el mismo borrador si se corre de nuevo; `syncStatus.lastWeeklyDraftsAt`).
 Los borradores en Gmail se actualizan en vez de duplicarse (`createThreadDraft(input, replaceDraftId)` → `drafts.update`;
 `FollowupDraft.gmailBody` = texto que quedó en Gmail: el composer avisa "no tiene los últimos cambios" y ofrece actualizarlo). Candado en `globalThis.__syncRunning` (corrida simultánea ⇒ `skipped`).
+**Varios equipos sobre la misma base**: candado compartido `app_state.scheduler_lock` (`lib/jobs/scheduler-lock.ts`, `holdSchedulerLock`: el dueño lo
+renueva en cada tick, vence a los 3 min; escribe y relee) → solo un equipo corre el scheduler, el otro queda como interfaz (lo manual sigue
+en ambos; el tooltip de `SyncStatus` muestra dónde corre, `SCHEDULER_NAME`). Las tareas del lunes se reservan al EMPEZAR (`claimWeeklyTask`,
+`weekly_ai.claims`). Borrador semanal enviado o borrado directo en Gmail (`draftFate`): se marca `sentAt` / no se recrea.
 Estado en `.data/sync-status.json` (`lib/store/sync-status-store.ts`).
 Scheduler: `instrumentation.ts` → `lib/jobs/scheduler.ts`, solo si `CRON_ENABLED=true` (runtime nodejs; corre
 con `pnpm dev`/`pnpm start`). Tick por minuto, hora local (`TZ`): lunes (`CRON_DRAFTS_DAY`=1) desde `CRON_DRAFTS_AT`

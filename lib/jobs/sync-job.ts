@@ -1,7 +1,7 @@
 import { backfillMeetingNotes, backfillTranscripts, discoverGeminiMeetings } from "@/lib/integrations/gemini-mail";
 import { generateMeetingAI } from "@/lib/integrations/meeting-ai";
 import { generateStatusMails } from "@/lib/integrations/status-ai";
-import { createThreadDraft } from "@/lib/integrations/gmail";
+import { createThreadDraft, draftFate } from "@/lib/integrations/gmail";
 import { syncClientsActivity } from "@/lib/integrations/client-activity";
 import {
   followupKey,
@@ -170,6 +170,18 @@ async function createWeeklyDrafts(file: ClientsFile, settings: WorkSettings) {
     if (!meeting) continue;
     const previous = client.followups?.[key];
     if (previous?.sentAt) continue;
+    // Si lo enviaste o borraste directo en Gmail, la app no se entera: se marca enviado / se respeta el borrado
+    // en vez de crear otro borrador igual.
+    if (previous?.gmailDraftId) {
+      try {
+        const fate = await draftFate(previous.gmailDraftId, previous.threadId, previous.draftCreatedAt);
+        if (fate.state === "sent") await saveFollowup(client.id, key, { ...previous, sentAt: fate.at });
+        if (fate.state !== "exists") continue;
+      } catch (error) {
+        out.push({ clientId: client.id, ok: false, error: (error as Error).message });
+        continue;
+      }
+    }
     const draft = buildWeeklyPlan(client, meeting, file.ownerEmail ?? null, settings);
     if (!draft || !draft.to.length) continue;
     const threadId = draft.threadId ?? null;

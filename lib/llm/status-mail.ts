@@ -1,7 +1,7 @@
 import Anthropic from "@anthropic-ai/sdk";
 import { zodOutputFormat } from "@anthropic-ai/sdk/helpers/zod";
 import { z } from "zod";
-import { postMeetingModel } from "@/lib/llm/postmeeting";
+import { statusMailModel } from "@/lib/llm/postmeeting";
 import { recordResponse, type UsageMeta } from "@/lib/store/ai-usage-store";
 
 // Mail de seguimiento (actualización de avance) redactado con Claude. La app decide QUÉ va (hecho / pendiente /
@@ -67,7 +67,7 @@ export function buildStatusMessage(input: StatusMailInput): string {
 
 export async function generateStatusMail(input: StatusMailInput, meta?: UsageMeta): Promise<StatusMailOutput> {
   const client = new Anthropic();
-  const model = postMeetingModel();
+  const model = statusMailModel();
   const response = await client.messages.parse({
     model,
     max_tokens: 4000,

@@ -295,6 +295,38 @@ export async function createThreadDraft(
 }
 
 /**
+ * Qué pasó con un borrador que dejó la app: sigue en Gmail, se envió desde Gmail (hay un mail mío en su hilo
+ * desde que se creó) o se borró. Sirve para no volver a crearlo cuando ya no está.
+ */
+export async function draftFate(
+  draftId: string,
+  threadId: string | null | undefined,
+  createdAt: string | undefined,
+): Promise<{ state: "exists" } | { state: "sent"; at: string } | { state: "deleted" }> {
+  const auth = await getAuthorizedClient();
+  if (!auth) throw new Error("google_not_connected");
+  const gmail = google.gmail({ version: "v1", auth });
+  try {
+    await gmail.users.drafts.get({ userId: "me", id: draftId, format: "minimal" });
+    return { state: "exists" };
+  } catch (error) {
+    const code = (error as { code?: number }).code;
+    if (code !== 404 && code !== 400) throw error;
+  }
+  if (threadId) {
+    const thread = await gmail.users.threads.get({ userId: "me", id: threadId, format: "minimal" });
+    const from = createdAt ? Date.parse(createdAt) - 60_000 : 0;
+    const sentAt = (thread.data.messages ?? [])
+      .filter((m) => m.labelIds?.includes("SENT") && !m.labelIds.includes("DRAFT"))
+      .map((m) => Number(m.internalDate))
+      .filter((t) => t >= from)
+      .sort((a, b) => b - a)[0];
+    if (sentAt) return { state: "sent", at: new Date(sentAt).toISOString() };
+  }
+  return { state: "deleted" };
+}
+
+/**
  * Envía el mail (en el hilo elegido o como mail nuevo). `replacesDraftId`: borrador en Gmail de este
  * mismo mensaje, se descarta para que no quede pendiente y se envíe dos veces.
  */
