@@ -1201,7 +1201,9 @@ function ItemCard(
       className={cn(
         "rounded-lg border border-l-2 transition-[opacity,transform,border-color,background-color] duration-150",
         TONE_CARD[tone],
-        expanded ? "shadow-highlight" : "hover:border-border-strong",
+        expanded
+          ? "relative z-[1] shadow-highlight ring-[2.5px] ring-foreground-strong ring-offset-2 ring-offset-surface"
+          : "hover:border-border-strong",
         busy && "opacity-60",
         dragging && "scale-[0.98] border-dashed opacity-30",
         floating && "shadow-popover",
@@ -1278,7 +1280,13 @@ function ItemRow(props: ItemProps) {
   return (
     <li
       data-item-id={item.id}
-      className={cn("border-l-2", TONE_ROW[tone], busy && "opacity-60", props.flash && "ring-2 ring-inset ring-ring")}
+      className={cn(
+        "border-l-2",
+        TONE_ROW[tone],
+        busy && "opacity-60",
+        expanded && "bg-accent/40 ring-2 ring-inset ring-foreground-strong",
+        props.flash && "ring-2 ring-inset ring-ring",
+      )}
     >
       <div
         role="button"
