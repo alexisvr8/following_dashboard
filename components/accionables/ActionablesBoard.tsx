@@ -47,6 +47,8 @@ import {
   boardGroups,
   BOARD_GROUPS,
   COLLAPSED_KEY,
+  collapseKey,
+  isCollapseKey,
   groupOf,
   meetingChip,
   type BoardGroup,
@@ -142,7 +144,8 @@ export function ActionablesBoard({
     focusItem && initialAccounts.length && !initialAccounts.includes(focusItem.clientId) ? new Set() : new Set(initialAccounts),
   );
   const inAccounts = (clientId: string) => accountSel.size === 0 || accountSel.has(clientId);
-  const [collapsed, setCollapsed] = useState<Set<BoardGroup>>(new Set());
+  // Grupos plegados por columna: "plazo:grupo" (cada columna es independiente).
+  const [collapsed, setCollapsed] = useState<Set<string>>(new Set());
   const [flashId, setFlashId] = useState<string | null>(null);
   const [focusMissing, setFocusMissing] = useState(false);
   const [query, setQuery] = useState("");
@@ -183,53 +186,74 @@ export function ActionablesBoard({
     return [...map.values()].sort((a, b) => a.name.localeCompare(b.name, "es"));
   }, [items]);
 
+  const saveCollapsed = (next: Set<string>) => {
+    try {
+      localStorage.setItem(COLLAPSED_KEY, JSON.stringify([...next]));
+    } catch {}
+  };
   // Grupos plegados: preferencia del navegador (se lee después de montar para no romper la hidratación).
   useEffect(() => {
-    let saved: BoardGroup[] = [];
+    let saved: unknown = [];
     try {
       saved = JSON.parse(localStorage.getItem(COLLAPSED_KEY) ?? "[]");
     } catch {}
-    const next = new Set(saved.filter((g) => BOARD_GROUPS.includes(g)));
-    if (focusItem) next.delete(groupOf(focusItem));
+    const next = new Set(Array.isArray(saved) ? saved.filter(isCollapseKey) : []);
     // eslint-disable-next-line react-hooks/set-state-in-effect -- preferencia local leída una vez al montar
-    if (next.size) setCollapsed(next);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
+    if (next.size) setCollapsed((cur) => new Set([...next].filter((k) => !cur.has(`!${k}`))));
   }, []);
-  function toggleGroup(g: BoardGroup) {
+  function toggleGroup(key: string) {
     setCollapsed((cur) => {
-      const next = new Set(cur);
-      if (next.has(g)) next.delete(g);
-      else next.add(g);
-      try {
-        localStorage.setItem(COLLAPSED_KEY, JSON.stringify([...next]));
-      } catch {}
+      const next = new Set([...cur].filter((k) => !k.startsWith("!")));
+      if (next.has(key)) next.delete(key);
+      else next.add(key);
+      saveCollapsed(next);
       return next;
     });
   }
 
-  // Acceso directo (`?item=`): abre la card, la centra y la resalta unos segundos; el parámetro se limpia de la URL.
+  // Acceso directo (`?item=`): corre cada vez que llega un `item` nuevo (también si la página ya estaba montada y
+  // Next la reutiliza). Ajusta lo que ocultaba la card (lado, cuentas, arrastrados, búsqueda, grupo plegado), la
+  // despliega, la centra en pantalla y la resalta unos segundos; el parámetro se limpia de la URL.
   useEffect(() => {
     if (!focusId) return;
     const url = new URL(window.location.href);
     url.searchParams.delete("item");
+    const it = items.find((i) => i.id === focusId);
+    if (it) {
+      const cuentas = url.searchParams.get("cuentas")?.split(",") ?? [];
+      if (cuentas.length && !cuentas.includes(it.clientId)) url.searchParams.delete("cuentas");
+    }
     window.history.replaceState(window.history.state, "", url);
-    if (!focusItem) {
-      // eslint-disable-next-line react-hooks/set-state-in-effect -- aviso único del acceso directo
+    /* eslint-disable react-hooks/set-state-in-effect -- reacción única a la navegación del acceso directo */
+    if (!it) {
       setFocusMissing(true);
       return;
     }
-    setExpandedId(focusItem.id);
-    setFlashId(focusItem.id);
-    const raf = requestAnimationFrame(() =>
-      document.querySelector(`[data-item-id="${CSS.escape(focusItem.id)}"]`)?.scrollIntoView({ block: "center", behavior: "smooth" }),
-    );
-    const t = setTimeout(() => setFlashId(null), 2600);
-    return () => {
-      cancelAnimationFrame(raf);
-      clearTimeout(t);
-    };
+    setFocusMissing(false);
+    setSide((s) => (s === "todo" || s === it.side ? s : "todo"));
+    setAccountSel((sel) => (sel.size && !sel.has(it.clientId) ? new Set() : sel));
+    setOnlyCarried((v) => (v && !it.carried ? false : v));
+    setQuery("");
+    // "!clave" = desplegado a la fuerza (gana sobre la preferencia guardada que se lee al montar).
+    const key = collapseKey(it.bucket, groupOf(it));
+    setCollapsed((cur) => {
+      const next = new Set(cur);
+      next.delete(key);
+      next.add(`!${key}`);
+      return next;
+    });
+    setExpandedId(it.id);
+    setFlashId(it.id);
+    /* eslint-enable react-hooks/set-state-in-effect */
+    // Espera a que se pinte la card ya desplegada (y a que Next termine su scroll de navegación) antes de centrarla.
+    const scroll = (behavior: ScrollBehavior) =>
+      document.querySelector(`[data-item-id="${CSS.escape(it.id)}"]`)?.scrollIntoView({ block: "center", behavior });
+    const t1 = setTimeout(() => scroll("smooth"), 150);
+    const t2 = setTimeout(() => scroll("auto"), 700);
+    const t3 = setTimeout(() => setFlashId(null), 3000);
+    return () => [t1, t2, t3].forEach(clearTimeout);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
+  }, [focusId]);
 
   // Cuentas elegidas en la URL (`?cuentas=`): se conservan al refrescar o al volver desde una cuenta.
   function changeAccounts(next: Set<string>) {
@@ -758,6 +782,7 @@ export function ActionablesBoard({
                 ) : (
                   <ul className="flex flex-col gap-1.5">
                     <Grouped
+                      bucket={col.key}
                       items={list}
                       order={colOrder}
                       collapsed={collapsed}
@@ -792,6 +817,7 @@ export function ActionablesBoard({
                 <ColumnHeader label={col.label} tone={col.tone} items={list} />
                 <ul className="divide-y divide-border overflow-hidden rounded-xl border border-border bg-card">
                   <Grouped
+                    bucket={col.key}
                     items={list}
                     order={order}
                     collapsed={collapsed}
@@ -929,10 +955,12 @@ const GROUP_LABEL: Record<BoardGroup, { text: string; tone: string }> = {
 };
 
 /**
- * Atención → Reunión próxima → Arrastrados → Nuevos (`boardGroups`). Click en el subtítulo pliega / despliega el
- * grupo en todas las columnas; `openGroup` = el de la card que se está arrastrando (se despliega para soltarla).
+ * Atención → Reunión próxima → Arrastrados → Nuevos (`boardGroups`). Click en el subtítulo pliega / despliega ese
+ * grupo solo en esta columna (`plazo:grupo`); `openGroup` = el de la card que se está arrastrando (se despliega
+ * para poder soltarla).
  */
 function Grouped({
+  bucket,
   items,
   order,
   collapsed,
@@ -940,11 +968,12 @@ function Grouped({
   onToggle,
   render,
 }: {
+  bucket: Bucket;
   items: PlannedItem[];
   order?: Record<string, number>;
-  collapsed: Set<BoardGroup>;
+  collapsed: Set<string>;
   openGroup?: BoardGroup | null;
-  onToggle: (g: BoardGroup) => void;
+  onToggle: (key: string) => void;
   render: (i: PlannedItem) => React.ReactNode;
 }) {
   const groups = boardGroups(items, order);
@@ -953,9 +982,10 @@ function Grouped({
       {BOARD_GROUPS.map((g) => {
         const list = groups[g];
         if (!list.length) return null;
-        const shut = collapsed.has(g) && openGroup !== g;
+        const key = collapseKey(bucket, g);
+        const shut = collapsed.has(key) && openGroup !== g;
         return (
-          <GroupBlock key={g} group={g} count={list.length} shut={shut} onToggle={onToggle}>
+          <GroupBlock key={g} group={g} count={list.length} shut={shut} onToggle={() => onToggle(key)}>
             {!shut && list.map(render)}
           </GroupBlock>
         );
@@ -974,7 +1004,7 @@ function GroupBlock({
   group: BoardGroup;
   count: number;
   shut: boolean;
-  onToggle: (g: BoardGroup) => void;
+  onToggle: () => void;
   children: React.ReactNode;
 }) {
   const { text, tone } = GROUP_LABEL[group];
@@ -984,8 +1014,8 @@ function GroupBlock({
         <button
           type="button"
           aria-expanded={!shut}
-          title={shut ? "Mostrar estas cards" : "Ocultar estas cards (en todas las columnas)"}
-          onClick={() => onToggle(group)}
+          title={shut ? "Mostrar estas cards" : "Ocultar estas cards (solo en esta columna)"}
+          onClick={onToggle}
           className={cn(
             "flex w-full items-center gap-1.5 rounded px-1 pt-1 text-label-sm uppercase transition-colors hover:bg-accent/50",
             tone,

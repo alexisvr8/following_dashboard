@@ -109,8 +109,11 @@ export type BoardGroup = "attention" | "meeting" | "carried" | "fresh";
 export const BOARD_GROUPS: BoardGroup[] = ["attention", "meeting", "carried", "fresh"];
 export const groupOf = (i: PlannedItem): BoardGroup =>
   i.attention ? "attention" : i.meetingSoonAt ? "meeting" : i.carried ? "carried" : "fresh";
-/** Grupos plegados (en todas las columnas): preferencia del navegador. */
-export const COLLAPSED_KEY = "accionables_collapsed";
+/** Grupos plegados, por columna (`plazo:grupo`, p. ej. "today:fresh"): preferencia del navegador. */
+export const COLLAPSED_KEY = "accionables_collapsed_v2";
+export const collapseKey = (bucket: Bucket, group: BoardGroup) => `${bucket}:${group}`;
+const COLLAPSE_RE = /^(overdue|today|this_week|next_week|later):(attention|meeting|carried|fresh)$/;
+export const isCollapseKey = (k: unknown): k is string => typeof k === "string" && COLLAPSE_RE.test(k);
 
 /** "Reunión jue 10:00" del chip de las cards. */
 export const meetingChip = (iso: string) =>
