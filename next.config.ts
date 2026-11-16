@@ -7,7 +7,7 @@ const nextConfig: NextConfig = {
   devIndicators: { position: "bottom-right" },
   // Router Cache del navegador: una página/cuenta visitada hace < 2 min se muestra desde memoria al volver.
   // Siempre fresco igual: cada mutación y cada sync nueva (SyncStatus) hacen `router.refresh()`, que lo invalida.
-  experimental: { staleTimes: { dynamic: 120 } },
+  experimental: { staleTimes: { dynamic: 120 }, agentUpgrade: "security" },
   turbopack: {
     rules: {
       "*.css": {
