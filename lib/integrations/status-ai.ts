@@ -1,4 +1,4 @@
-import { aiEnabled, postMeetingModel } from "@/lib/llm/postmeeting";
+import { aiEnabled, statusMailModel } from "@/lib/llm/postmeeting";
 import { generateStatusMail } from "@/lib/llm/status-mail";
 import { markStatusAIFailed, setStatusAI, type ClientRecord, type ClientsFile } from "@/lib/store/clients-store";
 import type { WorkSettings } from "@/lib/store/settings-store";
@@ -59,7 +59,7 @@ export async function generateStatusMails(
         meetingId: meeting.id,
         key: req.key,
         generatedAt: new Date().toISOString(),
-        model: postMeetingModel(),
+        model: statusMailModel(),
         apertura: out.apertura.trim(),
         items: Object.fromEntries(out.items.filter((i) => refs.has(i.ref) && i.texto.trim()).map((i) => [i.ref, i.texto.trim()])),
         cierre: out.cierre.trim(),

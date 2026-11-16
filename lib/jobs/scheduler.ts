@@ -5,7 +5,8 @@ import { getClientsFile } from "@/lib/store/clients-store";
 import { listEventsBetween } from "@/lib/integrations/calendar";
 import { analyzeAccounts } from "@/lib/integrations/account-analysis";
 import { deliverWeeklyDigest } from "@/lib/integrations/weekly-digest";
-import { getWeeklyAIState, saveWeeklyAIState } from "@/lib/store/weekly-ai-store";
+import { claimWeeklyTask, getWeeklyAIState, saveWeeklyAIState } from "@/lib/store/weekly-ai-store";
+import { holdSchedulerLock, schedulerHost, schedulerId } from "@/lib/jobs/scheduler-lock";
 import { mondayKey } from "@/lib/utils/account-analysis";
 
 // Scheduler interno (sin dependencias): un tick por minuto contra la hora local del servidor (`TZ`).
@@ -22,6 +23,8 @@ import { mondayKey } from "@/lib/utils/account-analysis";
 // - Modo rápido: durante `CRON_FAST_MINUTES` (40) después de que termina una reunión de Calendar con externos,
 //   sync cada `CRON_FAST_INTERVAL_MINUTES` (2), para que la minuta de Gemini y su borrador lleguen enseguida.
 // - Al iniciar o tras un hueco (Mac dormido), si la última corrida es más vieja que el intervalo: sync.
+// - Varios equipos sobre la misma base: solo corre el que tiene el candado (`scheduler-lock.ts`); las tareas del
+//   lunes además se reservan al empezar (`claimWeeklyTask`) para que un relevo a mitad de corrida no las repita.
 
 const g = globalThis as unknown as { __cronStarted?: boolean };
 
@@ -51,6 +54,7 @@ export function startScheduler() {
   };
   const analysisAt = hm(process.env.CRON_ANALYSIS_AT, "07:00");
   const digestAt = hm(process.env.CRON_DIGEST_AT, "08:00");
+  const me = { id: schedulerId(), host: schedulerHost() };
   let weeklyAIRunning = false;
   let analysisTriedAt = 0;
   let digestTriedAt = 0;
@@ -67,6 +71,7 @@ export function startScheduler() {
     const digestDue = !monday || minuteOfDay >= digestAt;
     if (analysisDue && state.analysisWeek !== week && Date.now() - analysisTriedAt >= retry) {
       analysisTriedAt = Date.now();
+      if (!(await claimWeeklyTask("analysis", week, me, 2 * 3_600_000))) return log("análisis IA: lo está corriendo otro equipo");
       weeklyAIRunning = true;
       void (async () => {
         try {
@@ -86,6 +91,7 @@ export function startScheduler() {
     const analysisDone = state.analysisWeek === week || (analysisTriedAt > 0 && Date.now() - analysisTriedAt >= 2 * 3_600_000);
     if (digestDue && analysisDone && state.digestWeek !== week && Date.now() - digestTriedAt >= retry) {
       digestTriedAt = Date.now();
+      if (!(await claimWeeklyTask("digest", week, me, 3_600_000))) return log("resumen semanal: lo está enviando otro equipo");
       const r = await deliverWeeklyDigest(now);
       log(r.ok ? `resumen semanal: ${r.mode === "send" ? "enviado a mi correo" : "borrador creado en Gmail"}` : `resumen semanal: error ${r.error}`);
     }
@@ -118,7 +124,20 @@ export function startScheduler() {
       .map((e) => Date.parse(e.end));
   };
 
+  // Candado compartido: un solo equipo corre el scheduler; avisa en el log cuando cambia de rol.
+  let leader: boolean | null = null;
+  const isLeader = async () => {
+    const ok = await holdSchedulerLock();
+    if (ok !== leader) log(ok ? `scheduler: este equipo (${me.host}) corre la sync automática` : "scheduler: en pausa, otro equipo tiene la sync automática");
+    leader = ok;
+    return ok;
+  };
+
   const tick = async () => {
+    if (!(await isLeader())) {
+      lastTick = Date.now();
+      return;
+    }
     const now = new Date();
     const gap = Date.now() - lastTick; // > 2 min ⇒ el proceso estuvo suspendido
     lastTick = Date.now();
@@ -138,6 +157,7 @@ export function startScheduler() {
       const dueAt = new Date(now.getFullYear(), now.getMonth(), now.getDate(), dH, dM).getTime();
       if ((!lastWeeklyDraftsAt || Date.parse(lastWeeklyDraftsAt) < dueAt) && Date.now() - weeklyTriedAt >= interval * 60_000) {
         weeklyTriedAt = Date.now();
+        if (!(await claimWeeklyTask("drafts", mondayKey(now), me, 3_600_000))) return log("objetivos semanales: los está generando otro equipo");
         return run(true, "semanal (objetivos)");
       }
     }
@@ -150,6 +170,7 @@ export function startScheduler() {
   };
 
   const catchUp = async (reason: string) => {
+    if (!(await isLeader())) return;
     const { lastRunAt } = await getSyncStatus();
     if (!lastRunAt || Date.now() - new Date(lastRunAt).getTime() > interval * 60_000) {
       await run(false, reason);

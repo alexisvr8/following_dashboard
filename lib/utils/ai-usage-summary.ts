@@ -68,3 +68,11 @@ export function summarizeAIUsage(all: AIUsageEntry[], days: number, now = new Da
       .map((e) => ({ ...e, costUsd: estimateCost(e) })),
   };
 }
+
+/** Gasto estimado registrado desde `since` (ISO): base del saldo manual de `/conexiones`. */
+export function spentSince(all: AIUsageEntry[], since: string): { costUsd: number; calls: number } {
+  const from = Date.parse(since);
+  const b = empty();
+  for (const e of all) if (Date.parse(e.at) >= from) add(b, e);
+  return { costUsd: b.costUsd, calls: b.calls };
+}

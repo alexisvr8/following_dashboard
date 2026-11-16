@@ -14,6 +14,16 @@ export interface WeeklyAIState {
   digestSentAt?: string;
   digestMessageId?: string;
   error?: string | null;
+  /** Quién arrancó cada tarea de la semana (se marca al EMPEZAR): otro equipo no la repite mientras siga vigente. */
+  claims?: Partial<Record<WeeklyTask, WeeklyClaim>>;
+}
+
+export type WeeklyTask = "analysis" | "drafts" | "digest";
+export interface WeeklyClaim {
+  week: string;
+  by: string;
+  host: string;
+  at: string;
 }
 
 export async function getWeeklyAIState(): Promise<WeeklyAIState> {
@@ -24,4 +34,17 @@ export async function saveWeeklyAIState(patch: Partial<WeeklyAIState>): Promise<
   const next = { ...(await getWeeklyAIState()), ...patch };
   await setState("weekly_ai", next);
   return next;
+}
+
+/**
+ * Reserva una tarea del lunes antes de correrla. `false` si otro proceso la reservó para la misma semana hace menos
+ * de `ttlMs` (sigue corriendo o recién terminó); pasado ese plazo sin marcarse hecha, se puede reintentar.
+ */
+export async function claimWeeklyTask(task: WeeklyTask, week: string, me: { id: string; host: string }, ttlMs: number): Promise<boolean> {
+  const state = await getWeeklyAIState();
+  const claim = state.claims?.[task];
+  if (claim && claim.week === week && claim.by !== me.id && Date.now() - Date.parse(claim.at) < ttlMs) return false;
+  const next: WeeklyClaim = { week, by: me.id, host: me.host, at: new Date().toISOString() };
+  await saveWeeklyAIState({ claims: { ...state.claims, [task]: next } });
+  return true;
 }

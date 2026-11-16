@@ -13,6 +13,9 @@ interface Status {
   newMeetings: number;
   synced: number;
   schedulerEnabled: boolean;
+  /** Equipo que corre la sync automática (candado compartido) y si es este servidor. */
+  schedulerHost?: string | null;
+  schedulerHere?: boolean;
 }
 
 const POLL_MS = 30_000;
@@ -62,7 +65,13 @@ export function SyncStatus() {
   const title = failed
     ? `Última sincronización falló: ${status.error ?? "error"}`
     : `${status.synced} clientes sincronizados · ${status.newMeetings} reuniones nuevas` +
-      (status.schedulerEnabled ? " · automática activa" : " · automática desactivada");
+      (!status.schedulerEnabled
+        ? " · automática desactivada"
+        : status.schedulerHere
+          ? ` · automática activa en este equipo (${status.schedulerHost})`
+          : status.schedulerHost
+            ? ` · automática corriendo en ${status.schedulerHost} (acá en pausa)`
+            : " · automática activa");
 
   return (
     <span
