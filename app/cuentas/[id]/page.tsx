@@ -1,5 +1,6 @@
+import Link from "next/link";
 import { notFound } from "next/navigation";
-import { Mail } from "lucide-react";
+import { ArrowLeft, Mail } from "lucide-react";
 import { buttonVariants } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { ChurnRiskBadge } from "@/components/dashboard/ChurnRiskBadge";
@@ -27,10 +28,14 @@ export const dynamic = "force-dynamic";
 // a pedir al cambiar de cuenta: acá solo se lee la fila de esta cuenta.
 export default async function CuentaPage({
   params,
+  searchParams,
 }: {
   params: Promise<{ id: string }>;
+  searchParams: Promise<{ desde?: string }>;
 }) {
   const { id } = await params; // `?borrador=` de links viejos: ya hay un solo mail, se ignora.
+  // `?desde=<ticketId>`: se llegó desde una card de /accionables → botón para volver a esa misma card.
+  const { desde } = await searchParams;
   const [{ client, ownerEmail }, settings] = await Promise.all([
     getClientCached(decodeURIComponent(id)),
     getSettingsCached(),
@@ -38,17 +43,19 @@ export default async function CuentaPage({
   if (!client || (client.status !== "assigned" && client.status !== "unassigned" && client.status !== "closed")) notFound();
   // `loadAccountView` solo usa `ownerEmail` del archivo.
   const file: ClientsFile = { clients: [client], unmatched: [], lastScanAt: null, ownerEmail };
-  return <Workspace key={client.id} client={client} file={file} settings={settings} />;
+  return <Workspace key={client.id} client={client} file={file} settings={settings} desde={desde ?? null} />;
 }
 
 function Workspace({
   client,
   file,
   settings,
+  desde,
 }: {
   client: ClientRecord;
   file: ClientsFile;
   settings: WorkSettings;
+  desde: string | null;
 }) {
   const v = loadAccountView(file, client, settings);
   const { latest, followup, alert } = v;
@@ -121,7 +128,9 @@ function Workspace({
           <p className="rounded-md border border-warning/25 bg-warning-muted px-3 py-1.5 text-xs">
             {alert.kind === "client_waiting"
               ? `El cliente espera respuesta hace ${alert.businessDays} día(s) hábil(es).`
-              : alert.kind === "awaiting_client"
+              : alert.kind === "client_request"
+                ? `Pedidos del cliente por mail sin resolver hace ${alert.businessDays} día(s) hábil(es).`
+                : alert.kind === "awaiting_client"
                 ? `Sin respuesta del cliente hace ${alert.businessDays} día(s) hábil(es): conviene un seguimiento.`
                 : `Sin avances comunicados hace ${alert.businessDays} día(s) hábil(es).`}{" "}
             Último movimiento: {alert.lastMovementLabel}.
@@ -160,7 +169,22 @@ function Workspace({
 
   return (
     <AccountWorkspace
-      header={header}
+      header={
+        desde ? (
+          <>
+            <Link
+              href={`/accionables?item=${encodeURIComponent(desde)}`}
+              className="mb-2 inline-flex items-center gap-1 text-xs font-medium text-muted-foreground hover:text-foreground"
+            >
+              <ArrowLeft className="size-3.5" /> Volver al tablero
+            </Link>
+            {header}
+          </>
+        ) : (
+          header
+        )
+      }
+      onBoard={client.status === "assigned"}
       clientId={client.id}
       meeting={
         latest && {

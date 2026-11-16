@@ -2,7 +2,7 @@
 
 import { useState } from "react";
 import { useRouter } from "next/navigation";
-import { AlertTriangle, ArrowRight, Hourglass, MailWarning, RefreshCw } from "lucide-react";
+import { AlertTriangle, ArrowRight, Check, Hourglass, MailQuestionMark, MailWarning, RefreshCw } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { FollowupPanel, type FollowupPanelData } from "@/components/dashboard/FollowupPanel";
@@ -29,6 +29,14 @@ const KIND: Record<
     chip: "critical",
     primary: true,
   },
+  client_request: {
+    label: "Pedidos del cliente pendientes",
+    action: "Responder",
+    icon: MailQuestionMark,
+    tone: "text-warning",
+    chip: "warning",
+    primary: true,
+  },
   no_progress: {
     label: "Sin avances comunicados",
     action: "Enviar actualización",
@@ -49,7 +57,7 @@ const KIND: Record<
 
 /** Primero las de más atención, después las que esperan respuesta; dentro de cada grupo, más días hábiles primero. */
 function byUrgency(a: AccountAlert, b: AccountAlert) {
-  const w = (x: AccountAlert) => (x.kind === "client_waiting" ? 0 : 1);
+  const w = (x: AccountAlert) => (x.kind === "client_waiting" ? 0 : x.kind === "client_request" ? 1 : 2);
   return Number(Boolean(b.attention)) - Number(Boolean(a.attention)) || w(a) - w(b) || b.businessDays - a.businessDays || a.name.localeCompare(b.name, "es");
 }
 
@@ -69,6 +77,7 @@ export function FollowupAlerts({
   const router = useRouter();
   const [syncing, setSyncing] = useState(false);
   const [openId, setOpenId] = useState<string | null>(null);
+  const [closing, setClosing] = useState<Set<string>>(new Set());
   const openAlert = alerts.find((a) => a.clientId === openId);
   const sorted = [...alerts].sort(byUrgency);
 
@@ -79,6 +88,25 @@ export function FollowupAlerts({
       router.refresh();
     } finally {
       setSyncing(false);
+    }
+  }
+
+  // Pedido resuelto: se tilda como cualquier accionable (`doneTicketIds`) y la alerta se recalcula.
+  async function markDone(clientId: string, ticketId: string) {
+    setClosing((s) => new Set(s).add(ticketId));
+    try {
+      const res = await fetch(`/api/clients/${encodeURIComponent(clientId)}`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ ticketId, isDone: true }),
+      });
+      if (res.ok) router.refresh();
+    } finally {
+      setClosing((s) => {
+        const n = new Set(s);
+        n.delete(ticketId);
+        return n;
+      });
     }
   }
 
@@ -137,6 +165,32 @@ export function FollowupAlerts({
                 <p className="line-clamp-2 text-xs leading-snug text-muted-foreground" title={a.lastMovementLabel}>
                   Último: {a.lastMovementLabel}
                 </p>
+                {a.requests && a.requests.length > 0 && (
+                  <ul className="flex flex-col gap-1 rounded-md border border-border bg-surface px-2 py-1.5">
+                    <li className="text-label-sm uppercase text-subtle-foreground">Pedidos por mail ({a.requests.length})</li>
+                    {a.requests.map((r) => (
+                      <li key={r.id} className="flex items-start gap-1.5 text-xs leading-snug">
+                        <span className="min-w-0 flex-1 line-clamp-2 text-foreground" title={`${r.title}\nMail: ${r.subject}`}>
+                          {r.title}
+                        </span>
+                        <span className="tabular shrink-0 text-subtle-foreground">
+                          {new Date(r.date).toLocaleDateString("es", { day: "2-digit", month: "2-digit" })}
+                        </span>
+                        <Button
+                          size="xs"
+                          variant="ghost"
+                          className="h-5 shrink-0 px-1"
+                          title="Marcar resuelto"
+                          aria-label="Marcar pedido resuelto"
+                          disabled={closing.has(r.id)}
+                          onClick={() => markDone(a.clientId, r.id)}
+                        >
+                          <Check />
+                        </Button>
+                      </li>
+                    ))}
+                  </ul>
+                )}
                 <div className="mt-auto flex items-center justify-between gap-2 border-t border-border pt-1.5">
                   <span className="text-label-sm text-subtle-foreground">
                     {a.pendingOwn} tuyos · {a.pendingClient} del cliente

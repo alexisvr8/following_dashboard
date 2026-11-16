@@ -36,7 +36,8 @@ export default async function Home({ searchParams }: { searchParams: Promise<{ s
   const offset = semana === "0" || semana === "1" ? Number(semana) : hasWorkLeftThisWeek(now, settings) ? 0 : 1;
   const { start, end } = planWeekBounds(now, offset);
   // Sin await: la promesa la consumen Números y Capacidad dentro de sus Suspense.
-  const planPromise = listEventsBetween(start, end)
+  // Una semana más de eventos: solo para saber la próxima reunión de cada cuenta (preparación).
+  const planPromise = listEventsBetween(start, new Date(end.getTime() + 7 * 86_400_000))
     .catch(() => null)
     .then((weekEvents) => computeWeekPlan(clients, settings, weekEvents, offset, now));
   const alerts = computeAlerts(clients, settings, now);

@@ -5,9 +5,12 @@ import Link from "next/link";
 import { useRouter } from "next/navigation";
 import {
   ArrowUpRight,
+  Building2,
   CalendarClock,
+  CalendarDays,
   Check,
   ChevronDown,
+  ChevronRight,
   Columns3,
   Handshake,
   History,
@@ -42,7 +45,12 @@ import {
   addWorkdays,
   carriedAge,
   boardGroups,
+  BOARD_GROUPS,
+  COLLAPSED_KEY,
+  collapseKey,
+  isCollapseKey,
   groupOf,
+  meetingChip,
   type BoardGroup,
   movedItem,
   MAIL_ACTION_LABEL,
@@ -103,7 +111,13 @@ export function ActionablesBoard({
   corrections,
   mailPanels,
   boardOrder,
+  focusId = null,
+  initialAccounts = [],
 }: {
+  /** `?item=`: acceso directo desde la cuenta; el tablero baja hasta la card, la abre y la resalta. */
+  focusId?: string | null;
+  /** `?cuentas=a,b`: filtro de varias cuentas (vacío = todas). */
+  initialAccounts?: string[];
   boardOrder?: Record<string, number>;
   rewrites?: RewriteItem[];
   mailPanels: Record<string, FollowupPanelData>;
@@ -123,8 +137,17 @@ export function ActionablesBoard({
 }) {
   const router = useRouter();
   const [view, setView] = useState<View>(initialView);
-  const [side, setSide] = useState<Side>("debo");
-  const [account, setAccount] = useState("");
+  const focusItem = focusId ? (items.find((i) => i.id === focusId) ?? null) : null;
+  // La card del acceso directo tiene que verse: lado y cuentas se ajustan si la ocultaban.
+  const [side, setSide] = useState<Side>(() => (focusItem && focusItem.side !== "debo" ? "todo" : "debo"));
+  const [accountSel, setAccountSel] = useState<Set<string>>(() =>
+    focusItem && initialAccounts.length && !initialAccounts.includes(focusItem.clientId) ? new Set() : new Set(initialAccounts),
+  );
+  const inAccounts = (clientId: string) => accountSel.size === 0 || accountSel.has(clientId);
+  // Grupos plegados por columna: "plazo:grupo" (cada columna es independiente).
+  const [collapsed, setCollapsed] = useState<Set<string>>(new Set());
+  const [flashId, setFlashId] = useState<string | null>(null);
+  const [focusMissing, setFocusMissing] = useState(false);
   const [query, setQuery] = useState("");
   const [onlyCarried, setOnlyCarried] = useState(false);
   const [hidden, setHidden] = useState<Set<string>>(new Set());
@@ -148,10 +171,98 @@ export function ActionablesBoard({
     document.cookie = `${DENSITY_COOKIE}=${d}; path=/; max-age=31536000; samesite=lax`;
   };
 
-  const accounts = useMemo(
-    () => [...new Map(items.map((i) => [i.clientId, i.clientName])).entries()].sort((a, b) => a[1].localeCompare(b[1], "es")),
-    [items],
-  );
+  const accounts = useMemo(() => {
+    const map = new Map<string, AccountOption>();
+    for (const i of items) {
+      const cur = map.get(i.clientId);
+      map.set(i.clientId, {
+        id: i.clientId,
+        name: i.clientName,
+        attention: Boolean(i.attention),
+        meetingSoonAt: cur?.meetingSoonAt ?? i.meetingSoonAt ?? null,
+        count: (cur?.count ?? 0) + 1,
+      });
+    }
+    return [...map.values()].sort((a, b) => a.name.localeCompare(b.name, "es"));
+  }, [items]);
+
+  const saveCollapsed = (next: Set<string>) => {
+    try {
+      localStorage.setItem(COLLAPSED_KEY, JSON.stringify([...next]));
+    } catch {}
+  };
+  // Grupos plegados: preferencia del navegador (se lee después de montar para no romper la hidratación).
+  useEffect(() => {
+    let saved: unknown = [];
+    try {
+      saved = JSON.parse(localStorage.getItem(COLLAPSED_KEY) ?? "[]");
+    } catch {}
+    const next = new Set(Array.isArray(saved) ? saved.filter(isCollapseKey) : []);
+    // eslint-disable-next-line react-hooks/set-state-in-effect -- preferencia local leída una vez al montar
+    if (next.size) setCollapsed((cur) => new Set([...next].filter((k) => !cur.has(`!${k}`))));
+  }, []);
+  function toggleGroup(key: string) {
+    setCollapsed((cur) => {
+      const next = new Set([...cur].filter((k) => !k.startsWith("!")));
+      if (next.has(key)) next.delete(key);
+      else next.add(key);
+      saveCollapsed(next);
+      return next;
+    });
+  }
+
+  // Acceso directo (`?item=`): corre cada vez que llega un `item` nuevo (también si la página ya estaba montada y
+  // Next la reutiliza). Ajusta lo que ocultaba la card (lado, cuentas, arrastrados, búsqueda, grupo plegado), la
+  // despliega, la centra en pantalla y la resalta unos segundos; el parámetro se limpia de la URL.
+  useEffect(() => {
+    if (!focusId) return;
+    const url = new URL(window.location.href);
+    url.searchParams.delete("item");
+    const it = items.find((i) => i.id === focusId);
+    if (it) {
+      const cuentas = url.searchParams.get("cuentas")?.split(",") ?? [];
+      if (cuentas.length && !cuentas.includes(it.clientId)) url.searchParams.delete("cuentas");
+    }
+    window.history.replaceState(window.history.state, "", url);
+    /* eslint-disable react-hooks/set-state-in-effect -- reacción única a la navegación del acceso directo */
+    if (!it) {
+      setFocusMissing(true);
+      return;
+    }
+    setFocusMissing(false);
+    setSide((s) => (s === "todo" || s === it.side ? s : "todo"));
+    setAccountSel((sel) => (sel.size && !sel.has(it.clientId) ? new Set() : sel));
+    setOnlyCarried((v) => (v && !it.carried ? false : v));
+    setQuery("");
+    // "!clave" = desplegado a la fuerza (gana sobre la preferencia guardada que se lee al montar).
+    const key = collapseKey(it.bucket, groupOf(it));
+    setCollapsed((cur) => {
+      const next = new Set(cur);
+      next.delete(key);
+      next.add(`!${key}`);
+      return next;
+    });
+    setExpandedId(it.id);
+    setFlashId(it.id);
+    /* eslint-enable react-hooks/set-state-in-effect */
+    // Espera a que se pinte la card ya desplegada (y a que Next termine su scroll de navegación) antes de centrarla.
+    const scroll = (behavior: ScrollBehavior) =>
+      document.querySelector(`[data-item-id="${CSS.escape(it.id)}"]`)?.scrollIntoView({ block: "center", behavior });
+    const t1 = setTimeout(() => scroll("smooth"), 150);
+    const t2 = setTimeout(() => scroll("auto"), 700);
+    const t3 = setTimeout(() => setFlashId(null), 3000);
+    return () => [t1, t2, t3].forEach(clearTimeout);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [focusId]);
+
+  // Cuentas elegidas en la URL (`?cuentas=`): se conservan al refrescar o al volver desde una cuenta.
+  function changeAccounts(next: Set<string>) {
+    setAccountSel(next);
+    const url = new URL(window.location.href);
+    if (next.size) url.searchParams.set("cuentas", [...next].join(","));
+    else url.searchParams.delete("cuentas");
+    window.history.replaceState(window.history.state, "", url);
+  }
   // Movidos a otra columna: se ven en su lugar nuevo al instante, mientras el PATCH y el refresh siguen de fondo.
   // Al llegar datos nuevos del servidor se descartan los ya guardados (los pendientes siguen hasta guardarse).
   const [moved, setMoved] = useState<Record<string, { bucket: Bucket; day: string; saved: boolean }>>({});
@@ -167,7 +278,7 @@ export function ActionablesBoard({
     .map((i) => (moved[i.id] ? movedItem(i, moved[i.id].bucket, moved[i.id].day, now, workDays) : i));
   const visible = open.filter((i) => {
     if (side !== "todo" && i.side !== side) return false;
-    if (account && i.clientId !== account) return false;
+    if (!inAccounts(i.clientId)) return false;
     if (onlyCarried && !i.carried) return false;
     const q = query.trim().toLowerCase();
     return !q || `${i.title} ${i.detail ?? ""} ${i.clientName} ${i.owners.join(" ")}`.toLowerCase().includes(q);
@@ -411,6 +522,7 @@ export function ActionablesBoard({
     closing: closing[i.id],
     onUndo: undoClose,
     onMail: mailAction(i),
+    flash: flashId === i.id,
   });
   const dragProps = (i: PlannedItem) => ({
     draggable: true,
@@ -437,7 +549,7 @@ export function ActionablesBoard({
 
   const [resolved, setResolved] = useState<Set<string>>(new Set());
   // En el modal se ven todas (no dependen del filtro Debo / Me deben del tablero), salvo el filtro de cuenta.
-  const pendingSuggestionsList = suggestions.filter((s) => !resolved.has(s.id) && (!account || s.clientId === account));
+  const pendingSuggestionsList = suggestions.filter((s) => !resolved.has(s.id) && inAccounts(s.clientId));
   async function resolveSuggestion(s: SuggestedItem, action: "accept" | "dismiss", text?: string) {
     setBusy(s.id);
     setResolved((r) => new Set(r).add(s.id));
@@ -481,19 +593,7 @@ export function ActionablesBoard({
             ["todo", "Todo"],
           ]}
         />
-        <select
-          aria-label="Cuenta"
-          value={account}
-          onChange={(e) => setAccount(e.target.value)}
-          className={cn(inputClass, "h-8 w-auto max-w-56 text-xs")}
-        >
-          <option value="">Todas las cuentas</option>
-          {accounts.map(([id, name]) => (
-            <option key={id} value={id}>
-              {name}
-            </option>
-          ))}
-        </select>
+        <AccountPicker accounts={accounts} selected={accountSel} onChange={changeAccounts} />
         <label className="relative min-w-0 flex-1 sm:max-w-64">
           <Search className="pointer-events-none absolute top-1/2 left-2.5 size-3.5 -translate-y-1/2 text-subtle-foreground" />
           <input
@@ -515,7 +615,7 @@ export function ActionablesBoard({
           <History className="size-3.5" /> Solo arrastrados
         </button>
         <SuggestionsDialog suggestions={pendingSuggestionsList} busy={busy} onResolve={resolveSuggestion} />
-        <RewritesDialog rewrites={rewrites.filter((r) => !account || r.clientId === account)} />
+        <RewritesDialog rewrites={rewrites.filter((r) => inAccounts(r.clientId))} />
         <CorrectionsDialog corrections={corrections} />
         <div className="ml-auto flex items-center gap-3">
           <span className="hidden text-xs text-muted-foreground lg:inline">
@@ -580,6 +680,15 @@ export function ActionablesBoard({
             Revisar arrastrados
           </button>
         </div>
+      )}
+
+      {focusMissing && (
+        <p className="flex items-center justify-between gap-2 rounded-md border border-border bg-surface px-3 py-1.5 text-xs text-muted-foreground">
+          Ese accionable ya no está pendiente en el tablero (se cerró, se quitó o es de una cuenta no asignada).
+          <button type="button" className="font-medium text-foreground hover:underline" onClick={() => setFocusMissing(false)}>
+            Cerrar
+          </button>
+        </p>
       )}
 
       {moveError && (
@@ -673,8 +782,12 @@ export function ActionablesBoard({
                 ) : (
                   <ul className="flex flex-col gap-1.5">
                     <Grouped
+                      bucket={col.key}
                       items={list}
                       order={colOrder}
+                      collapsed={collapsed}
+                      openGroup={dragItem ? groupOf(dragItem) : null}
+                      onToggle={toggleGroup}
                       render={(i) => (
                         <ItemCard
                           key={i === preview ? "ghost" : i.id}
@@ -703,7 +816,14 @@ export function ActionablesBoard({
               <section key={col.key} className="space-y-1.5">
                 <ColumnHeader label={col.label} tone={col.tone} items={list} />
                 <ul className="divide-y divide-border overflow-hidden rounded-xl border border-border bg-card">
-                  <Grouped items={list} order={order} render={(i) => <ItemRow key={i.id} {...itemProps(i)} />} />
+                  <Grouped
+                    bucket={col.key}
+                    items={list}
+                    order={order}
+                    collapsed={collapsed}
+                    onToggle={toggleGroup}
+                    render={(i) => <ItemRow key={i.id} {...itemProps(i)} />}
+                  />
                 </ul>
               </section>
             );
@@ -796,6 +916,8 @@ type ItemProps = {
   onUndo: (id: string) => void;
   /** Abre el panel de mail (hilo + borrador) si el accionable se resuelve con un mail. */
   onMail?: () => void;
+  /** Resaltado del acceso directo (`?item=`). */
+  flash?: boolean;
 };
 type Closing = "done" | "remove";
 type DragProps = {
@@ -825,38 +947,86 @@ function insertAt(base: PlannedItem[], item: PlannedItem, index: number, order: 
 }
 const NO_DRAG: DragProps = { draggable: false, onDragStart: noop, onDragEnd: noop };
 
-/** Atención → Arrastrados → Nuevos (`boardGroups`), con subtítulo cuando conviven 2 o más grupos. */
+const GROUP_LABEL: Record<BoardGroup, { text: string; tone: string }> = {
+  attention: { text: "Atención", tone: "text-warning" },
+  meeting: { text: "Reunión próxima", tone: "text-foreground" },
+  carried: { text: "Arrastrados", tone: "text-carried" },
+  fresh: { text: "Nuevos", tone: "text-subtle-foreground" },
+};
+
+/**
+ * Atención → Reunión próxima → Arrastrados → Nuevos (`boardGroups`). Click en el subtítulo pliega / despliega ese
+ * grupo solo en esta columna (`plazo:grupo`); `openGroup` = el de la card que se está arrastrando (se despliega
+ * para poder soltarla).
+ */
 function Grouped({
+  bucket,
   items,
   order,
+  collapsed,
+  openGroup = null,
+  onToggle,
   render,
 }: {
+  bucket: Bucket;
   items: PlannedItem[];
   order?: Record<string, number>;
+  collapsed: Set<string>;
+  openGroup?: BoardGroup | null;
+  onToggle: (key: string) => void;
   render: (i: PlannedItem) => React.ReactNode;
 }) {
-  const { attention, carried, fresh } = boardGroups(items, order);
-  const split = [attention, carried, fresh].filter((g) => g.length > 0).length > 1;
-  const label = (text: string, n: number, tone: "attention" | "carried" | "muted") => (
-    <li
-      role="presentation"
-      className={cn(
-        "flex items-center gap-2 px-1 pt-1 text-label-sm uppercase",
-        tone === "attention" ? "text-warning" : tone === "carried" ? "text-carried" : "text-subtle-foreground",
-      )}
-    >
-      {text} <span className="tabular">{n}</span>
-      <span className="h-px flex-1 bg-border" />
-    </li>
-  );
+  const groups = boardGroups(items, order);
   return (
     <>
-      {split && attention.length > 0 && label("Atención", attention.length, "attention")}
-      {attention.map(render)}
-      {split && carried.length > 0 && label("Arrastrados", carried.length, "carried")}
-      {carried.map(render)}
-      {split && fresh.length > 0 && label("Nuevos", fresh.length, "muted")}
-      {fresh.map(render)}
+      {BOARD_GROUPS.map((g) => {
+        const list = groups[g];
+        if (!list.length) return null;
+        const key = collapseKey(bucket, g);
+        const shut = collapsed.has(key) && openGroup !== g;
+        return (
+          <GroupBlock key={g} group={g} count={list.length} shut={shut} onToggle={() => onToggle(key)}>
+            {!shut && list.map(render)}
+          </GroupBlock>
+        );
+      })}
+    </>
+  );
+}
+
+function GroupBlock({
+  group,
+  count,
+  shut,
+  onToggle,
+  children,
+}: {
+  group: BoardGroup;
+  count: number;
+  shut: boolean;
+  onToggle: () => void;
+  children: React.ReactNode;
+}) {
+  const { text, tone } = GROUP_LABEL[group];
+  return (
+    <>
+      <li role="presentation" className="list-none">
+        <button
+          type="button"
+          aria-expanded={!shut}
+          title={shut ? "Mostrar estas cards" : "Ocultar estas cards (solo en esta columna)"}
+          onClick={onToggle}
+          className={cn(
+            "flex w-full items-center gap-1.5 rounded px-1 pt-1 text-label-sm uppercase transition-colors hover:bg-accent/50",
+            tone,
+          )}
+        >
+          {shut ? <ChevronRight className="size-3" /> : <ChevronDown className="size-3" />}
+          {text} <span className="tabular">{count}</span>
+          <span className="h-px flex-1 bg-border" />
+        </button>
+      </li>
+      {children}
     </>
   );
 }
@@ -955,7 +1125,13 @@ function Expanded({ item, busy, workDays, onAct, onEdit, closing, onMail }: Item
             <Mail /> Reclamar
           </Button>
         )}
-        <Button size="xs" variant="ghost" nativeButton={false} render={<Link href={account} />}>
+        <Button
+          size="xs"
+          variant="ghost"
+          nativeButton={false}
+          title="Abrir la cuenta (con un botón para volver a esta card)"
+          render={<Link href={`${account}?desde=${encodeURIComponent(item.id)}`} />}
+        >
           Cuenta <ArrowUpRight />
         </Button>
         <MailButton item={item} onMail={onMail} />
@@ -1019,6 +1195,7 @@ function ItemCard(
       {...(ghost || floating ? {} : drag)}
       aria-hidden={ghost || floating || undefined}
       data-card-id={floating ? undefined : ghost ? `ghost:${item.bucket}` : item.id}
+      data-item-id={floating || ghost ? undefined : item.id}
       data-group={groupOf(item)}
       onAnimationEnd={landed ? props.onLanded : undefined}
       className={cn(
@@ -1031,6 +1208,7 @@ function ItemCard(
         collapsed && "hidden",
         ghost && "pointer-events-none border-dashed border-ring opacity-60",
         landed && "motion-safe:animate-card-landed",
+        props.flash && "ring-2 ring-ring ring-offset-1 ring-offset-background",
       )}
     >
       <div
@@ -1054,6 +1232,7 @@ function ItemCard(
             {item.clientName}
           </span>
           {item.attention && <AttentionBadge size="sm" />}
+          <MeetingChip item={item} iconOnly={compact} />
           {item.aiAdded && <AiChip evidence={item.evidence} />}
           <CarriedChip item={item} nowMs={nowMs} iconOnly={compact} />
           <DoneBox item={item} busy={busy} onAct={props.onAct} closing={props.closing} onUndo={props.onUndo} />
@@ -1097,7 +1276,10 @@ function ItemRow(props: ItemProps) {
   const toggle = () => onToggle(item.id);
   const tone = cardTone(item) ?? "none";
   return (
-    <li className={cn("border-l-2", TONE_ROW[tone], busy && "opacity-60")}>
+    <li
+      data-item-id={item.id}
+      className={cn("border-l-2", TONE_ROW[tone], busy && "opacity-60", props.flash && "ring-2 ring-inset ring-ring")}
+    >
       <div
         role="button"
         tabIndex={0}
@@ -1115,6 +1297,7 @@ function ItemRow(props: ItemProps) {
           <span className="flex min-w-0 items-center gap-2">
             <span className="max-w-56 shrink-0 truncate text-xs font-semibold text-foreground 2xl:text-[13px]">{item.clientName}</span>
             {item.attention && <AttentionBadge size="sm" />}
+            <MeetingChip item={item} iconOnly={compact} />
             {item.aiAdded && <AiChip evidence={item.evidence} />}
             <CarriedChip item={item} nowMs={nowMs} iconOnly={compact} />
           </span>
@@ -1195,5 +1378,131 @@ function AiChip({ evidence }: { evidence?: string }) {
     >
       <Sparkles className="size-2.5" /> IA
     </span>
+  );
+}
+
+/** Reunión próxima con la cuenta: lo mío conviene cerrarlo antes (rojo si Capacidad dice que no llega). */
+function MeetingChip({ item, iconOnly }: { item: PlannedItem; iconOnly?: boolean }) {
+  if (!item.meetingSoonAt) return null;
+  const when = meetingChip(item.meetingSoonAt);
+  const title = item.prepLate
+    ? `Reunión ${when}: no llega a cerrarse antes con los huecos libres de la agenda`
+    : item.side === "debo"
+      ? `Reunión ${when}: conviene tenerlo cerrado antes`
+      : `Reunión ${when}: buen momento para reclamarlo`;
+  return (
+    <span
+      title={title}
+      className={cn(
+        "inline-flex shrink-0 items-center gap-1 rounded border px-1.5 py-px text-label-sm font-medium",
+        item.prepLate ? "border-critical/40 bg-critical/10 text-critical" : "border-border bg-surface text-foreground",
+      )}
+    >
+      <CalendarDays className="size-3" />
+      {!iconOnly && when}
+    </span>
+  );
+}
+
+type AccountOption = { id: string; name: string; attention: boolean; meetingSoonAt: string | null; count: number };
+
+/** Filtro de varias cuentas: casillas + buscador, con atajos "Más atención" y "Reunión próxima". */
+function AccountPicker({
+  accounts,
+  selected,
+  onChange,
+}: {
+  accounts: AccountOption[];
+  selected: Set<string>;
+  onChange: (next: Set<string>) => void;
+}) {
+  const [open, setOpen] = useState(false);
+  const [q, setQ] = useState("");
+  const ref = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    if (!open) return;
+    const onDown = (e: MouseEvent) => {
+      if (!ref.current?.contains(e.target as Node)) setOpen(false);
+    };
+    const onKey = (e: KeyboardEvent) => e.key === "Escape" && setOpen(false);
+    document.addEventListener("mousedown", onDown);
+    document.addEventListener("keydown", onKey);
+    return () => {
+      document.removeEventListener("mousedown", onDown);
+      document.removeEventListener("keydown", onKey);
+    };
+  }, [open]);
+  const names = accounts.filter((a) => selected.has(a.id)).map((a) => a.name);
+  const label = !selected.size ? "Todas las cuentas" : names.length === 1 ? names[0] : `${selected.size} cuentas`;
+  const shown = accounts.filter((a) => !q.trim() || a.name.toLowerCase().includes(q.trim().toLowerCase()));
+  const toggle = (id: string) => {
+    const next = new Set(selected);
+    if (next.has(id)) next.delete(id);
+    else next.add(id);
+    onChange(next);
+  };
+  const quick = (ids: string[]) => onChange(new Set(ids));
+  const attention = accounts.filter((a) => a.attention).map((a) => a.id);
+  const meeting = accounts.filter((a) => a.meetingSoonAt).map((a) => a.id);
+  const quickBtn = "rounded border border-border px-1.5 py-0.5 text-[11px] text-muted-foreground transition-colors hover:bg-accent hover:text-foreground disabled:opacity-40";
+  return (
+    <div ref={ref} className="relative">
+      <button
+        type="button"
+        aria-haspopup="listbox"
+        aria-expanded={open}
+        onClick={() => setOpen((o) => !o)}
+        className={cn(
+          inputClass,
+          "flex h-8 w-auto max-w-56 items-center gap-1.5 text-xs",
+          selected.size > 0 && "border-border-strong text-foreground",
+        )}
+      >
+        <Building2 className="size-3.5 shrink-0 text-subtle-foreground" />
+        <span className="truncate">{label}</span>
+        <ChevronDown className="size-3.5 shrink-0 text-subtle-foreground" />
+      </button>
+      {open && (
+        <div className="absolute left-0 top-full z-30 mt-1 w-72 rounded-lg border border-border-strong bg-popover p-2 text-popover-foreground shadow-popover">
+          <input
+            autoFocus
+            value={q}
+            onChange={(e) => setQ(e.target.value)}
+            placeholder="Buscar cuenta"
+            className={cn(inputClass, "h-7 text-xs")}
+          />
+          <div className="mt-2 flex flex-wrap gap-1">
+            <button type="button" className={quickBtn} disabled={!selected.size} onClick={() => quick([])}>
+              Todas
+            </button>
+            <button type="button" className={quickBtn} disabled={!attention.length} onClick={() => quick(attention)}>
+              Más atención ({attention.length})
+            </button>
+            <button type="button" className={quickBtn} disabled={!meeting.length} onClick={() => quick(meeting)}>
+              Reunión próxima ({meeting.length})
+            </button>
+          </div>
+          <ul role="listbox" aria-multiselectable className="mt-2 max-h-72 overflow-y-auto [scrollbar-width:thin]">
+            {shown.map((a) => (
+              <li key={a.id}>
+                <label className="flex cursor-pointer items-center gap-2 rounded px-1.5 py-1 text-xs hover:bg-accent/60">
+                  <Checkbox checked={selected.has(a.id)} onCheckedChange={() => toggle(a.id)} />
+                  <span className="min-w-0 flex-1 truncate">{a.name}</span>
+                  {a.attention && <AttentionBadge size="sm" />}
+                  {a.meetingSoonAt && (
+                    <span className="flex shrink-0 items-center gap-0.5 text-label-sm text-muted-foreground" title="Reunión próxima">
+                      <CalendarDays className="size-3" />
+                      {meetingChip(a.meetingSoonAt)}
+                    </span>
+                  )}
+                  <span className="tabular shrink-0 text-label-sm text-subtle-foreground">{a.count}</span>
+                </label>
+              </li>
+            ))}
+            {!shown.length && <li className="px-1.5 py-2 text-xs text-subtle-foreground">Sin coincidencias</li>}
+          </ul>
+        </div>
+      )}
+    </div>
   );
 }

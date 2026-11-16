@@ -4,7 +4,7 @@ import type { Meeting } from "@/types/meeting";
 import type { Ticket } from "@/types/ticket";
 import { computeEngagementPercent } from "@/lib/utils/engagement";
 import { computeParticipants } from "@/lib/utils/participants";
-import { mailTickets, relatedMailNote } from "@/lib/utils/mail-tickets";
+import { actionableMailTickets, relatedMailNote } from "@/lib/utils/mail-tickets";
 import { accountActionables } from "@/lib/utils/actionables";
 import { lastMovement } from "@/lib/utils/followup-alerts";
 
@@ -80,7 +80,7 @@ export function clientsToBoard(
       });
     }
     // Pendientes de mi lado del último mail del cliente (posterior a la última reunión).
-    for (const t of mailTickets(client)) {
+    for (const t of actionableMailTickets(client)) {
       clientTickets.push({
         id: t.id,
         accountId: client.id,

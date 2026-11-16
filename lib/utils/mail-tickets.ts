@@ -66,6 +66,21 @@ export function mailTickets(client: ClientRecord): MailTicket[] {
 }
 
 /**
+ * Lo que cuenta como accionable (tablero, Capacidad, lista de la cuenta): solo compromisos. "Responder a X" y los
+ * pedidos del cliente viven en Seguimiento del Dashboard (alertas `client_waiting` / `client_request`); siguen en
+ * `mailTickets` para las alertas, el auto-tildado y el borrador.
+ */
+export function actionableMailTickets(client: ClientRecord): MailTicket[] {
+  return mailTickets(client).filter((t) => t.kind !== "reply" && t.kind !== "request");
+}
+
+/** Pedidos del cliente por mail sin resolver (van a Seguimiento, no al tablero). */
+export function openMailRequests(client: ClientRecord): MailTicket[] {
+  const done = new Set(client.doneTicketIds ?? []);
+  return mailTickets(client).filter((t) => t.kind === "request" && !done.has(t.id));
+}
+
+/**
  * Nota de trazabilidad para un ticket de minuta según el mail más reciente que lo trata:
  * mío/del equipo → "posiblemente resuelto"; del cliente → "mencionado por".
  */

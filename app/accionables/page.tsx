@@ -16,7 +16,12 @@ import { getBoardOrder } from "@/lib/store/board-order-store";
 // "En riesgo" sale de proyectar lo propio en los huecos libres de Calendar (solo lectura).
 export const dynamic = "force-dynamic";
 
-export default async function AccionablesPage() {
+export default async function AccionablesPage({
+  searchParams,
+}: {
+  searchParams: Promise<{ item?: string; cuentas?: string }>;
+}) {
+  const sp = await searchParams;
   const [{ clients, ownerEmail }, settings, jar, boardOrder] = await Promise.all([
     getClientsFileCached(),
     getSettingsCached(),
@@ -28,7 +33,8 @@ export default async function AccionablesPage() {
   const now = new Date();
   const offset = hasWorkLeftThisWeek(now, settings) ? 0 : 1;
   const { start, end } = planWeekBounds(now, offset);
-  const events = await listEventsBetween(start, end).catch(() => null);
+  // Una semana más de eventos: solo para la próxima reunión de cada cuenta (grupo "Reunión próxima").
+  const events = await listEventsBetween(start, new Date(end.getTime() + 7 * 86_400_000)).catch(() => null);
   const plan = computeWeekPlan(clients, settings, events, offset, now);
 
   // Panel de mail de la card (mismo que Seguimiento del Dashboard): el mail único de la cuenta, solo donde hace falta.
@@ -52,7 +58,8 @@ export default async function AccionablesPage() {
       <div>
         <h1 className="text-lg font-semibold">Accionables</h1>
         <p className="text-sm text-muted-foreground">
-          Lo pendiente de tus cuentas asignadas, ordenado por fecha de entrega y agrupado por cuenta.
+          Lo pendiente de tus cuentas asignadas por plazo; en cada columna primero las cuentas de más atención y las
+          que tienen reunión próxima.
         </p>
       </div>
       <ActionablesBoard
@@ -72,6 +79,8 @@ export default async function AccionablesPage() {
         targetDays={settings.targetBusinessDays}
         limitDays={settings.limitBusinessDays}
         boardOrder={boardOrder}
+        focusId={sp.item ?? null}
+        initialAccounts={(sp.cuentas ?? "").split(",").filter(Boolean)}
       />
     </div>
   );

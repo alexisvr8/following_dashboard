@@ -162,7 +162,7 @@ function Verdict({ plan, settings }: { plan: WeekPlan; settings: WorkSettings })
         : t.verdict === "flex"
           ? `Llegas extendiendo ${fmt(t.flexNeededHours)}`
           : `No llegas: faltan ${fmt(t.unscheduledHours)}`;
-  const hint =
+  const baseHint =
     t.verdict === "empty"
       ? "Tu semana queda libre de pendientes"
       : t.verdict === "core"
@@ -170,6 +170,12 @@ function Verdict({ plan, settings }: { plan: WeekPlan; settings: WorkSettings })
         : t.verdict === "flex"
           ? `Arrancando ${settings.workStart} o terminando ${settings.workEnd} · cierre ${t.finishLabel}`
           : `≈${Math.ceil(t.unscheduledHours / settings.hoursPerActionable)} accionables no entran antes del viernes`;
+  // Preparación de reuniones próximas: va primero en el detalle (es lo que se reparte antes).
+  const hint = t.prepLateCount
+    ? `${t.prepLateCount} de preparación no llegan antes de su reunión · ${baseHint}`
+    : t.prepCount
+      ? `${t.prepCount} para preparar reuniones, a tiempo · ${baseHint}`
+      : baseHint;
   const Icon = tone === "good" ? CheckCircle2 : tone === "warn" ? Clock3 : AlertTriangle;
 
   return (
@@ -350,7 +356,8 @@ function DayColumn({
 }
 
 function blockName(b: PlanBlock) {
-  return b.kind === "task" ? (b.accountName ?? b.title) : b.title;
+  if (b.kind !== "task") return b.title;
+  return b.prepFor ? `Prep. · ${b.accountName ?? b.title}` : (b.accountName ?? b.title);
 }
 
 function blockTooltip(b: PlanBlock): string {
@@ -358,6 +365,7 @@ function blockTooltip(b: PlanBlock): string {
     blockName(b),
     `${b.startLabel}–${b.endLabel} · ${KIND_LABEL[b.kind]}${b.kind === "task" && b.soft ? " en horario flexible" : ""}`,
     b.accountName && b.kind === "client" ? `Cuenta: ${b.accountName}` : null,
+    b.prepFor ? `Antes de la reunión del ${b.prepFor}` : null,
   ]
     .filter(Boolean)
     .join("\n");
@@ -428,6 +436,7 @@ function Block({
             {softTask && " en horario flexible"}
           </span>
           {b.accountName && b.kind === "client" && <span className="block text-muted-foreground">Cuenta: {b.accountName}</span>}
+          {b.prepFor && <span className="block text-muted-foreground">Preparación: antes de la reunión del {b.prepFor}</span>}
         </div>
       )}
     </div>
