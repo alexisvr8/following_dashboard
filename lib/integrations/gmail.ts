@@ -201,7 +201,9 @@ export function buildMimeMessage(input: {
   const html = `<div dir="ltr" style="${MAIL_STYLE}">${input.html ?? bodyToHtml(input.body)}${
     // Sin la clase `gmail_signature`: con ella Gmail la trata como firma repetida y la esconde tras "…".
     // El último <p> ("Saludos") ya deja 12px: la firma va pegada, sin <br> extra.
-    signature ? `<div dir="ltr">${signature}</div>` : ""
+    // Gmail además esconde lo que se repite igual en mensajes anteriores del hilo (la firma de cada mail): un
+    // marcador invisible y único al principio y al final hace que nunca coincida con la de mails previos.
+    signature ? `<div dir="ltr">${uniqueMark()}${signature}${uniqueMark()}</div>` : ""
   }</div>`;
   return [
     `To: ${input.to.join(", ")}`,
@@ -217,6 +219,10 @@ export function buildMimeMessage(input: {
     "",
   ].join("\r\n");
 }
+
+/** Texto oculto distinto en cada mail (no se ve ni ocupa lugar) para que Gmail no recorte la firma como repetida. */
+const uniqueMark = () =>
+  `<span style="display:none;font-size:0;line-height:0;max-height:0;max-width:0;opacity:0;overflow:hidden;color:transparent">${randomUUID().slice(0, 8)}</span>`;
 
 type MailInput = { threadId: string | null; to: string[]; cc?: string[]; subject: string; body: string; html?: string };
 

@@ -258,7 +258,7 @@ tiempo/dificultad → quick_win/major_project/fill_in/thankless_task), no se per
   hilo elegido con Re:/In-Reply-To, o mail nuevo)
   (al leer mails, el text/plain cortado a ~76 caracteres por Gmail se une con `unwrapPlain`, `gemini-mail.ts`). Con `send: true` envía de verdad (`sendThreadMail`, solo desde el
   botón Enviar con confirmación; descarta el draft previo y refresca la actividad). El cron nunca envía. MIME
-  (`buildMimeMessage`): multipart/alternative + HTML estilo Gmail + firma de la cuenta (`sendAs`, sin clase `gmail_signature`
+  (`buildMimeMessage`): multipart/alternative + HTML estilo Gmail + firma de la cuenta (`sendAs`, sin clase `gmail_signature` y con marcador oculto único `uniqueMark`
   para que Gmail no la esconda tras "…"). Arranque relativo (`meetingWhen`: "del día de hoy" / "de ayer" / "del lunes" hasta 3 días, después la fecha); cierre
   "Saludos". Cada punto termina en "(Nombre) - Status: Hecho (dd/mm)" (✓) o "(Nombre) - Status: Pendiente": responsables
   por nombre de pila (`ownerTag`; "La empresa"/"El grupo" enteros), un solo guion (`STATUS_DONE`/`STATUS_PENDING`); `bodyToHtml` (`gmail.ts`, solo estilos inline para Gmail/Outlook) arma `<p>` por línea, títulos de sección en negrita y subrayados seguidos de ":", 2+ líneas en blanco = un espacio más (`margin-top` 24px, antes del cierre y de "Saludos"), viñetas `•`/`✓` en `<ul>`, sin `<br>`/párrafos vacíos (`normalizeHtml`), y "Status:" en negrita con valor coloreado (Pendiente rojo / En curso naranja / Hecho verde, fecha sin color); el texto plano del MIME (`bodyToPlain`) usa "- " y una línea en blanco entre secciones (dos antes del cierre). UI: tabs en `/cuentas/[id]`
