@@ -20,7 +20,7 @@ import { saveSyncStatus, type SyncStatus } from "@/lib/store/sync-status-store";
 import { computeAlerts, type AccountAlert } from "@/lib/utils/followup-alerts";
 import { buildFollowup, buildWeeklyPlan } from "@/lib/utils/followup";
 import { getSyncStatus } from "@/lib/store/sync-status-store";
-import { followupTicketId } from "@/lib/store/clients-store";
+import { followupTicketId, meetingEnd } from "@/lib/store/clients-store";
 import { createHash } from "node:crypto";
 
 // Sincronización completa (la usan el scheduler de `instrumentation.ts` y `/api/cron/*`):
@@ -233,7 +233,8 @@ async function createMeetingDrafts(file: ClientsFile, settings: WorkSettings) {
     const saved = client.followups?.[key];
     if (saved?.gmailDraftId || saved?.sentAt || saved?.autoFor === meeting.id) continue;
     if (client.doneTicketIds?.includes(followupTicketId(client.id, meeting.id))) continue;
-    const wroteAfter = (client.activity?.recentMails ?? []).some((m) => m.direction === "me" && m.date > meeting.date);
+    const end = meetingEnd(meeting);
+    const wroteAfter = (client.activity?.recentMails ?? []).some((m) => m.direction === "me" && m.date > end);
     if (wroteAfter) continue;
     const draft = buildFollowup(client, meeting, file.ownerEmail ?? null, settings);
     if (!draft.to.length) continue;
