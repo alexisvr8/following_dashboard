@@ -277,6 +277,12 @@ export const followupKey = (kind: FollowupKind, meetingId: string) =>
 export const followupTicketId = (clientId: string, meetingId: string) =>
   `${clientId}:${meetingId}-followup`;
 
+/** Duración asumida si la reunión no la trae (para no tomar como follow-up un mail mandado durante la llamada). */
+const DEFAULT_MEETING_MINUTES = 30;
+/** Fin de la reunión (ISO): inicio + duración. Lo que mando antes de esto no cuenta como follow-up. */
+export const meetingEnd = (meeting: Pick<DiscoveredMeeting, "date" | "durationMinutes">) =>
+  new Date(Date.parse(meeting.date) + (meeting.durationMinutes || DEFAULT_MEETING_MINUTES) * 60_000).toISOString();
+
 /** Datos editables a mano, pensados como contexto para el futuro agente LLM. */
 export interface ClientProfile {
   /** Cómo se llama la empresa en los correos (razón social / nombre comercial). */

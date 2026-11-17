@@ -348,7 +348,7 @@ chip `AttentionBadge` en cards de `/accionables`, directorio y Seguimiento): acc
 `lib/jobs/sync-job.ts` `runSync({drafts, trigger})`: minutas nuevas (`discoverGeminiMeetings(7d)` incremental +
 `mergeDiscovery`) → transcripciones (`backfillTranscripts`) → IA post-reunión (`generateMeetingAI`) → `syncClientsActivity` (asignados + no asignados) →
 **minuta automática** (`createMeetingDrafts`, si `settings.autoMeetingDrafts` [default true]: última reunión ≤48 h de cada
-asignado, sin borrador/envío previo, sin follow-up tildado ni mail mío posterior → borrador `meeting` en el hilo de `pickFollowupThread`,
+asignado, sin borrador/envío previo, sin follow-up tildado ni mail mío posterior al fin de la reunión [`meetingEnd` = inicio + duración, 30 min si falta; también para el auto-tildado y `currentFollowupKind`] → borrador `meeting` en el hilo de `pickFollowupThread`,
 `autoFor` = id de reunión, en cada corrida) → `computeAlerts` → si `drafts` (lunes), **mail semanal de objetivos**
 (`createWeeklyDrafts` + `buildWeeklyPlan`: por cuenta asignada con pendientes, completado en los últimos 7 días + objetivos de
 nuestro lado [incl. consultas/compromisos por mail] / de su lado / en conjunto / otros, fechas solo acordadas; clave

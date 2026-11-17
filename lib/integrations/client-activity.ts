@@ -5,6 +5,7 @@ import { extractBody, mapLimit, stripHtml, unwrapPlain, withRetry } from "./gemi
 import {
   followupTicketId,
   mailTicketId,
+  meetingEnd,
   type ClientActivity,
   type MailDirection,
   type ClientRecord,
@@ -199,9 +200,9 @@ async function syncOne(
       });
     }
 
-    // 3) ¿Ya mandé follow-up? Mail mío a referentes posterior a la última reunión.
+    // 3) ¿Ya mandé follow-up? Mail mío a referentes posterior al FIN de la última reunión (no durante).
     if (latest) {
-      const after = Math.floor(new Date(latest.date).getTime() / 1000);
+      const after = Math.floor(Date.parse(meetingEnd(latest)) / 1000);
       const sent = await withRetry(() =>
         gmail.users.messages.list({
           userId: "me",

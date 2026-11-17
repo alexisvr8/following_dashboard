@@ -1,6 +1,7 @@
 import {
   followupKey,
   followupTicketId,
+  meetingEnd,
   type ClientRecord,
   type DiscoveredMeeting,
   type FollowupDraft,
@@ -685,7 +686,8 @@ export function buildStatusUpdate(
 export function currentFollowupKind(client: ClientRecord, meeting: DiscoveredMeeting): FollowupKind {
   if (client.followups?.[followupKey("meeting", meeting.id)]?.sentAt) return "status";
   if (client.doneTicketIds?.includes(followupTicketId(client.id, meeting.id))) return "status";
-  const wroteAfter = (client.activity?.recentMails ?? []).some((m) => m.direction === "me" && m.date > meeting.date);
+  const end = meetingEnd(meeting);
+  const wroteAfter = (client.activity?.recentMails ?? []).some((m) => m.direction === "me" && m.date > end);
   return wroteAfter ? "status" : "meeting";
 }
 
