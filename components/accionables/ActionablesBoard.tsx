@@ -657,7 +657,7 @@ export function ActionablesBoard({
           return (
             <span key={k} className="flex items-center gap-1">
               <Icon className="size-3.5" />
-              {k === "agreed" ? "Acordada: se dijo en la reunión o el mail" : k === "target" ? `Meta interna: ${targetDays} días hábiles si no se dijo fecha (vence a los ${limitDays})` : "Manual: la pusiste vos"}
+              {k === "agreed" ? "Acordada: se dijo en la reunión o el mail" : k === "target" ? `Meta interna si no se dijo fecha: de reuniones, la semana siguiente; mails y agregados a mano, ${targetDays} días hábiles (vence a los ${limitDays})` : "Manual: la pusiste vos"}
             </span>
           );
         })}

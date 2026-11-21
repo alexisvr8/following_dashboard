@@ -26,3 +26,36 @@ describe("grupos del tablero por ronda", () => {
     expect(groupOf(item({}))).toBe("fresh");
   });
 });
+
+describe("sin fecha dicha en la reunión → semana siguiente", () => {
+  it("'lo antes posible' cae en la semana de la reunión", async () => {
+    const { parseDue } = await import("@/lib/utils/gemini-notes-parser");
+    const tue = "2026-11-24T10:00:00";
+    expect(parseDue("Enviar el archivo lo antes posible", tue, WORK)?.until.getDate()).toBe(27); // viernes
+    expect(parseDue("Revisarlo cuanto antes", "2026-11-27T10:00:00", WORK)?.until.getDate()).toBe(30); // viernes → lunes
+  });
+  it("paso de minuta sin fecha → viernes de la semana siguiente; con 'mañana' → mañana", async () => {
+    const { plannedItems } = await import("@/lib/utils/deadlines");
+    const client = {
+      id: "c1",
+      name: "Cliente",
+      status: "assigned",
+      profile: {},
+      meetings: [
+        {
+          id: "m1",
+          title: "Reunión",
+          date: "2026-11-24T10:00:00",
+          nextSteps: ["[Alexis Vásquez R] Revisar endpoints: faltantes del ERP", "[Alexis Vásquez R] Pasar credenciales mañana"],
+        },
+      ],
+    } as never;
+    const settings = { workDays: WORK, hoursPerActionable: 0.5, ownerAliases: ["Alexis Vásquez R"] } as never;
+    const items = plannedItems([client], settings, new Date("2026-11-24T15:00:00"));
+    const byTitle = (t: string) => items.find((i) => i.fullText.includes(t))!;
+    expect(new Date(byTitle("endpoints").due).getDate()).toBe(4); // vie 04/12
+    expect(byTitle("endpoints").nextWeekTarget).toBe(true);
+    expect(byTitle("endpoints").bucket).toBe("next_week");
+    expect(new Date(byTitle("credenciales").due).getDate()).toBe(25);
+  });
+});

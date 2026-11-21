@@ -6,7 +6,7 @@ import { isOwnActionable, learnedRole } from "@/lib/utils/capacity";
 import { actionableMailTickets } from "@/lib/utils/mail-tickets";
 import { isAutoTicket } from "@/lib/utils/auto-ticket";
 import { keywordSimilarity } from "@/lib/utils/mail-classify";
-import { addBusinessDays, parseStep, rollToWorkday, type StepDue } from "@/lib/utils/gemini-notes-parser";
+import { addBusinessDays, lastWorkdayOfWeek, parseStep, rollToWorkday, type StepDue } from "@/lib/utils/gemini-notes-parser";
 import { ACCOUNT_PRIORITY_RANK, accountPriority } from "@/lib/utils/account-priority";
 import { ROUND_BUSINESS_DAYS, type Round } from "@/lib/utils/round";
 import { DEFAULT_ESTIMATE_GUIDE, guidedMinutes, taskKind } from "@/lib/utils/task-kind";
@@ -57,6 +57,8 @@ export interface PlannedItem {
    * viene de una minuta anterior; `backlog` = lo anterior que sigue abierto ("Para cerrar" en el tablero).
    */
   round: Round;
+  /** De una reunión sin fecha dicha: meta = último hábil de la semana siguiente (no la de N días). */
+  nextWeekTarget?: boolean;
   /** Fin del día de entrega (ISO). */
   due: string;
   dueLabel: string;
@@ -247,6 +249,8 @@ interface RawItem {
   /** Texto donde buscar la fecha dicha (sin el "[Dueño]"). */
   dueText: string | null;
   quick: boolean;
+  /** Salió de una reunión (minuta o detectado por la IA): sin fecha dicha, va a la semana siguiente. */
+  nextWeekDefault?: boolean;
   evidence?: string;
 }
 
@@ -273,6 +277,7 @@ function rawItems(client: ClientRecord, settings: WorkSettings, now: Date): RawI
       ...(manualCustom.has(a.id) && !a.carried && { roundDate: manualCustom.get(a.id)!.createdAt }),
       dueText: a.step,
       quick: false,
+      ...(!manualCustom.has(a.id) && { nextWeekDefault: true }),
       ...(ai && { evidence: ai.evidence ?? "" }),
     });
   }
@@ -369,12 +374,20 @@ export function plannedItems(
     let due: Date;
     let limit: Date;
     let dueKind: DueKind;
+    let nextWeekTarget = false;
     if (manual) {
       due = limit = rollToWorkday(new Date(`${manual}T23:59:59`), workDays);
       dueKind = "manual";
     } else if (agreed) {
       due = limit = agreed.until;
       dueKind = "agreed";
+    } else if (r.nextWeekDefault && !c.profile?.attention) {
+      // De la reunión y sin fecha dicha (ni "hoy", "mañana", "lo antes posible"…): para la semana siguiente, así la
+      // semana en curso queda para lo urgente y lo que ya venía.
+      const monday = addBusinessDays(lastWorkdayOfWeek(origin, workDays), 1, workDays);
+      due = limit = lastWorkdayOfWeek(monday, workDays);
+      dueKind = "target";
+      nextWeekTarget = true;
     } else {
       // Más atención: meta interna corta (1 día hábil) y vencido al día siguiente.
       const t = c.profile?.attention ? Math.min(target, settings.attentionTargetDays ?? 1) : target;
@@ -430,6 +443,7 @@ export function plannedItems(
       ...(meetingSoon && { meetingSoonAt: meetingAt, ...(base.side === "debo" && { prep: true }) }),
       accountPriority: accountLevel.get(c.id) ?? "media",
       ...(r.evidence !== undefined && { aiAdded: true, evidence: r.evidence }),
+      ...(nextWeekTarget && { nextWeekTarget: true }),
       ...base,
     });
   }

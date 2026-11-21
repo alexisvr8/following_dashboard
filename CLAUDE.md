@@ -84,8 +84,8 @@ se vuelve menú desplegable `MobileNav`). Sin sidebar. 5 secciones. Navegación 
   `PATCH /api/clients/[id]` `{plan: {ticketId, due?: "AAAA-MM-DD"|null, estimateMinutes?: number|null}}` (`setActionablePlan`,
   `client.actionableDue` / `actionableEstimate`; la fecha toca `ticketsUpdatedAt`). Datos = `computeWeekPlan(...).items`.
   **Plazos** (`lib/utils/deadlines.ts`, `plannedItems`): pendientes de asignados (minuta, propios, follow-up, mails); fecha =
-  manual → acordada (`parseDue` contra el día de la reunión/mail) → meta interna `settings.targetBusinessDays` (3) hábiles,
-  vencido a `limitBusinessDays` (4); Responder / Enviar follow-up = 1 día hábil. Debo = `isOwnActionable`, resto me deben.
+  manual → acordada (`parseDue` contra el día de la reunión/mail; "lo antes posible"/"cuanto antes"/"apenas pueda" = último hábil de esa semana, mín. +1 hábil) → **de reunión** (pasos de minuta e IA, no Más atención) último hábil de la semana siguiente (`nextWeekTarget`) → si no, meta interna `settings.targetBusinessDays` (3) hábiles,
+  vencido a `limitBusinessDays` (4); los prompts de minuta y análisis piden `fecha` también ante "hoy"/"mañana"/"lo antes posible" (sobre todo en la transcripción), null si no se dijo; Responder / Enviar follow-up = 1 día hábil. Debo = `isOwnActionable`, resto me deben.
   `agreedDue` = lo único que puede ir al mail (nunca la meta interna). `accountMatcher`/`nextMeetings` = reunión ↔ cuenta.
   **Transcripción** (`lib/utils/transcript.ts`): la pestaña "Transcripción" del Doc (viene en el export de texto) → turnos
   (`parseTranscript`, une fragmentos del mismo hablante/minuto) → `extractSuggestions`: frases de entrega ("te paso", "les
