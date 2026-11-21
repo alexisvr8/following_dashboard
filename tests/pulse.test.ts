@@ -9,6 +9,7 @@ import { answeredRequests, collectMailItems } from "@/lib/utils/mail-items";
 import { buildReply, pendingReplies } from "@/lib/utils/followup";
 import { extractRequests } from "@/lib/utils/mail-classify";
 import { clientTargets } from "@/lib/integrations/client-activity";
+import { suggestFor } from "@/lib/integrations/unassigned-mail";
 
 // Lunes 16/11; la reunión fue el martes 10/11 → 4 días hábiles sin interacción.
 const NOW = new Date("2026-11-16T10:00:00-03:00");
@@ -239,5 +240,27 @@ describe("Tildes automáticos de la sync", () => {
     const c = client({ activity: { ...withMails([answer, req]).activity!, lastInboundMail: req, recentInbound: [req] } });
     const [hit] = answeredRequests(c, collectMailItems(c));
     expect(hit.at).toBe(answer.date);
+  });
+});
+
+describe("Mails sin cuenta: sugerencias", () => {
+  const werthein = client({ id: "wertheinagro.com", domain: "wertheinagro.com", name: "Wertheinagro", profile: { linkedContacts: [{ value: "acsistec.com.ar", shared: true }] } });
+  const other = client({ id: "glam.com.ar", domain: "glam.com.ar", name: "GLAM Distribuciones" });
+
+  it("lo nombra en el asunto o el cuerpo → sugerencia fuerte", () => {
+    const [s] = suggestFor([werthein, other], "x@idero.com.ar", "Consulta integración Wertheinagro", "Hola, sobre la cuenta…", "Hola");
+    expect(s.clientId).toBe("wertheinagro.com");
+    expect(s.strength).toBe(3);
+  });
+
+  it("dominio compartido vinculado y mail citado del cliente", () => {
+    const shared = suggestFor([werthein, other], "ana@acsistec.com.ar", "Consulta", "texto sin pistas", "texto");
+    expect(shared.map((s) => s.clientId)).toEqual(["wertheinagro.com"]);
+    const quoted = suggestFor([werthein, other], "x@otro.com", "RE: algo", "> De: pepe@glam.com.ar escribió…", "ok");
+    expect(quoted[0].clientId).toBe("glam.com.ar");
+  });
+
+  it("palabras genéricas de razón social no alcanzan", () => {
+    expect(suggestFor([other], "x@otro.com", "Distribuciones del mes", "nada", "nada")).toHaveLength(0);
   });
 });

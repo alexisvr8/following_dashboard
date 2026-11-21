@@ -68,6 +68,7 @@ const DAYS_CHIP: Record<Exclude<Range, "all">, { variant: "outline" | "warning" 
 export function FollowupAlerts({
   alerts,
   queue = [],
+  unassignedCount = 0,
   panels,
   staleDays,
   lastSyncAt,
@@ -75,6 +76,8 @@ export function FollowupAlerts({
   alerts: AccountAlert[];
   /** Cuentas activas con pedidos por mail sin resolver (no entran como tarjeta). */
   queue?: ReplyQueueItem[];
+  /** Mails externos dirigidos a ti que no son de ninguna cuenta (bandeja en /clientes). */
+  unassignedCount?: number;
   panels: Record<string, FollowupPanelData>;
   staleDays: number;
   lastSyncAt: string | null;
@@ -247,6 +250,17 @@ export function FollowupAlerts({
               </button>
             ))}
           </div>
+        )}
+        {unassignedCount > 0 && (
+          <Link
+            href="/clientes?tab=mails"
+            className="flex items-center gap-1.5 rounded-md border border-border-strong bg-surface px-2 py-1 text-xs text-muted-foreground transition-colors hover:text-foreground"
+          >
+            <MailQuestionMark className="size-3.5 text-warning" />
+            <span className="tabular font-medium text-foreground">{unassignedCount}</span> mail{unassignedCount === 1 ? "" : "s"} sin cuenta ·
+            <span className="font-medium text-foreground-strong">Revisar</span>
+            <ArrowRight className="size-3" />
+          </Link>
         )}
         {error && (
           <p role="alert" className="flex items-center gap-2 rounded-md border border-critical/25 bg-critical-muted px-2 py-1 text-xs text-foreground">

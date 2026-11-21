@@ -356,6 +356,11 @@ export interface ClientProfile {
    * compartido = trabaja con varias cuentas: solo cuenta en hilos donde está el cliente.
    */
   linkedContacts?: LinkedContact[];
+  /**
+   * Hilos asignados a mano desde "Mails sin cuenta": la sync los lee siempre como de esta cuenta (aunque no aparezca
+   * nadie del cliente), así cuentan como interacción, sus pedidos van a "Por responder" y entran en la trazabilidad.
+   */
+  linkedThreads?: { threadId: string; subject: string; at: string }[];
   /** Cierre de la cuenta (pase a Soporte, `status: "closed"`): cuándo, a quién y nota. Se borra al reabrir. */
   closure?: { at: string; handedTo: string; note?: string };
 }
@@ -446,12 +451,37 @@ export function clientRow(c: ClientRecord) {
   return { id: c.id, status: c.status, name: c.name, domain: c.domain, data: c };
 }
 
+// Caché en memoria del proceso por `version` (egress del plan gratuito de Supabase): cada lectura baja solo
+// `id, version` (bytes por fila) y el `data` completo únicamente de las filas que cambiaron desde la última vez
+// (escritas por otro equipo o un script). Las escrituras propias actualizan el caché sin releer.
+// Se entregan copias: los llamadores mutan los objetos.
+type CachedRow = { version: number; data: ClientRecord };
+const rowCache: Map<string, CachedRow> = ((globalThis as { __clientRowCache?: Map<string, CachedRow> }).__clientRowCache ??=
+  new Map());
+
 async function fetchRows(ids?: string[]): Promise<ClientRow[]> {
-  let query = supabaseAdmin().from("clients").select("id, data, version").order("seq");
+  let query = supabaseAdmin().from("clients").select("id, version").order("seq");
   if (ids) query = query.in("id", ids);
-  const { data, error } = await query;
+  const { data: heads, error } = await query;
   if (error) throw new Error(`clients_read: ${error.message}`);
-  return (data ?? []) as ClientRow[];
+  const list = (heads ?? []) as { id: string; version: number }[];
+  const stale = list.filter((h) => rowCache.get(h.id)?.version !== h.version).map((h) => h.id);
+  for (let i = 0; i < stale.length; i += 40) {
+    const { data, error: dataError } = await supabaseAdmin()
+      .from("clients")
+      .select("id, data, version")
+      .in("id", stale.slice(i, i + 40));
+    if (dataError) throw new Error(`clients_read: ${dataError.message}`);
+    for (const r of (data ?? []) as ClientRow[]) rowCache.set(r.id, { version: r.version, data: r.data });
+  }
+  if (!ids) {
+    const alive = new Set(list.map((h) => h.id));
+    for (const id of rowCache.keys()) if (!alive.has(id)) rowCache.delete(id);
+  }
+  return list.flatMap((h) => {
+    const c = rowCache.get(h.id);
+    return c ? [{ id: h.id, version: c.version, data: structuredClone(c.data) }] : [];
+  });
 }
 
 export async function getClientsFile(): Promise<ClientsFile> {
@@ -496,7 +526,10 @@ async function applyToRow<R>(row: ClientRow, fn: Mutator<R>, attempt = 0): Promi
     .eq("version", row.version)
     .select("id");
   if (error) throw new Error(`clients_write(${row.id}): ${error.message}`);
-  if (data?.length) return { client, result };
+  if (data?.length) {
+    rowCache.set(row.id, { version: row.version + 1, data: structuredClone(client) });
+    return { client, result };
+  }
   if (attempt >= 4) throw new Error(`clients_write_conflict(${row.id})`);
   const [fresh] = await fetchRows([row.id]);
   return fresh ? applyToRow(fresh, fn, attempt + 1) : null;
@@ -669,6 +702,10 @@ export async function updateClientProfile(
       } else if (k === "attention") {
         if (v === true) profile.attention = true;
         else delete profile.attention;
+      } else if (k === "linkedThreads") {
+        const list = (v as ClientProfile["linkedThreads"] | null) ?? [];
+        if (list.length) profile.linkedThreads = list.slice(-30);
+        else delete profile.linkedThreads;
       } else if (k === "linkedContacts") {
         const list = (v as LinkedContact[] | null) ?? [];
         if (list.length) profile.linkedContacts = list;
@@ -848,6 +885,8 @@ export async function setClientActivity(
   const byId = new Map(updates.map((u) => [u.id, u]));
   await mutateClients([...byId.keys()], (client) => {
     const u = byId.get(client.id)!;
+    const before = withoutSyncedAt(client);
+    const lastSync = Date.parse(client.activity?.syncedAt ?? "");
     client.activity = u.activity;
     client.mailActionables = collectMailItems(client);
     const already = new Set(client.doneTicketIds ?? []);
@@ -863,8 +902,14 @@ export async function setClientActivity(
       client.doneTicketAt = { ...client.doneTicketAt, ...Object.fromEntries(fresh.map((t) => [t, answeredAt.get(t) ?? now])) };
       client.ticketsUpdatedAt = now;
     }
+    // Sin novedades no se reescribe la fila (cada escritura obliga a otro equipo a volver a bajarla entera):
+    // solo se refresca la marca `syncedAt` cuando tiene más de una hora.
+    if (withoutSyncedAt(client) === before && Date.now() - lastSync < SYNCED_AT_REFRESH_MS) return SKIP;
   });
 }
+
+const SYNCED_AT_REFRESH_MS = 60 * 60_000;
+const withoutSyncedAt = (client: ClientRecord) => JSON.stringify(client, (k, v) => (k === "syncedAt" ? undefined : v));
 
 /** Guarda hitos/decisiones de minutas reprocesadas (no toca `nextSteps`: los ids dependen del índice). */
 export async function setMeetingNotes(

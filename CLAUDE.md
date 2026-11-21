@@ -112,7 +112,15 @@ se vuelve menú desplegable `MobileNav`). Sin sidebar. 5 secciones. Navegación 
 - `/clientes`: validación de clientes descubiertos en mails de Gemini Notes
   (`components/clientes/{ClientsReview,ClientCandidateCard}.tsx`): botón de escaneo (60 días),
   tabs Por validar/Asignados/No asignados/Ignorados, nombre editable, y lista de reuniones sin
-  cliente detectado.
+  cliente detectado. Pestaña **"Mails sin cuenta"** (`?tab=mails`, `components/clientes/UnassignedMails.tsx`; capa C):
+  `scanUnassignedMails` (`lib/integrations/unassigned-mail.ts`) busca externos dirigidos a mí (Para/Cc) de los últimos **15 días**
+  que no son de ninguna cuenta de la app (cualquier estado), sin masivos ni notificaciones de herramientas (`TOOL_SENDER`); entran solo
+  si el remitente es recurrente, le respondí o hay pista. Sugerencias por reglas (`suggestFor`): lo nombra (3), dominio compartido
+  vinculado o cita un mail del cliente (2), habla de un accionable abierto (1). Acciones (`/api/unassigned-mails`): Asignar → el hilo
+  queda en `profile.linkedThreads` (la sync y el análisis lo leen siempre como de la cuenta, `consider(..., forced)`; opcional vincular
+  remitente/dominio como Exclusivo) y se sincroniza al momento; "No es de ninguna cuenta" (+ ignorar remitente/dominio). Estado en
+  `app_state.unassigned_mails` (`lib/store/unassigned-mail-store.ts`). Corre en `runSync` cada 30 min (`UNASSIGNED_SCAN_EVERY_MS`) y a
+  mano. En el Dashboard, línea "N mails sin cuenta · Revisar" en el Pulso.
 - `/conexiones`: estado en vivo de las 5 integraciones (`IntegrationsGrid`/
   `IntegrationStatusCard`, reusados del Dashboard original), llamando directamente a los
   handlers `GET` de `/api/integrations/*` (sin fetch HTTP, in-process). Debajo, `AIUsageCard`
@@ -136,6 +144,10 @@ sueltos, `data jsonb` = `ClientRecord`, `version` para control optimista) y `app
 `clients_unmatched`, `settings`, `sync_status`, `google_tokens`, `notion_tokens`). RLS sin políticas: solo service_role.
 `clients-store.ts` mantiene su API; los mutadores usan `mutateClient(s)` (lee la fila, aplica, `update … where version`;
 ante conflicto relee y reaplica; `SKIP` = sin cambios) y `mutateFileLevel` (altas, sin cliente, meta).
+**Egress (plan gratuito)**: caché en memoria del proceso (`globalThis.__clientRowCache`): `fetchRows` baja solo `id, version` y el `data` de
+las filas cuya versión cambió (las escrituras propias lo actualizan; se entregan copias con `structuredClone`); `getState` igual por
+`updated_at` para valores >4k caracteres (`__appStateCache`). `setClientActivity` no reescribe la fila si solo cambió `syncedAt` (lo
+refresca cada 1 h). Lectura completa en frío ≈2,8 MB; en caliente ≈3 KB. Escritura directa a la base fuera de la app = se detecta por `version`/`updated_at`.
 `settings-store`, `sync-status-store`, `google/notion-token-store` → `getState/setState`.
 Migrar datos locales: `pnpm migrate:supabase` (`scripts/migrate-to-supabase.mjs`, lee `.env.local`): carga inicial;
 `--merge [--dry-run]` combina el `.data/clients.json` de otra PC con la base (`scripts/merge-clients.mjs`: unión de reuniones,

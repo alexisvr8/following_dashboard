@@ -5,6 +5,7 @@ import { KeyNumbers } from "@/components/dashboard/KeyNumbers";
 import { FollowupAlerts } from "@/components/dashboard/FollowupAlerts";
 import type { FollowupPanelData } from "@/components/dashboard/FollowupPanel";
 import { computeAlerts, replyQueue } from "@/lib/utils/followup-alerts";
+import { getUnassignedMails } from "@/lib/store/unassigned-mail-store";
 import { listEventsBetween, type CalendarEventLite } from "@/lib/integrations/calendar";
 import { nextMeetings } from "@/lib/utils/deadlines";
 import type { ClientRecord } from "@/lib/store/clients-store";
@@ -145,6 +146,7 @@ async function Pulse({
   const alerts = computeAlerts(clients, settings, now, nextMeetings(clients, await events, now));
   // Cuentas activas con pedidos por mail sin resolver: franja aparte, abre Responder.
   const queue = replyQueue(clients, alerts);
+  const unassigned = (await getUnassignedMails().catch(() => null))?.items.length ?? 0;
   // Panel inline: borrador (mismo getDraft que /cuentas) + recordatorio + hilo del último mail.
   const panels: Record<string, FollowupPanelData> = {};
   const targets = [
@@ -168,7 +170,7 @@ async function Pulse({
       lastMail: c.activity?.lastMail ?? null,
     };
   }
-  return <FollowupAlerts alerts={alerts} queue={queue} panels={panels} staleDays={settings.staleBusinessDays} lastSyncAt={lastSyncAt} />;
+  return <FollowupAlerts alerts={alerts} queue={queue} unassignedCount={unassigned} panels={panels} staleDays={settings.staleBusinessDays} lastSyncAt={lastSyncAt} />;
 }
 
 async function Capacity({ plan, settings }: { plan: Promise<WeekPlan>; settings: WorkSettings }) {

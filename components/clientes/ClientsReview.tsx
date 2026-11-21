@@ -8,6 +8,8 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { ClientCandidateCard } from "@/components/clientes/ClientCandidateCard";
 import type { ClientsFile, ClientStatus } from "@/lib/store/clients-store";
 import { meetingsAfterClosure } from "@/lib/utils/closure";
+import { UnassignedMails } from "@/components/clientes/UnassignedMails";
+import type { UnassignedState } from "@/lib/store/unassigned-mail-store";
 
 const TABS: { status: ClientStatus; label: string }[] = [
   { status: "pending", label: "Por validar" },
@@ -21,11 +23,27 @@ function formatDate(iso: string): string {
   return new Date(iso).toLocaleDateString("es", { day: "2-digit", month: "short" });
 }
 
-export function ClientsReview({ file }: { file: ClientsFile }) {
+export function ClientsReview({
+  file,
+  unassigned,
+  initialTab = "pending",
+}: {
+  file: ClientsFile;
+  unassigned: UnassignedState;
+  /** `?tab=mails` abre "Mails sin cuenta" (link del Dashboard). */
+  initialTab?: string;
+}) {
   const router = useRouter();
   const [scanning, setScanning] = useState(false);
   const [syncing, setSyncing] = useState(false);
   const [message, setMessage] = useState<string | null>(null);
+  // Controlada: si Next reutiliza la página (caché del router), el link "?tab=mails" igual abre esa pestaña.
+  const [tab, setTab] = useState(initialTab);
+  const [lastInitial, setLastInitial] = useState(initialTab);
+  if (lastInitial !== initialTab) {
+    setLastInitial(initialTab);
+    setTab(initialTab);
+  }
 
   async function scan() {
     setScanning(true);
@@ -98,14 +116,25 @@ export function ClientsReview({ file }: { file: ClientsFile }) {
       </div>
       {message && <p className="text-sm text-muted-foreground">{message}</p>}
 
-      <Tabs defaultValue="pending">
+      <Tabs value={tab} onValueChange={(v) => setTab(String(v))}>
         <TabsList>
           {TABS.map(({ status, label }) => (
             <TabsTrigger key={status} value={status}>
               {label} ({file.clients.filter((c) => c.status === status).length})
             </TabsTrigger>
           ))}
+          <TabsTrigger value="mails">Mails sin cuenta ({unassigned.items.length})</TabsTrigger>
         </TabsList>
+        <TabsContent value="mails">
+          <UnassignedMails
+            items={unassigned.items}
+            scannedAt={unassigned.scannedAt}
+            accounts={file.clients
+              .filter((c) => c.status === "assigned")
+              .map((c) => ({ id: c.id, name: c.name }))
+              .sort((a, b) => a.name.localeCompare(b.name, "es"))}
+          />
+        </TabsContent>
         {TABS.map(({ status }) => {
           const clients = sorted.filter((c) => c.status === status);
           return (
