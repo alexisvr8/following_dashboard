@@ -73,7 +73,7 @@ export function addBusinessDays(d: Date, n: number, workDays: number[] = DEFAULT
 }
 
 /** Último día hábil de la semana (lun–dom) que contiene `d`. */
-function lastWorkdayOfWeek(d: Date, workDays: number[]): Date {
+export function lastWorkdayOfWeek(d: Date, workDays: number[]): Date {
   const sunday = addDays(d, (7 - d.getDay()) % 7);
   for (let i = 0; i < 7; i++) {
     const x = addDays(sunday, -i);
@@ -152,6 +152,13 @@ export function parseDue(text: string, meetingDate: string, workDays: number[] =
     const monday = addDays(base, ((8 - base.getDay()) % 7) || 7);
     const end = lastWorkdayOfWeek(monday, workDays);
     return { label: `semana del ${ddmm(monday)}`, until: end };
+  }
+  // "Lo antes posible" sin día: dentro de la semana de la reunión (al menos el día hábil siguiente).
+  if (/\b(lo antes posible|lo mas pronto posible|cuanto antes|a la brevedad|apenas (pueda|puedas|puedan|podamos)|con urgencia|asap)\b/.test(t)) {
+    const end = lastWorkdayOfWeek(base, workDays);
+    const next = addBusinessDays(base, 1, workDays);
+    const until = end > next ? end : next;
+    return { label: dayLabel(until), until };
   }
   if (/\b(esta semana|en la semana|fin de (la )?semana|antes del fin de semana|this week)\b/.test(t)) {
     const end = lastWorkdayOfWeek(base, workDays);

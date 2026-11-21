@@ -10,6 +10,7 @@ import { inputClass } from "@/components/ui/input";
 import { cn } from "@/lib/utils";
 import type { PlannedItem } from "@/lib/utils/deadlines";
 import {
+  isOlder,
   addWorkdays,
   correctionCandidate,
   DUE_KIND,
@@ -118,7 +119,9 @@ function PanelBody({
       ? `Se dijo en ${origin} del ${fmtLongDate(item.originDate)}.`
       : item.dueKind === "manual"
         ? "La pusiste a mano. Va en los mails al cliente."
-        : `No se dijo fecha: meta de ${targetDays} días hábiles desde ${origin}, vence a los ${limitDays}. No se muestra al cliente.`;
+        : item.nextWeekTarget
+          ? "No se dijo cuándo en la reunión: queda para la semana siguiente (meta interna). Si es para esta semana, cambiale la fecha. No se muestra al cliente."
+          : `No se dijo fecha: meta de ${targetDays} días hábiles desde ${origin}, vence a los ${limitDays}. No se muestra al cliente.`;
   const [editing, setEditing] = useState(false);
   const [title, setTitle] = useState(item.title);
   const [detail, setDetail] = useState(item.detail ?? "");
@@ -279,7 +282,7 @@ function PanelBody({
               <RotateCcw className="inline size-3" /> auto
             </button>
           )}
-          {item.carried && <Badge variant="outline">Arrastrado</Badge>}
+          {isOlder(item) && <Badge variant="outline">Para cerrar</Badge>}
           {item.atRisk && <Badge variant="critical">Sin espacio</Badge>}
         </div>
 
