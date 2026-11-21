@@ -87,8 +87,19 @@ export function cardTone(item: PlannedItem): CardTone {
  */
 export const isMailItem = (item: PlannedItem) =>
   item.kind === "followup" || item.kind === "reply" || item.kind === "request" || item.side === "me_deben";
+/** Seguimiento (me deben) de minuta o agregado a mano: "Pedir status" arma un recordatorio corto de ese punto. */
+export const isReminderItem = (item: PlannedItem) => item.side === "me_deben" && (item.kind === "step" || item.kind === "custom");
 export const MAIL_ACTION_LABEL = (item: PlannedItem) =>
-  item.kind === "followup" ? "Borrador de minuta" : item.kind === "reply" || item.kind === "request" ? "Responder" : "Reclamar";
+  item.kind === "followup"
+    ? "Borrador de minuta"
+    : item.kind === "reply" || item.kind === "request"
+      ? "Responder"
+      : isReminderItem(item)
+        ? "Pedir status de este punto"
+        : "Pedir status";
+
+/** Debo / me deben con los nombres de la UI: Accionar (lo hago yo) / Seguimiento (lo tiene otro, le hago seguimiento). */
+export const SIDE_LABEL = { debo: "Accionar", me_deben: "Seguimiento" } as const;
 
 const RANK: Record<Priority, number> = { alta: 0, media: 1, baja: 2 };
 /** Orden visual dentro de un grupo: prioridad → fecha → cuenta prioritaria → lo mío → más viejo primero. */

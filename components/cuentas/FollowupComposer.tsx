@@ -1,8 +1,25 @@
 "use client";
 
 import { useEffect, useRef, useState } from "react";
+import { createPortal } from "react-dom";
 import { useRouter } from "next/navigation";
-import { AlertTriangle, Check, CheckCircle2, Copy, ExternalLink, Loader2, Mail, RefreshCw, Save, Send, Star } from "lucide-react";
+import {
+  AlertTriangle,
+  Check,
+  CheckCircle2,
+  Copy,
+  ExternalLink,
+  Info,
+  Loader2,
+  Mail,
+  Maximize2,
+  Minimize2,
+  Pencil,
+  RefreshCw,
+  Save,
+  Send,
+  Star,
+} from "lucide-react";
 import { Progress } from "@/components/ui/progress";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
@@ -18,6 +35,7 @@ import {
 } from "@/components/ui/dialog";
 import { Label } from "@/components/ui/label";
 import type { FollowupDraft, FollowupKind, ThreadRef } from "@/lib/store/clients-store";
+import { MailKindToggle, useMailKind } from "@/components/cuentas/MailKindSwitch";
 
 const NEW_THREAD = "__new__";
 /** Por qué el borrador eligió ese hilo (`pickFollowupThread`). */
@@ -33,7 +51,10 @@ const MIN_BODY_PX = 160;
 
 // Borrador de follow-up o seguimiento: se mantiene al día solo mientras no lo edites; editable,
 // copiable, creado como draft en Gmail o enviado (con confirmación) dentro del hilo elegido o como
-// mail nuevo.
+// mail nuevo. Pensado para que el cuerpo se vea lo más posible: encabezado en una fila (título, ⓘ, chip de
+// revisión, selector de tipo, expandir), destinatarios resumidos en una línea con "Editar" (se abren solos si
+// falta Para o el asunto de un mail nuevo) y la descripción solo en pantallas altas (variante `short`).
+// `expandable`: botón ⤢ que abre el mismo editor casi a pantalla completa.
 export function FollowupComposer({
   kind,
   clientId,
@@ -46,8 +67,11 @@ export function FollowupComposer({
   showTitle = false,
   fitViewport = false,
   bodyMaxClass = "max-h-[36dvh]",
+  expandable = false,
   className,
 }: {
+  /** Botón ⤢: el mismo editor en un modal casi a pantalla completa. */
+  expandable?: boolean;
   /** Muestra el título visible (vista Cuentas con dos borradores apilados, panel del Dashboard). */
   showTitle?: boolean;
   /** El mensaje crece con el texto y, si es largo, hasta el borde inferior de la pantalla (vista Cuentas). */
@@ -104,10 +128,24 @@ export function FollowupComposer({
   const [confirming, setConfirming] = useState(false);
   const cancelSendRef = useRef<HTMLButtonElement>(null);
   const bodyRef = useRef<HTMLTextAreaElement>(null);
+  // Con selector General | Pedir status, el modo expandido es compartido: solo lo muestra el mail elegido, así
+  // cambiar de tipo con el modal abierto cambia el mail de adentro.
+  const mailKind = useMailKind();
+  const [localExpanded, setLocalExpanded] = useState(false);
+  const shared = mailKind?.setExpanded != null;
+  const active = !mailKind || mailKind.choice === (kind === "reminder" ? "reminder" : "general");
+  const expanded = shared ? !!mailKind.expanded && active : localExpanded;
+  const setExpanded = (next: boolean | ((e: boolean) => boolean)) => {
+    const value = typeof next === "function" ? next(expanded) : next;
+    if (shared) mailKind.setExpanded!(value);
+    else setLocalExpanded(value);
+  };
+  const [showFields, setShowFields] = useState(false);
+  const [showNotes, setShowNotes] = useState(false);
   // Tope del mensaje = lo que queda de pantalla debajo de él, menos la barra de botones.
   useEffect(() => {
     const el = bodyRef.current;
-    if (!fitViewport || !el) return;
+    if (!fitViewport || expanded || !el) return;
     const fit = () => {
       const room = window.innerHeight - el.getBoundingClientRect().top - BUTTONS_RESERVE;
       el.style.maxHeight = `${Math.max(MIN_BODY_PX, room)}px`;
@@ -123,7 +161,7 @@ export function FollowupComposer({
       window.removeEventListener("resize", fit);
       ro.disconnect();
     };
-  }, [fitViewport]);
+  }, [fitViewport, expanded]);
   const recipients = to.split(/[,;\s]+/).filter(Boolean);
   const ccRecipients = cc.split(/[,;\s]+/).filter(Boolean);
   // Novedades (mails, reuniones, accionables): se aplican solas salvo que estés editando.
@@ -162,6 +200,7 @@ export function FollowupComposer({
   const payload = () => ({
     kind,
     meetingId: initial.meetingId,
+    ticketId: initial.ticketId ?? null,
     subject,
     body,
     to: to.split(/[,;\s]+/).filter(Boolean),
@@ -234,7 +273,7 @@ export function FollowupComposer({
       const res = await fetch(`/api/clients/${encodeURIComponent(clientId)}/followup`, {
         method: "PATCH",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ kind, meetingId: initial.meetingId }),
+        body: JSON.stringify({ kind, meetingId: initial.meetingId, ticketId: initial.ticketId ?? null }),
       });
       if (!res.ok) throw new Error();
       const { draft, synced } = (await res.json()) as { draft: FollowupDraft; synced: boolean };
@@ -286,34 +325,97 @@ export function FollowupComposer({
     setTimeout(() => setState("idle"), 1500);
   }
 
-  return (
-    <Card className={cn("lg:h-full", className)}>
-      <CardHeader>
-        <CardTitle className={showTitle ? "text-sm font-medium text-foreground-strong" : "sr-only"}>{title}</CardTitle>
-        <p className="line-clamp-2 text-xs text-muted-foreground" title={hint}>
+  const hintText = [
+    hint,
+    draftCreatedAt && `Borrador creado el ${new Date(draftCreatedAt).toLocaleString("es")}.`,
+    lastSentAt && `Último envío desde acá: ${new Date(lastSentAt).toLocaleString("es")}.`,
+  ]
+    .filter(Boolean)
+    .join(" ");
+  const notes = generated.reviewNotes ?? [];
+  // Destinatarios en una línea; los campos se abren solos si falta algo para poder enviar.
+  const fieldsOpen = showFields || !recipients.length || (threadId === NEW_THREAD && !subject.trim());
+  const threadSubject = threads.find((t) => t.threadId === threadId)?.subject ?? initial.subject;
+  const whereShort = threadId === NEW_THREAD ? `Mail nuevo: “${subject}”` : `${pinnedId === threadId ? "⭐ " : ""}${threadSubject}`;
+  const reason = threadId === (generated.threadId ?? NEW_THREAD) && generated.threadReason ? THREAD_REASON[generated.threadReason] : null;
+
+  const card = (
+    <Card className={cn(expanded ? "h-full min-h-0 rounded-none border-0" : "lg:h-full", !expanded && className)}>
+      <CardHeader className="gap-1">
+        <div className="flex min-w-0 flex-wrap items-center gap-x-2 gap-y-1.5">
+          <CardTitle className={showTitle || expanded ? "text-sm font-medium text-foreground-strong" : "sr-only"}>{title}</CardTitle>
+          <span title={hintText} aria-label={hintText} className="flex cursor-help text-subtle-foreground hover:text-foreground">
+            <Info className="size-3.5" />
+          </span>
+          {!!notes.length && (
+            <button
+              type="button"
+              aria-expanded={showNotes}
+              onClick={() => setShowNotes((o) => !o)}
+              title="Avisos para revisar antes de enviar; no forman parte del mail"
+              className="inline-flex items-center gap-1 rounded-md border border-warning/25 bg-warning-muted px-1.5 py-px text-[11px] font-medium text-warning hover:border-warning/50"
+            >
+              <AlertTriangle className="size-3" /> {notes.length} a revisar
+            </button>
+          )}
+          <div className="ml-auto flex items-center gap-1.5">
+            <MailKindToggle />
+            {expandable && (
+              <Button
+                type="button"
+                variant="ghost"
+                size="icon-sm"
+                onClick={() => setExpanded((e) => !e)}
+                title={expanded ? "Volver a la cuenta" : "Expandir el mail"}
+                aria-label={expanded ? "Volver a la cuenta" : "Expandir el mail"}
+              >
+                {expanded ? <Minimize2 /> : <Maximize2 />}
+              </Button>
+            )}
+          </div>
+        </div>
+        <p className="line-clamp-1 text-xs text-muted-foreground short:hidden" title={hintText}>
           {hint}
-          {draftCreatedAt && ` Borrador creado el ${new Date(draftCreatedAt).toLocaleString("es")}.`}
-          {lastSentAt && ` Último envío desde acá: ${new Date(lastSentAt).toLocaleString("es")}.`}
         </p>
       </CardHeader>
-      <CardContent className="flex min-h-0 flex-1 flex-col gap-3 [scrollbar-width:thin] lg:overflow-y-auto">
+      <CardContent className={cn("flex min-h-0 flex-1 flex-col gap-3 [scrollbar-width:thin]", expanded ? "overflow-y-auto" : "lg:overflow-y-auto")}>
         {hasNews && (
           <p className="rounded-md border border-border-strong bg-accent px-3 py-2 text-xs">
             Hay novedades (mails o accionables) y no pisé tu edición. Usá Regenerar para incorporarlas.
           </p>
         )}
-        {!!generated.reviewNotes?.length && (
-          <details className="shrink-0 rounded-md border border-warning/25 bg-warning-muted px-3 py-1.5 text-xs">
-            <summary className="cursor-pointer font-medium">
-              Revisar antes de enviar ({generated.reviewNotes.length}) · no forma parte del mail
-            </summary>
-            <ul className="mt-1 list-disc space-y-0.5 pl-4">
-              {generated.reviewNotes.map((note) => (
-                <li key={note}>{note}</li>
-              ))}
-            </ul>
-          </details>
+        {showNotes && !!notes.length && (
+          <ul className="shrink-0 list-disc space-y-0.5 rounded-md border border-warning/25 bg-warning-muted py-1.5 pr-3 pl-7 text-xs">
+            {notes.map((note) => (
+              <li key={note}>{note}</li>
+            ))}
+          </ul>
         )}
+        {!fieldsOpen && (
+          <div className="flex min-w-0 shrink-0 items-center gap-2 rounded-md border border-border bg-surface px-2.5 py-1.5 text-xs">
+            <p
+              className="min-w-0 flex-1 truncate"
+              title={[`Dónde: ${threadLabel}`, reason, `Para: ${recipients.join(", ")}`, ccRecipients.length ? `Cc: ${ccRecipients.join(", ")}` : null]
+                .filter(Boolean)
+                .join("\n")}
+            >
+              <span className="text-subtle-foreground">En </span>
+              <span className="text-foreground">{whereShort}</span>
+              <span className="text-subtle-foreground"> · Para </span>
+              <span className="text-foreground">{recipients.join(", ")}</span>
+              {!!ccRecipients.length && (
+                <span className="text-subtle-foreground">
+                  {" "}
+                  · Cc <span className="tabular text-foreground">{ccRecipients.length}</span>
+                </span>
+              )}
+            </p>
+            <Button type="button" size="xs" variant="ghost" onClick={() => setShowFields(true)}>
+              <Pencil /> Editar
+            </Button>
+          </div>
+        )}
+        {fieldsOpen && (
         <div className="grid shrink-0 gap-3 sm:grid-cols-2">
         <div className="min-w-0 space-y-1.5 sm:col-span-2">
           <Label htmlFor={`${kind}-thread`}>Dónde</Label>
@@ -361,9 +463,7 @@ export function FollowupComposer({
             )}
           </Button>
           </div>
-          {threadId === (generated.threadId ?? NEW_THREAD) && generated.threadReason && (
-            <p className="text-[11px] text-muted-foreground">{THREAD_REASON[generated.threadReason]}</p>
-          )}
+          {reason && <p className="text-[11px] text-muted-foreground">{reason}</p>}
           {!threads.length && (
             <p className="text-[11px] text-muted-foreground">
               Sin hilos detectados: actualizá la trazabilidad para listar los hilos con referentes.
@@ -414,9 +514,19 @@ export function FollowupComposer({
             />
           </div>
         )}
+        {showFields && (
+          <div className="flex justify-end sm:col-span-2">
+            <Button type="button" size="xs" variant="ghost" onClick={() => setShowFields(false)}>
+              <Check /> Listo
+            </Button>
+          </div>
+        )}
         </div>
-        <div className="flex flex-col gap-1.5">
-          <Label htmlFor={`${kind}-body`}>Mensaje</Label>
+        )}
+        <div className={cn("flex flex-col gap-1.5", expanded && "min-h-0 flex-1")}>
+          <Label htmlFor={`${kind}-body`} className="sr-only">
+            Mensaje
+          </Label>
           <textarea
             ref={bodyRef}
             id={`${kind}-body`}
@@ -426,7 +536,12 @@ export function FollowupComposer({
               setEdited(true);
             }}
             rows={8}
-            className={cn(inputClass, "field-sizing-content min-h-32 resize-y py-2 font-mono text-xs leading-relaxed", !fitViewport && bodyMaxClass)}
+            className={cn(
+              inputClass,
+              "min-h-32 py-2 font-mono text-xs leading-relaxed",
+              expanded ? "h-full flex-1 resize-none text-[13px]" : "field-sizing-content resize-y",
+              !fitViewport && !expanded && bodyMaxClass,
+            )}
           />
         </div>
         {error && <p className="text-xs text-destructive">{error}</p>}
@@ -519,6 +634,41 @@ export function FollowupComposer({
         </DialogContent>
       </Dialog>
     </Card>
+  );
+
+  if (!expanded) return card;
+  const placeholder = (
+    <p className="rounded-lg border border-dashed border-divider p-4 text-center text-xs text-muted-foreground">
+      Editando “{title}” en pantalla completa.
+    </p>
+  );
+  // Con selector: un solo modal (de `MailKindSwitch`) que queda abierto; al cambiar de tipo solo cambia el
+  // contenido, con un fundido corto.
+  if (shared) {
+    return (
+      <>
+        {placeholder}
+        {mailKind.portal &&
+          createPortal(
+            <div className="flex min-h-0 flex-1 flex-col motion-safe:animate-in motion-safe:fade-in-0 motion-safe:duration-200">{card}</div>,
+            mailKind.portal,
+          )}
+      </>
+    );
+  }
+  return (
+    <>
+      {placeholder}
+      <Dialog open onOpenChange={(o) => !o && setExpanded(false)}>
+        <DialogContent
+          showCloseButton={false}
+          className="flex h-[94dvh] w-[min(80rem,calc(100%-2rem))] max-w-none flex-col gap-0 overflow-hidden p-0 sm:max-w-none"
+        >
+          <DialogTitle className="sr-only">{title}</DialogTitle>
+          {card}
+        </DialogContent>
+      </Dialog>
+    </>
   );
 }
 

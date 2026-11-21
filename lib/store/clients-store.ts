@@ -266,12 +266,24 @@ export interface FollowupDraft {
   reviewNotes?: string[];
   /** Por qué se eligió el hilo (`pickFollowupThread`): fijado / asunto estándar / último con el cliente / nuevo. */
   threadReason?: "pinned" | "standard" | "recent" | "new" | "anchor";
+  /** Recordatorio de un solo punto: el accionable (me deben) por el que se pide status. */
+  ticketId?: string;
 }
 
-export type FollowupKind = "meeting" | "status";
-/** Clave en `client.followups`: follow-up de reunión = id de meeting; seguimiento = `status:<id>`. */
-export const followupKey = (kind: FollowupKind, meetingId: string) =>
-  kind === "status" ? `status:${meetingId}` : meetingId;
+/** meeting = minuta; status = avances + pendientes; reminder = recordatorio corto pidiendo status de lo que me deben. */
+export type FollowupKind = "meeting" | "status" | "reminder";
+/**
+ * Clave en `client.followups`: follow-up de reunión = id de meeting; seguimiento = `status:<id>`; recordatorio =
+ * `reminder:<id>` (toda la cuenta) o `reminder:item:<ticketId>` (un solo punto, desde la card del accionable).
+ */
+export const followupKey = (kind: FollowupKind, meetingId: string, ticketId?: string | null) =>
+  kind === "status"
+    ? `status:${meetingId}`
+    : kind === "reminder"
+      ? ticketId
+        ? `reminder:item:${ticketId}`
+        : `reminder:${meetingId}`
+      : meetingId;
 
 /** Ticket sintético "Enviar follow-up" de una reunión (se tilda como cualquier accionable). */
 export const followupTicketId = (clientId: string, meetingId: string) =>

@@ -1,8 +1,8 @@
 import { cookies } from "next/headers";
 import { ActionablesBoard } from "@/components/accionables/ActionablesBoard";
-import { DENSITY_COOKIE, isMailItem, VIEW_COOKIE } from "@/components/accionables/format";
+import { DENSITY_COOKIE, isMailItem, isReminderItem, VIEW_COOKIE } from "@/components/accionables/format";
 import type { FollowupPanelData } from "@/components/dashboard/FollowupPanel";
-import { getFollowupDraft } from "@/lib/utils/followup";
+import { getFollowupDraft, getReminderDraft } from "@/lib/utils/followup";
 import { composerThreads } from "@/lib/utils/followup-thread";
 import { listEventsBetween } from "@/lib/integrations/calendar";
 import { getClientsFileCached, getSettingsCached } from "@/lib/server/cached-data";
@@ -38,16 +38,21 @@ export default async function AccionablesPage({
   const plan = computeWeekPlan(clients, settings, events, offset, now);
 
   // Panel de mail de la card (mismo que Seguimiento del Dashboard): el mail único de la cuenta, solo donde hace falta.
+  // Los de Seguimiento (me deben) suman "Pedir status": recordatorio corto de ese punto solo (`itemReminders`).
   const mailPanels: Record<string, FollowupPanelData> = {};
+  const itemReminders: Record<string, FollowupPanelData["draft"]> = {};
   for (const item of plan.items) {
     const key = item.clientId;
-    if (!isMailItem(item) || mailPanels[key]) continue;
+    if (!isMailItem(item)) continue;
     const c = clients.find((x) => x.id === item.clientId);
     const latest = c && [...c.meetings].sort((x, y) => y.date.localeCompare(x.date))[0];
     if (!c || !latest) continue;
+    if (isReminderItem(item)) itemReminders[item.id] = getReminderDraft(c, latest, ownerEmail ?? null, settings, item.id);
+    if (mailPanels[key]) continue;
     mailPanels[key] = {
       meetingTitle: latest.title,
       draft: getFollowupDraft(c, latest, ownerEmail ?? null, settings),
+      reminder: getReminderDraft(c, latest, ownerEmail ?? null, settings),
       threads: composerThreads(c),
       lastMail: c.activity?.lastMail ?? null,
     };
@@ -70,6 +75,7 @@ export default async function AccionablesPage({
         initialView={initialView}
         initialDensity={initialDensity}
         mailPanels={mailPanels}
+        itemReminders={itemReminders}
         nowIso={now.toISOString()}
         suggestions={pendingSuggestions(clients, settings, now, ownerEmail ?? null)}
         rewrites={pendingRewrites(clients)}

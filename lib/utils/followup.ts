@@ -678,6 +678,130 @@ export function buildStatusUpdate(
   };
 }
 
+/** Lado como en el tablero (`plannedItems`): lo manual manda; si no, `isOwnActionable` → debo, resto → me deben. */
+function boardSide(client: ClientRecord, a: Actionable, settings: WorkSettings): "debo" | "me_deben" {
+  return client.actionableSide?.[a.id] ?? (isOwnActionable(a.step, settings) ? "debo" : "me_deben");
+}
+
+/**
+ * Puntos de Seguimiento (me deben) del lado del cliente, abiertos: los que entran en el recordatorio de la cuenta.
+ * Lo que debe alguien del equipo Xtract queda afuera (no se le pide al cliente).
+ */
+export function reminderSteps(client: ClientRecord, ownerEmail: string | null, settings: WorkSettings): Actionable[] {
+  return accountActionables(client).filter(
+    (a) =>
+      !a.done &&
+      boardSide(client, a, settings) === "me_deben" &&
+      overrideSide(client, a.id, stepSide(a.step, client, ownerEmail, settings)) !== "team",
+  );
+}
+
+/** Texto corto del punto para el recordatorio: la versión de mail de la IA, o el título antes de ":" si es largo. */
+function reminderText(client: ClientRecord, a: Actionable): string {
+  const ai = aiStep(client.id, a);
+  const text = ai?.mail && !client.actionableEdits?.[a.id] ? ai.mail : formatStep(a.step);
+  const i = text.indexOf(":");
+  const short = text.length > 110 && i >= 3 && i <= 70 ? text.slice(0, i) : text;
+  return short.replace(/[.\s]+$/, "");
+}
+
+/**
+ * Recordatorio corto y amigable pidiendo status de lo que me deben (pestaña "Recordatorio" en la cuenta y el
+ * panel del Dashboard), o de un solo punto (`ticketId`, botón "Pedir status" en la card del accionable). Mismo hilo y
+ * destinatarios que el de seguimiento; sin avances ni pendientes propios. Si es de un punto y su responsable
+ * aparece entre los participantes del cliente, va dirigido a esa persona.
+ */
+export function buildReminder(
+  client: ClientRecord,
+  meeting: DiscoveredMeeting,
+  ownerEmail: string | null,
+  settings: WorkSettings,
+  ticketId?: string | null,
+): FollowupDraft {
+  const now = new Date();
+  const all = accountActionables(client).filter((a) => !a.done);
+  const single = ticketId ? all.find((a) => a.id === ticketId) ?? null : null;
+  const items = single ? [single] : reminderSteps(client, ownerEmail, settings);
+  const interaction = latestInteraction(client, meeting);
+  const anchorMail = interaction.kind === "mail" ? interaction.mail : null;
+  let recipients = interactionRecipients(client, meeting, interaction, ownerEmail, settings);
+  const reviewNotes: string[] = [];
+
+  // Un solo punto: si el responsable es un participante del cliente, el mail va a esa persona (el resto en Cc).
+  let ownerTo: { email: string; name: string | null }[] = [];
+  if (single) {
+    const owners = parseStep(single.step, single.meeting.date).owners.map(normName).filter((w) => w.length);
+    const people = computeParticipants(client, ownerEmail).filter((p) => p.role === "referent" || p.role === "external");
+    ownerTo = people
+      .filter((p) => owners.some((o) => matchesPerson(o, p.customName ?? p.name, p.email)))
+      .map((p) => ({ email: p.email, name: p.customName ?? p.name }));
+    if (ownerTo.length) recipients = ownerTo;
+    const side = overrideSide(client, single.id, stepSide(single.step, client, ownerEmail, settings));
+    if (side === "team") reviewNotes.push("Este punto lo tiene alguien del equipo Xtract: revisá los destinatarios.");
+    if (boardSide(client, single, settings) === "debo") reviewNotes.push("Este punto figura como Accionar (lo tenés vos).");
+  } else if (ticketId) {
+    reviewNotes.push("El punto ya no está abierto: el recordatorio lista todo lo que queda de su lado.");
+  }
+
+  const one = recipients.length === 1;
+  const lines = [greet(recipients, client), ""];
+  const bullets = items.map((a) => {
+    const due = agreedDue(client, a.id, a.step, a.meeting.date, settings.workDays);
+    const when = due ? ` (${due.until < now ? "lo teníamos para" : "quedamos para"} el ${fmtShort(due.until.toISOString())})` : "";
+    return `• ${reminderText(client, a)}${single ? "" : ownerTag(a.step)}${when}`;
+  });
+  if (!items.length) {
+    lines.push(
+      `¿Cómo ${one ? "estás" : "están"}? ${one ? "Te" : "Les"} escribo para saber cómo vienen con lo que quedó de su lado.`,
+      "",
+      `Cuando ${one ? "puedas, me comentas" : "puedan, me comentan"} el status. ¡Gracias!`,
+    );
+    reviewNotes.push("No hay puntos abiertos de su lado: revisá el texto antes de enviarlo.");
+  } else if (single) {
+    lines.push(
+      `¿Cómo ${one ? "estás" : "están"}? ${one ? "Te" : "Les"} escribo para consultar${one ? "te" : "les"} cómo viene este punto:`,
+      "",
+      bullets[0],
+      "",
+      `¿${one ? "Me podrías" : "Me podrían"} comentar el status cuando ${one ? "puedas" : "puedan"}? Si ${one ? "necesitas" : "necesitan"} algo de nuestro lado para avanzar, ${one ? "avísame" : "me avisan"}.`,
+    );
+  } else {
+    lines.push(
+      `¿Cómo ${one ? "estás" : "están"}? ${one ? "Te" : "Les"} escribo para hacer un breve seguimiento de ${items.length === 1 ? "un punto que quedó" : "algunos puntos que quedaron"} de su lado:`,
+      "",
+      ...bullets,
+      "",
+      `¿${one ? "Me podrías" : "Me podrían"} contar cómo ${items.length === 1 ? "viene" : "vienen"}? Si ${one ? "necesitas" : "necesitan"} algo de nuestra parte para avanzar, ${one ? "avísame" : "me avisan"}.`,
+    );
+  }
+  lines.push("", "Saludos");
+
+  if (currentFollowupKind(client, meeting) === "meeting") {
+    reviewNotes.push("La minuta todavía no salió: al enviar este recordatorio, el mail de seguimiento pasa a ser el de avances.");
+  }
+  const thread = anchorMail ? null : pickFollowupThread(client);
+  if (thread) reviewNotes.unshift(...thread.notes);
+  const cc = anchorMail
+    ? replyAllCc(client, anchorMail.threadId, ownerEmail, recipients)
+    : newMailCc(client, ownerEmail, recipients);
+  return {
+    meetingId: meeting.id,
+    ...(single && { ticketId: single.id }),
+    subject: anchorMail
+      ? `Re: ${cleanSubject(anchorMail.subject)}`
+      : thread?.subject
+        ? `Re: ${cleanThreadSubject(thread.subject)}`
+        : `Seguimiento de pendientes – ${companyName(client)}`,
+    body: lines.join("\n"),
+    to: recipients.map((r) => r.email),
+    cc,
+    updatedAt: now.toISOString(),
+    threadId: anchorMail ? anchorMail.threadId : thread!.threadId,
+    threadReason: anchorMail ? "anchor" : thread!.reason,
+    reviewNotes,
+  };
+}
+
 /**
  * Qué mail toca en la cuenta (un solo editor): mientras la minuta no salió (sin envío, sin "Enviar follow-up"
  * tildado y sin mail mío posterior a la reunión) es el post-reunión, que ya refleja lo tildado; después pasa a
@@ -702,6 +826,21 @@ export function getFollowupDraft(
   return { kind, ...getDraft(kind, client, meeting, ownerEmail, settings) };
 }
 
+/** Recordatorio pidiendo status (`buildReminder`) + cuántos puntos de la cuenta están en Seguimiento del lado del cliente. */
+export function getReminderDraft(
+  client: ClientRecord,
+  meeting: DiscoveredMeeting,
+  ownerEmail: string | null,
+  settings: WorkSettings,
+  ticketId?: string | null,
+) {
+  return {
+    kind: "reminder" as const,
+    count: ticketId ? 1 : reminderSteps(client, ownerEmail, settings).length,
+    ...getDraft("reminder", client, meeting, ownerEmail, settings, ticketId),
+  };
+}
+
 /**
  * Borrador vigente según el tipo. Un envío previo cierra ese mensaje (se genera uno nuevo). Una edición
  * guardada se conserva hasta que cambien los accionables o llegue un mail; ahí se regenera con el
@@ -713,12 +852,16 @@ export function getDraft(
   meeting: DiscoveredMeeting,
   ownerEmail: string | null,
   settings: WorkSettings,
+  /** Solo `reminder`: recordatorio de un solo punto. */
+  ticketId?: string | null,
 ): { draft: FollowupDraft; generated: FollowupDraft; regenerated: boolean; lastSentAt: string | null } {
   const generated =
     kind === "status"
       ? buildStatusUpdate(client, meeting, ownerEmail, settings)
-      : buildFollowup(client, meeting, ownerEmail, settings);
-  const saved = client.followups?.[followupKey(kind, meeting.id)];
+      : kind === "reminder"
+        ? buildReminder(client, meeting, ownerEmail, settings, ticketId)
+        : buildFollowup(client, meeting, ownerEmail, settings);
+  const saved = client.followups?.[followupKey(kind, meeting.id, kind === "reminder" ? ticketId : null)];
   const lastSentAt = saved?.sentAt ?? null;
   if (!saved || saved.sentAt) return { draft: generated, generated, regenerated: false, lastSentAt };
   const changedAt = [client.ticketsUpdatedAt, client.profileUpdatedAt, client.activity?.lastMail?.date].filter(Boolean).sort().at(-1);

@@ -84,7 +84,7 @@ export function AccountProfileForm({
         <div className="flex flex-wrap items-center gap-2">
           {actions}
           <Button variant="outline" onClick={() => setOpen((o) => !o)} aria-expanded={open} aria-controls="account-profile">
-            <Settings2 /> Perfil de la cuenta
+            <Settings2 /> Perfil<span className="short:hidden"> de la cuenta</span>
             <ChevronDown className={cn("transition-transform", open && "rotate-180")} />
           </Button>
         </div>

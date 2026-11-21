@@ -5,6 +5,7 @@ import Link from "next/link";
 import { useRouter } from "next/navigation";
 import {
   ArrowUpRight,
+  BellRing,
   Building2,
   CalendarClock,
   CalendarDays,
@@ -28,7 +29,7 @@ import {
   Undo2,
   Users,
 } from "lucide-react";
-import { Badge, StatusDot } from "@/components/ui/badge";
+import { StatusDot } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Checkbox } from "@/components/ui/checkbox";
 import { inputClass } from "@/components/ui/input";
@@ -57,6 +58,8 @@ import {
   movedItem,
   MAIL_ACTION_LABEL,
   isMailItem,
+  isReminderItem,
+  SIDE_LABEL,
   CLOSE_DELAY_MS,
   cardTone,
   type CardTone,
@@ -79,7 +82,7 @@ import {
 
 // Accionables por plazo. Dos vistas (Tablero de columnas / Lista a todo el ancho) con el mismo orden:
 // plazo → arrastrados primero (el más viejo arriba, en violeta) → el resto por fecha y prioridad. Click en la card
-// la despliega ahí mismo (texto completo, origen, responsables, Hecho / +1 día / Reclamar / Cuenta); la edición a
+// la despliega ahí mismo (texto completo, origen, responsables, Hecho / +1 día / Pedir status / Cuenta); la edición a
 // fondo (texto, responsables, lado, fecha, estimación, no corresponde) sigue en el modal ("Editar"). En el tablero,
 // soltar una card en otra columna le pone fecha manual. Densidad cómoda / compacta (cookie). Lo que se corrige
 // (nombres, roles, estimaciones, descartes) se aprende para las minutas siguientes.
@@ -112,6 +115,7 @@ export function ActionablesBoard({
   people,
   corrections,
   mailPanels,
+  itemReminders = {},
   boardOrder,
   focusId = null,
   initialAccounts = [],
@@ -123,6 +127,8 @@ export function ActionablesBoard({
   boardOrder?: Record<string, number>;
   rewrites?: RewriteItem[];
   mailPanels: Record<string, FollowupPanelData>;
+  /** Recordatorio de un solo punto ("Pedir status") por id de accionable en Seguimiento. */
+  itemReminders?: Record<string, FollowupPanelData["draft"]>;
   initialView: View;
   initialDensity: Density;
   nowIso: string;
@@ -141,7 +147,7 @@ export function ActionablesBoard({
   const [view, setView] = useState<View>(initialView);
   const focusItem = focusId ? (items.find((i) => i.id === focusId) ?? null) : null;
   // La card del acceso directo tiene que verse: lado y cuentas se ajustan si la ocultaban.
-  // Siempre "Todo" al entrar: ver todo por las dudas y filtrar Debo / Me deben a mano.
+  // Siempre "Todo" al entrar: ver todo por las dudas y filtrar Accionar / Seguimiento a mano.
   const [side, setSide] = useState<Side>("todo");
   const [accountSel, setAccountSel] = useState<Set<string>>(() =>
     focusItem && initialAccounts.length && !initialAccounts.includes(focusItem.clientId) ? new Set() : new Set(initialAccounts),
@@ -292,7 +298,7 @@ export function ActionablesBoard({
   const counters = [
     { label: "Vencidos", value: open.filter((i) => i.bucket === "overdue").length, tone: "critical" as const },
     { label: "Para hoy", value: open.filter((i) => i.bucket === "today").length, tone: "warning" as const },
-    { label: "Me deben", value: open.filter((i) => i.side === "me_deben").length, tone: "neutral" as const },
+    { label: "En seguimiento", value: open.filter((i) => i.side === "me_deben").length, tone: "neutral" as const },
     {
       label: calendarConnected ? `Sin hueco en la agenda (${weekLabel})` : "Sin hueco (Calendar no conectado)",
       value: open.filter((i) => i.atRisk).length,
@@ -343,11 +349,16 @@ export function ActionablesBoard({
     router.refresh();
   }
 
-  // Panel de mail (hilo + borrador) para "Responder" / "Borrador de minuta" / "Reclamar".
-  const [mail, setMail] = useState<{ clientId: string; name: string } | null>(null);
+  // Panel de mail (hilo + borrador) para "Responder" / "Borrador de minuta" / "Pedir status" (este punto solo).
+  const [mail, setMail] = useState<{ clientId: string; name: string; ticketId?: string } | null>(null);
   const mailAction = (i: PlannedItem) => {
     if (!isMailItem(i) || !mailPanels[i.clientId]) return undefined;
-    return () => setMail({ clientId: i.clientId, name: i.clientName });
+    const ticketId = isReminderItem(i) && itemReminders[i.id] ? i.id : undefined;
+    return () => setMail({ clientId: i.clientId, name: i.clientName, ticketId });
+  };
+  const mailData = (m: NonNullable<typeof mail>): FollowupPanelData | undefined => {
+    const base = mailPanels[m.clientId];
+    return m.ticketId && base ? { ...base, draft: itemReminders[m.ticketId], reminder: undefined } : base;
   };
 
   // Hecho / No corresponde esperan CLOSE_DELAY_MS con barra de progreso y "Deshacer" antes de guardarse.
@@ -551,7 +562,7 @@ export function ActionablesBoard({
   });
 
   const [resolved, setResolved] = useState<Set<string>>(new Set());
-  // En el modal se ven todas (no dependen del filtro Debo / Me deben del tablero), salvo el filtro de cuenta.
+  // En el modal se ven todas (no dependen del filtro Accionar / Seguimiento del tablero), salvo el filtro de cuenta.
   const pendingSuggestionsList = suggestions.filter((s) => !resolved.has(s.id) && inAccounts(s.clientId));
   async function resolveSuggestion(s: SuggestedItem, action: "accept" | "dismiss", text?: string) {
     setBusy(s.id);
@@ -592,8 +603,8 @@ export function ActionablesBoard({
           onChange={setSide}
           options={[
             ["todo", "Todo"],
-            ["debo", "Debo"],
-            ["me_deben", "Me deben"],
+            ["debo", SIDE_LABEL.debo],
+            ["me_deben", SIDE_LABEL.me_deben],
           ]}
         />
         <AccountPicker accounts={accounts} selected={accountSel} onChange={changeAccounts} />
@@ -735,7 +746,7 @@ export function ActionablesBoard({
             if (!band.length) return null;
             return (
               <div key={round.key} className="space-y-2">
-                <RoundHeader {...round} items={band} />
+                <RoundHeader label={round.label} hint={round.hint} items={band} />
                 {/* Sin `relative`: las posiciones del FLIP (`offsetLeft/Top`) siguen siendo relativas al tablero. */}
                 <div className="grid items-start gap-3 md:grid-cols-2 xl:grid-cols-5">
                 {COLUMNS.map((col) => {
@@ -832,7 +843,7 @@ export function ActionablesBoard({
             if (!band.length) return null;
             return (
               <div key={round.key} className="space-y-3">
-                <RoundHeader {...round} items={band} />
+                <RoundHeader label={round.label} hint={round.hint} items={band} />
                 {COLUMNS.map((col) => {
                   const list = band.filter((i) => i.bucket === col.key);
                   if (!list.length) return null;
@@ -860,9 +871,9 @@ export function ActionablesBoard({
 
       {mail && (
         <FollowupPanel
-          key={mail.clientId}
+          key={`${mail.clientId}:${mail.ticketId ?? ""}`}
           alert={{ clientId: mail.clientId, name: mail.name }}
-          data={mailPanels[mail.clientId]}
+          data={mailData(mail)}
           open
           onOpenChange={(o) => !o && setMail(null)}
         />
@@ -1105,10 +1116,27 @@ function DueLine({ item }: { item: PlannedItem }) {
   );
 }
 
-function SideLine({ item }: { item: PlannedItem }) {
-  if (item.side === "debo") return <Badge variant="secondary">Debo</Badge>;
-  const who = item.owners[0]?.split(/\s+/)[0];
-  return <Badge variant="outline">Me deben{who ? ` · ${who}` : ""}</Badge>;
+/** Quién lo tiene, en los de Seguimiento (el lado ya lo dice la etiqueta de arriba). */
+function OwnerLine({ item }: { item: PlannedItem }) {
+  const who = item.side === "me_deben" ? item.owners[0]?.split(/\s+/)[0] : null;
+  return who ? <span className="truncate text-muted-foreground" title={item.owners.join(", ")}>{who}</span> : null;
+}
+
+/** Etiqueta chica abajo a la derecha de la card: Accionar (teal, lo hago yo) o Seguimiento (fucsia, lo tiene otro). */
+function SideTag({ item }: { item: PlannedItem }) {
+  const act = item.side === "debo";
+  return (
+    <span
+      title={act ? "Accionar: lo tenés vos" : `Seguimiento: lo tiene ${item.owners.join(", ") || "el cliente"}`}
+      className={cn(
+        "inline-flex shrink-0 items-center gap-1 rounded-sm px-1 text-[10px] leading-4 font-medium",
+        act ? "bg-side-act/12 text-side-act" : "bg-side-follow/12 text-side-follow",
+      )}
+    >
+      <span aria-hidden className={cn("size-1.5 rounded-full", act ? "bg-side-act" : "bg-side-follow")} />
+      {SIDE_LABEL[item.side]}
+    </span>
+  );
 }
 
 /** Chip violeta de los arrastrados: cuánto hace que vienen de la minuta/mail de origen. */
@@ -1170,9 +1198,14 @@ function Expanded({ item, busy, workDays, onAct, onEdit, closing, onMail }: Item
         <Button size="xs" variant="outline" disabled={busy} onClick={postpone}>
           <CalendarClock /> +1 día
         </Button>
+        {item.side === "me_deben" && onMail && isReminderItem(item) && (
+          <Button size="xs" variant="outline" title="Recordatorio corto pidiendo status de este punto" onClick={onMail}>
+            <BellRing /> Pedir status
+          </Button>
+        )}
         {item.side === "me_deben" && !onMail && (
           <Button size="xs" variant="outline" nativeButton={false} render={<Link href={`${account}?borrador=status`} />}>
-            <Mail /> Reclamar
+            <Mail /> Pedir status
           </Button>
         )}
         <Button
@@ -1184,7 +1217,7 @@ function Expanded({ item, busy, workDays, onAct, onEdit, closing, onMail }: Item
         >
           Cuenta <ArrowUpRight />
         </Button>
-        <MailButton item={item} onMail={onMail} />
+        {!(onMail && isReminderItem(item)) && <MailButton item={item} onMail={onMail} />}
         <Button size="xs" variant="ghost" className="ml-auto" onClick={() => onEdit(item.id)}>
           <Pencil /> Editar
         </Button>
@@ -1312,7 +1345,8 @@ function ItemCard(
             </span>
           )}
           <span className="ml-auto flex items-center gap-1">
-            {!compact && <SideLine item={item} />}
+            {!compact && <OwnerLine item={item} />}
+            <SideTag item={item} />
             <Chevron expanded={expanded} />
           </span>
         </div>
@@ -1373,7 +1407,8 @@ function ItemRow(props: ItemProps) {
                 <StatusDot tone="critical" />
               </span>
             )}
-            <SideLine item={item} />
+            <OwnerLine item={item} />
+            <SideTag item={item} />
             <Chevron expanded={expanded} />
           </span>
         </span>
@@ -1407,7 +1442,7 @@ function ClosingBar({ kind, onUndo }: { kind: Closing; onUndo: () => void }) {
   );
 }
 
-/** Ícono chico junto a "Cuenta" en la card desplegada: abre el panel de mail (Responder / minuta / Reclamar). */
+/** Ícono chico junto a "Cuenta" en la card desplegada: abre el panel de mail (Responder / minuta). */
 function MailButton({ item, onMail }: { item: PlannedItem; onMail?: () => void }) {
   if (!onMail) return null;
   const label = MAIL_ACTION_LABEL(item);

@@ -15,14 +15,16 @@ import { getSettings } from "@/lib/store/settings-store";
 import { getDraft } from "@/lib/utils/followup";
 import { generateStatusMails } from "@/lib/integrations/status-ai";
 
-// Borradores de la cuenta: `kind` "meeting" (follow-up de la reunión) o "status" (actualización /
-// seguimiento). PUT guarda la edición; POST crea el draft en Gmail o, con `send: true`, envía el
+// Borradores de la cuenta: `kind` "meeting" (follow-up de la reunión), "status" (actualización /
+// seguimiento) o "reminder" (recordatorio pidiendo status de lo que me deben; con `ticketId`, de un solo punto). PUT guarda la edición; POST crea el draft en Gmail o, con `send: true`, envía el
 // mail (dentro de `threadId` o como mail nuevo). Sin `send` nunca envía. PATCH trae los mails nuevos
 // de la cuenta y regenera el borrador, descartando una edición guardada.
 
 type Body = {
   kind?: FollowupKind;
   meetingId?: string;
+  /** Solo `reminder`: recordatorio de un solo punto. */
+  ticketId?: string | null;
   subject?: string;
   body?: string;
   to?: string[];
@@ -31,13 +33,16 @@ type Body = {
   send?: boolean;
 };
 
+const parseKind = (k: unknown): FollowupKind => (k === "status" || k === "reminder" ? k : "meeting");
+
 async function resolve(rawId: string, input: Body) {
   const file = await getClientsFile();
   const client = file.clients.find((c) => c.id === decodeURIComponent(rawId));
   const meeting = client?.meetings.find((m) => m.id === input.meetingId);
   if (!client || !meeting) return null;
-  const kind: FollowupKind = input.kind === "status" ? "status" : "meeting";
-  const { draft: base } = getDraft(kind, client, meeting, file.ownerEmail ?? null, await getSettings());
+  const kind = parseKind(input.kind);
+  const ticketId = kind === "reminder" && typeof input.ticketId === "string" ? input.ticketId : null;
+  const { draft: base } = getDraft(kind, client, meeting, file.ownerEmail ?? null, await getSettings(), ticketId);
   const parseEmails = (list: string[]) =>
     list.map((e) => String(e).trim().toLowerCase()).filter((e) => /^[^\s@]+@[^\s@]+$/.test(e));
   const draft: FollowupDraft = {
@@ -49,7 +54,7 @@ async function resolve(rawId: string, input: Body) {
     threadId: input.threadId !== undefined ? input.threadId : base.threadId,
     updatedAt: new Date().toISOString(),
   };
-  const key = followupKey(kind, meeting.id);
+  const key = followupKey(kind, meeting.id, ticketId);
   const saved = client.followups?.[key];
   return { client, file, draft, key, pendingDraftId: saved?.sentAt ? undefined : saved?.gmailDraftId, savedThreadId: saved?.threadId ?? null };
 }
@@ -62,7 +67,8 @@ export async function PATCH(request: Request, { params }: { params: Promise<{ id
   if (!stale) return Response.json({ error: "not_found" }, { status: 404 });
   const synced = await refreshActivity({ client: stale, file: before }).catch(() => false);
 
-  const kind: FollowupKind = input.kind === "status" ? "status" : "meeting";
+  const kind = parseKind(input.kind);
+  const ticketId = kind === "reminder" && typeof input.ticketId === "string" ? input.ticketId : null;
   const settings = await getSettings();
   // "Actualizar" del seguimiento: redacta con IA en el momento si cambió algo desde la última redacción.
   if (kind === "status") await generateStatusMails(await getClientsFile(), settings, { ids: [stale.id], max: 1, force: true }).catch(() => undefined);
@@ -70,8 +76,8 @@ export async function PATCH(request: Request, { params }: { params: Promise<{ id
   const client = file.clients.find((c) => c.id === stale.id);
   const meeting = client?.meetings.find((m) => m.id === input.meetingId);
   if (!client || !meeting) return Response.json({ error: "not_found" }, { status: 404 });
-  const { generated } = getDraft(kind, client, meeting, file.ownerEmail ?? null, settings);
-  const key = followupKey(kind, meeting.id);
+  const { generated } = getDraft(kind, client, meeting, file.ownerEmail ?? null, settings, ticketId);
+  const key = followupKey(kind, meeting.id, ticketId);
   const saved = client.followups?.[key];
   if (saved && !saved.sentAt) {
     // Conserva la referencia al draft de Gmail: enviar luego debe seguir reemplazándolo.

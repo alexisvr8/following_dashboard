@@ -5,14 +5,19 @@ import Link from "next/link";
 import { ArrowRight, Loader2 } from "lucide-react";
 import { Dialog, DialogContent, DialogDescription, DialogTitle } from "@/components/ui/dialog";
 import { FollowupComposer } from "@/components/cuentas/FollowupComposer";
+import { MailKindProvider } from "@/components/cuentas/MailKindSwitch";
 import type { FollowupDraft, FollowupKind, MailRef, ThreadRef } from "@/lib/store/clients-store";
 import type { ThreadMessage } from "@/lib/integrations/client-activity";
 import type { AccountAlert } from "@/lib/utils/followup-alerts";
 import { cn } from "@/lib/utils";
 
+type PanelDraft = { kind: FollowupKind; draft: FollowupDraft; generated: FollowupDraft; regenerated: boolean; lastSentAt: string | null };
+
 export type FollowupPanelData = {
   meetingTitle: string;
-  draft: { kind: FollowupKind; draft: FollowupDraft; generated: FollowupDraft; regenerated: boolean; lastSentAt: string | null };
+  draft: PanelDraft;
+  /** Alternativa elegible: recordatorio corto pidiendo status de lo que está en Seguimiento (me deben). */
+  reminder?: PanelDraft & { count: number };
   threads: ThreadRef[];
   lastMail: MailRef | null;
 };
@@ -35,7 +40,10 @@ export function FollowupPanel({
   open: boolean;
   onOpenChange: (open: boolean) => void;
 }) {
-  const kind: FollowupKind = data?.draft.kind ?? "status";
+  const [choice, setChoice] = useState<"general" | "reminder">("general");
+  const current = choice === "reminder" && data?.reminder ? data.reminder : data?.draft;
+  const kind: FollowupKind = current?.kind ?? "status";
+  const single = kind === "reminder" && !!current?.draft.ticketId;
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent className="flex max-h-[88dvh] w-[min(78rem,calc(100%-2rem))] max-w-none flex-col gap-0 p-0 sm:max-w-none">
@@ -65,27 +73,43 @@ export function FollowupPanel({
             {open && <ThreadView clientId={alert.clientId} mail={data?.lastMail ?? null} />}
           </div>
           <div className="min-h-0 p-4 md:overflow-y-auto [scrollbar-width:thin]">
-            {data ? (
+            {data && current ? (
+              <MailKindProvider
+                enabled={!!data.reminder && !single}
+                value={{
+                  choice,
+                  setChoice,
+                  generalLabel: data.draft.kind === "meeting" ? "Post-reunión" : "Seguimiento general",
+                  reminderCount: data.reminder?.count ?? 0,
+                }}
+              >
               <FollowupComposer
-                key={data.draft.draft.meetingId}
-                kind={data.draft.kind}
+                key={`${kind}-${current.draft.ticketId ?? current.draft.meetingId}`}
+                kind={kind}
                 showTitle
                 className="border-0 bg-transparent py-0 lg:h-auto [--card-spacing:0px]"
                 bodyMaxClass="max-h-[calc(88dvh-24rem)]"
                 clientId={alert.clientId}
-                title={kind === "meeting" ? "Mail post-reunión" : "Respuesta / actualización"}
+                title={
+                  kind === "meeting" ? "Mail post-reunión" : kind === "reminder" ? (single ? "Pedir status de este punto" : "Pedir status") : "Respuesta / actualización"
+                }
                 hint={
                   kind === "meeting"
                     ? `Minuta de “${data.meetingTitle}”: puntos importantes, lo conversado y los accionables de cada lado.`
+                    : kind === "reminder"
+                    ? single
+                      ? "Recordatorio corto pidiendo status de este punto; si su responsable participa, va dirigido a esa persona."
+                      : "Recordatorio corto y amigable de los puntos en Seguimiento (lo que tiene el cliente)."
                     : data.draft.regenerated
                     ? `Regenerado con los mails y accionables nuevos, a partir de “${data.meetingTitle}”.`
                     : `Generado con lo finalizado y lo pendiente desde la última interacción (“${data.meetingTitle}”).`
                 }
-                lastSentAt={data.draft.lastSentAt}
-                initial={data.draft.draft}
-                generated={data.draft.generated}
+                lastSentAt={current.lastSentAt}
+                initial={current.draft}
+                generated={current.generated}
                 threads={data.threads}
               />
+              </MailKindProvider>
             ) : (
               <p className="rounded-lg border border-dashed border-divider p-4 text-center text-xs text-muted-foreground">
                 Esta cuenta no tiene reuniones con minuta: todavía no hay borrador.

@@ -23,6 +23,7 @@ import {
   isoDay,
   PRIORITY,
   relativeDue,
+  SIDE_LABEL,
 } from "@/components/accionables/format";
 
 // Detalle de un accionable (modal centrado): texto completo, origen, plazo (posponer / fecha manual), estimación
@@ -267,7 +268,7 @@ function PanelBody({
                   item.side === s ? "bg-accent font-medium text-foreground" : "text-muted-foreground hover:text-foreground",
                 )}
               >
-                {s === "debo" ? "Debo" : "Me deben"}
+                {SIDE_LABEL[s]}
               </button>
             ))}
           </span>
@@ -425,7 +426,7 @@ function PanelBody({
         )}
         {item.side === "me_deben" && (
           <Button size="sm" variant="outline" nativeButton={false} render={<Link href={`/cuentas/${encodeURIComponent(item.clientId)}?borrador=status`} />}>
-            <Mail /> Reclamar
+            <Mail /> Pedir status
           </Button>
         )}
         <Button size="sm" variant="ghost" className="ml-auto" nativeButton={false} render={<Link href={`/cuentas/${encodeURIComponent(item.clientId)}`} />}>
