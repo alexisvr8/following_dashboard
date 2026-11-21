@@ -14,6 +14,8 @@ import {
 import { getSettings } from "@/lib/store/settings-store";
 import { getDraft } from "@/lib/utils/followup";
 import { generateStatusMails } from "@/lib/integrations/status-ai";
+import { generateClientMailAI } from "@/lib/integrations/reply-ai";
+import { setTicketDone } from "@/lib/store/clients-store";
 
 // Borradores de la cuenta: `kind` "meeting" (follow-up de la reunión), "status" (actualización /
 // seguimiento) o "reminder" (recordatorio pidiendo status de lo que me deben; con `ticketId`, de un solo punto). PUT guarda la edición; POST crea el draft en Gmail o, con `send: true`, envía el
@@ -33,7 +35,7 @@ type Body = {
   send?: boolean;
 };
 
-const parseKind = (k: unknown): FollowupKind => (k === "status" || k === "reminder" ? k : "meeting");
+const parseKind = (k: unknown): FollowupKind => (k === "status" || k === "reminder" || k === "reply" ? k : "meeting");
 
 async function resolve(rawId: string, input: Body) {
   const file = await getClientsFile();
@@ -72,6 +74,10 @@ export async function PATCH(request: Request, { params }: { params: Promise<{ id
   const settings = await getSettings();
   // "Actualizar" del seguimiento: redacta con IA en el momento si cambió algo desde la última redacción.
   if (kind === "status") await generateStatusMails(await getClientsFile(), settings, { ids: [stale.id], max: 1, force: true }).catch(() => undefined);
+  // Respuesta: la IA (modelo barato) redacta lo que el cliente espera, solo si cambió la entrada.
+  // Pedir status de toda la cuenta (sin ticketId) también: IA barata en tu tono.
+  const aiMode = kind === "reply" ? "reply" : kind === "reminder" && !ticketId ? "reminder" : null;
+  const ai = aiMode ? await generateClientMailAI(await getClientsFile(), settings, stale.id, aiMode).catch(() => "failed" as const) : null;
   const file = await getClientsFile();
   const client = file.clients.find((c) => c.id === stale.id);
   const meeting = client?.meetings.find((m) => m.id === input.meetingId);
@@ -88,7 +94,7 @@ export async function PATCH(request: Request, { params }: { params: Promise<{ id
       draftCreatedAt: saved.draftCreatedAt,
     });
   }
-  return Response.json({ draft: generated, synced });
+  return Response.json({ draft: generated, synced, ...(ai && { ai }) });
 }
 
 export async function PUT(request: Request, { params }: { params: Promise<{ id: string }> }) {
@@ -137,6 +143,8 @@ export async function POST(request: Request, { params }: { params: Promise<{ id:
     if (!input.threadId && sent.threadId && (!pin || pin.threadId === r.savedThreadId)) {
       await setFollowupThread(r.client.id, { threadId: sent.threadId, subject: r.draft.subject }).catch(() => undefined);
     }
+    // Respuesta enviada: lo que contestaba queda respondido (aunque viniera de otros hilos).
+    for (const t of r.draft.replyTicketIds ?? []) await setTicketDone(r.client.id, t, true).catch(() => undefined);
     await refreshActivity(r).catch(() => undefined);
     return Response.json({
       sentAt,

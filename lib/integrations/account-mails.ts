@@ -58,6 +58,11 @@ export async function collectAccountThreads(
     const th = (await withRetry(() => gmail.users.threads.get({ userId: "me", id, format: "full" }))).data;
     const messages: AnalysisThread["messages"] = [];
     let subject = "";
+    // Un tercero (partner, dev externo) entra solo en hilos donde participa el cliente, y como "tercero".
+    const withClient = (th.messages ?? []).some((m) => {
+      const hh = hdr(m);
+      return [parseFrom(hh["from"] ?? "").email, ...parseAddresses(`${hh["to"] ?? ""},${hh["cc"] ?? ""}`)].some(matches);
+    });
     for (const msg of th.messages ?? []) {
       if (msg.labelIds?.includes("DRAFT")) continue;
       const date = Number(msg.internalDate);
@@ -66,8 +71,9 @@ export async function collectAccountThreads(
       if (date < sinceMs) continue;
       const from = parseFrom(h["from"] ?? "");
       const side = who(from.email);
-      // Del lado cliente solo cuentan remitentes reconocidos (evita terceros que nos copian).
-      if (side === "cliente" && !matches(from.email)) continue;
+      const thirdParty = side === "cliente" && !matches(from.email);
+      if (thirdParty && !withClient) continue;
+      if (thirdParty) from.name = `${from.name ?? from.email} (tercero, ${from.email.split("@")[1]})`;
       const kind = classifyMail({
         subject: h["subject"] ?? "",
         from: from.email,
@@ -87,8 +93,10 @@ export async function collectAccountThreads(
       });
     }
     if (!messages.length) continue;
-    // Hilo de la cuenta: escribe alguien del cliente o yo (descarta reportes de terceros con copia).
-    if (!messages.some((m) => m.who === "cliente" || m.who === "yo")) continue;
+    // Hilo de la cuenta: escribe alguien del cliente o yo, o un tercero que nos escribe a nosotros (descarta
+    // reportes de terceros que solo copian al cliente).
+    const ours = (e: string) => e === me || (!!ownDomain && !FREEMAIL.test(ownDomain) && e.endsWith(`@${ownDomain}`));
+    if (!messages.some((m) => (m.who === "cliente" && (matches(m.from) || m.to.some(ours))) || m.who === "yo")) continue;
     threads.push({ subject: subject || "(sin asunto)", messages, last: messages.at(-1)!.date });
   }
 

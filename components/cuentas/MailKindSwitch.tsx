@@ -1,17 +1,19 @@
 "use client";
 
 import { createContext, useContext, useState, type ReactNode } from "react";
-import { BellRing, Mail } from "lucide-react";
+import { BellRing, Mail, Reply } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { Dialog, DialogContent, DialogTitle } from "@/components/ui/dialog";
 
-export type MailKindChoice = "general" | "reminder";
+export type MailKindChoice = "general" | "reminder" | "reply";
 
 type Ctx = {
   choice: MailKindChoice;
   setChoice: (c: MailKindChoice) => void;
   generalLabel: string;
   reminderCount: number;
+  /** Con valor: suma la opción "Responder (N)" (lo que el cliente espera que le contestemos). */
+  replyCount?: number;
   /** Modo expandido compartido: al cambiar de tipo con el modal abierto, se abre el del otro mail. */
   expanded?: boolean;
   setExpanded?: (e: boolean) => void;
@@ -42,6 +44,16 @@ export function MailKindToggle({ className }: { className?: string }) {
   const ctx = useContext(MailKindContext);
   if (!ctx) return null;
   const options: [MailKindChoice, string, typeof Mail, string][] = [
+    ...(ctx.replyCount != null
+      ? [
+          [
+            "reply",
+            `Responder${ctx.replyCount ? ` (${ctx.replyCount})` : ""}`,
+            Reply,
+            "Respuesta a sus mails con consultas o pedidos sin contestar, en un solo mail",
+          ] as [MailKindChoice, string, typeof Mail, string],
+        ]
+      : []),
     ["general", ctx.generalLabel, Mail, "Avances, lo que está en curso y lo pendiente de cada lado"],
     [
       "reminder",

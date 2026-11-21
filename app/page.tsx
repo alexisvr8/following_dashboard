@@ -4,13 +4,15 @@ import { WeekPlanner } from "@/components/dashboard/WeekPlanner";
 import { KeyNumbers } from "@/components/dashboard/KeyNumbers";
 import { FollowupAlerts } from "@/components/dashboard/FollowupAlerts";
 import type { FollowupPanelData } from "@/components/dashboard/FollowupPanel";
-import { computeAlerts } from "@/lib/utils/followup-alerts";
-import { listEventsBetween } from "@/lib/integrations/calendar";
+import { computeAlerts, replyQueue } from "@/lib/utils/followup-alerts";
+import { listEventsBetween, type CalendarEventLite } from "@/lib/integrations/calendar";
+import { nextMeetings } from "@/lib/utils/deadlines";
+import type { ClientRecord } from "@/lib/store/clients-store";
 import { getClientsFileCached, getSettingsCached } from "@/lib/server/cached-data";
 import type { WorkSettings } from "@/lib/store/settings-store";
 import { computeWeekPlan, hasWorkLeftThisWeek, planWeekBounds, type WeekPlan } from "@/lib/utils/week-plan";
 import { clientsToBoard } from "@/lib/utils/clients-to-board";
-import { getFollowupDraft, getReminderDraft } from "@/lib/utils/followup";
+import { getFollowupDraft, getReminderDraft, getReplyDraft, pendingReplies } from "@/lib/utils/followup";
 import type { Account } from "@/types/account";
 import type { Ticket } from "@/types/ticket";
 import { composerThreads } from "@/lib/utils/followup-thread";
@@ -37,27 +39,11 @@ export default async function Home({ searchParams }: { searchParams: Promise<{ s
   const { start, end } = planWeekBounds(now, offset);
   // Sin await: la promesa la consumen Números y Capacidad dentro de sus Suspense.
   // Una semana más de eventos: solo para saber la próxima reunión de cada cuenta (preparación).
-  const planPromise = listEventsBetween(start, new Date(end.getTime() + 7 * 86_400_000))
-    .catch(() => null)
-    .then((weekEvents) => computeWeekPlan(clients, settings, weekEvents, offset, now));
-  const alerts = computeAlerts(clients, settings, now);
+  // Desde hoy (aunque se planifique la próxima semana): el Pulso de cuentas necesita las reuniones de mañana/pasado.
+  const eventsPromise = listEventsBetween(start < now ? start : now, new Date(end.getTime() + 7 * 86_400_000)).catch(() => null);
+  const planPromise = eventsPromise.then((weekEvents) => computeWeekPlan(clients, settings, weekEvents, offset, now));
   const lastSyncAt =
     clients.map((c) => c.activity?.syncedAt).filter((x): x is string => !!x).sort().at(-1) ?? null;
-
-  // Panel inline de Seguimiento: borrador de actualización (mismo getDraft que /cuentas) + hilo del último mail.
-  const panels: Record<string, FollowupPanelData> = {};
-  for (const a of alerts) {
-    const c = clients.find((x) => x.id === a.clientId);
-    const latest = c && [...c.meetings].sort((x, y) => y.date.localeCompare(x.date))[0];
-    if (!c || !latest) continue;
-    panels[a.clientId] = {
-      meetingTitle: latest.title,
-      draft: getFollowupDraft(c, latest, ownerEmail ?? null, settings),
-      reminder: getReminderDraft(c, latest, ownerEmail ?? null, settings),
-      threads: composerThreads(c),
-      lastMail: c.activity?.lastMail ?? null,
-    };
-  }
 
   return (
     // ≥1280px: el Dashboard mide exactamente la pantalla (sin scroll de página). Capacidad (2/3) y
@@ -110,12 +96,16 @@ export default async function Home({ searchParams }: { searchParams: Promise<{ s
             </section>
 
             <section className="min-w-0 xl:min-h-0">
-              <FollowupAlerts
-                alerts={alerts}
-                panels={panels}
-                staleDays={settings.staleBusinessDays}
-                lastSyncAt={lastSyncAt}
-              />
+              <Suspense fallback={<div className="h-full min-h-96 animate-pulse rounded-xl border border-border bg-card" />}>
+                <Pulse
+                  events={eventsPromise}
+                  clients={clients}
+                  ownerEmail={ownerEmail ?? null}
+                  settings={settings}
+                  now={now}
+                  lastSyncAt={lastSyncAt}
+                />
+              </Suspense>
             </section>
           </div>
         </>
@@ -134,6 +124,51 @@ export default async function Home({ searchParams }: { searchParams: Promise<{ s
 
 async function Numbers({ plan, accounts, tickets }: { plan: Promise<WeekPlan>; accounts: Account[]; tickets: Ticket[] }) {
   return <KeyNumbers plan={await plan} accounts={accounts} tickets={tickets} />;
+}
+
+// Pulso de cuentas (Seguimiento): espera Calendar solo para no listar cuentas con reunión en los próximos días.
+async function Pulse({
+  events,
+  clients,
+  ownerEmail,
+  settings,
+  now,
+  lastSyncAt,
+}: {
+  events: Promise<CalendarEventLite[] | null>;
+  clients: ClientRecord[];
+  ownerEmail: string | null;
+  settings: WorkSettings;
+  now: Date;
+  lastSyncAt: string | null;
+}) {
+  const alerts = computeAlerts(clients, settings, now, nextMeetings(clients, await events, now));
+  // Cuentas activas con pedidos por mail sin resolver: franja aparte, abre Responder.
+  const queue = replyQueue(clients, alerts);
+  // Panel inline: borrador (mismo getDraft que /cuentas) + recordatorio + hilo del último mail.
+  const panels: Record<string, FollowupPanelData> = {};
+  const targets = [
+    ...alerts.map((a) => ({ clientId: a.clientId, reply: a.actions.includes("reply") })),
+    ...queue.map((q) => ({ clientId: q.clientId, reply: true })),
+  ];
+  for (const a of targets) {
+    const c = clients.find((x) => x.id === a.clientId);
+    const latest = c && [...c.meetings].sort((x, y) => y.date.localeCompare(x.date))[0];
+    if (!c || !latest) continue;
+    panels[a.clientId] = {
+      meetingTitle: latest.title,
+      draft: getFollowupDraft(c, latest, ownerEmail, settings),
+      reminder: getReminderDraft(c, latest, ownerEmail, settings),
+      // Responder: solo si el cliente espera respuesta (consultas/pedidos sin contestar).
+      ...(a.reply && {
+        reply: getReplyDraft(c, latest, ownerEmail, settings),
+        replyMail: pendingReplies(c).mails.at(-1) ?? null,
+      }),
+      threads: composerThreads(c),
+      lastMail: c.activity?.lastMail ?? null,
+    };
+  }
+  return <FollowupAlerts alerts={alerts} queue={queue} panels={panels} staleDays={settings.staleBusinessDays} lastSyncAt={lastSyncAt} />;
 }
 
 async function Capacity({ plan, settings }: { plan: Promise<WeekPlan>; settings: WorkSettings }) {

@@ -125,7 +125,7 @@ export function relatedActionables(mailText: string, steps: string[]): number[] 
 }
 
 const REQUEST =
-  /\?|\b(podr[ií]as?|podr[ií]an|pueden|puedes|podemos|necesit\w*|por favor|favor de|quedamos? a la espera|aguardamos|solicit\w*|confirm\w*|nos (env[ií]en|pasen|compartan|indiquen)|me (env[ií]en|pasen|compartan|indiquen)|ser[ií]a posible|ayud\w*|urgente|pendiente)\b/i;
+  /\?|\b(podr[ií]as?|podr[ií]an|pueden|puedes|podemos|necesit\w*|por favor|favor de|quedamos? a la espera|aguardamos|solicit\w*|confirm\w*|nos (env[ií]en|pasen|compartan|indiquen)|me (env[ií]en|pasen|compartan|indiquen)|ser[ií]a posible|ayud\w*|urgente|pendiente|(te|les|le|nos) pido|pedimos|pedirles|pedirte|necesitamos que)\b/i;
 const NOISE = /^(saludos|gracias|muchas gracias|hola|buen(os|as)? (d[ií]as|tardes|noches)|quedo atent|atte|cordialmente|enviado desde|get outlook|this email|este correo|confidencial|aviso legal|antes de imprimir|el presente (correo|mensaje)|este e-?mail|piense en el medio ambiente|la informaci[oó]n contenida|this message|the information|privileged|si (usted )?no es el destinatario|if you are not the intended)/i;
 
 // "Alexis, ¿cómo estás?": saludo con signo de pregunta, no una consulta.
@@ -159,9 +159,13 @@ function ownSentences(text: string): string[] {
     .filter((s) => s.length >= 15 && s.length <= 280 && !NOISE.test(s) && !GREETING_QUESTION.test(s));
 }
 
+/** Texto de nuestra plantilla citado por el cliente ("(Maru) - Status: Pendiente ⏳"): no es un pedido suyo. */
+const OUR_TEMPLATE = /Status:\s*(Pendiente|Hecho|En curso|Stand By)|[⏳✅]/iu;
+export const isOurTemplateText = (s: string) => OUR_TEMPLATE.test(s);
+
 /** Pedidos/preguntas del cliente (oraciones con "?" o verbos de pedido), máx. 5. */
 export function extractRequests(text: string): string[] {
-  return [...new Set(ownSentences(text).filter((s) => REQUEST.test(s)))].slice(0, 5);
+  return [...new Set(ownSentences(text).filter((s) => REQUEST.test(s) && !OUR_TEMPLATE.test(s)))].slice(0, 5);
 }
 
 const word = (alternatives: string) => new RegExp(`(?<!\\p{L})(${alternatives})(?!\\p{L})`, "iu");

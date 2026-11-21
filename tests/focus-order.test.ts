@@ -16,15 +16,26 @@ const item = (id: string, p: Partial<PlannedItem>): PlannedItem =>
   }) as PlannedItem;
 
 describe("compareItems (orden de Capacidad)", () => {
-  it("vencido → preparar la reunión más cercana → más atención → resto por fecha", () => {
+  it("vencido → preparar la reunión de hoy/mañana → cuenta en silencio → más atención → resto por fecha", () => {
     const sorted = [
       item("resto-pronto", { due: "2026-11-16T23:59:59.000Z", bucket: "today" }),
       item("atencion", { attention: true, due: "2026-11-19T23:59:59.000Z" }),
-      item("prep-jueves", { prep: true, meetingSoonAt: "2026-11-19T13:00:00.000Z", due: "2026-11-25T23:59:59.000Z" }),
-      item("prep-martes", { prep: true, meetingSoonAt: "2026-11-17T13:00:00.000Z", due: "2026-11-25T23:59:59.000Z" }),
+      item("silencio", { silent: true, due: "2026-11-20T23:59:59.000Z" }),
+      // Reunión en 3+ días: ya no sube por preparación (queda por fecha).
+      item("prep-lejana", { prep: true, meetingSoonAt: "2026-11-19T13:00:00.000Z", due: "2026-11-25T23:59:59.000Z" }),
+      item("prep-mañana-tarde", { prep: true, prepUrgent: true, meetingSoonAt: "2026-11-17T18:00:00.000Z", due: "2026-11-25T23:59:59.000Z" }),
+      item("prep-mañana", { prep: true, prepUrgent: true, meetingSoonAt: "2026-11-17T13:00:00.000Z", due: "2026-11-25T23:59:59.000Z" }),
       item("vencido", { bucket: "overdue", due: "2026-11-13T23:59:59.000Z" }),
     ].sort(compareItems);
-    expect(sorted.map((i) => i.id)).toEqual(["vencido", "prep-martes", "prep-jueves", "atencion", "resto-pronto"]);
+    expect(sorted.map((i) => i.id)).toEqual([
+      "vencido",
+      "prep-mañana",
+      "prep-mañana-tarde",
+      "silencio",
+      "atencion",
+      "resto-pronto",
+      "prep-lejana",
+    ]);
   });
 });
 

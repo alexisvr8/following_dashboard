@@ -21,7 +21,7 @@ Nav horizontal centrada en el header sticky (`components/layout/{AppHeader,MainN
 se vuelve menú desplegable `MobileNav`). Sin sidebar. 5 secciones. Navegación rápida: Router Cache `staleTimes.dynamic=120` (`next.config.ts`; `router.refresh()` lo invalida), lecturas deduplicadas por request en `lib/server/cached-data.ts` (`cache()` de React), Dashboard con Supabase en paralelo y Números/Capacidad por streaming (`Suspense`, Calendar no bloquea):
 - `/` Dashboard (**datos reales**, clientes `assigned`/`unassigned` de `.data/clients.json` vía
   `clientsToBoard`), ancho completo; en xl mide exactamente la pantalla (sin scroll de página: la jornada del calendario se reparte el alto disponible; solo la lista de Seguimiento scrollea). **Números** `KeyNumbers` arriba; debajo grilla 2/3 | 1/3 (xl, alineadas arriba; <xl Seguimiento abajo con tarjetas en 2–3 columnas): **Capacidad** `WeekPlanner` (barra de encabezado, 5 tarjetas resumen en una fila, calendario proporcional estilo Google Calendar (bloques según duración, solapes en carriles `layoutBlocks`, detalle al hover), tarjeta de agenda/espacios/leyenda) | **Seguimiento**
-  `FollowupAlerts` (alto de la fila, scroll interno solo en la lista; una tarjeta por cuenta, primero las que esperan respuesta y luego por días hábiles): cada acción (Responder / Enviar actualización / Hacer seguimiento) abre `FollowupPanel` (Dialog centrado, hilo | borrador; click afuera o Esc cierra):
+  **Pulso de cuentas** `FollowupAlerts` (en `Suspense`: espera Calendar para la próxima reunión; alto de la fila, scroll interno solo en la lista; una tarjeta por cuenta, primero las que esperan respuesta y luego por días sin interacción; chip de días ≤3/4–5/+6 con filtro, mini línea de 10 días hábiles, motivos sin mails, Accionables → `/accionables?cuentas=<id>`, Posponer): la acción (Responder / Enviar status / Pedir status) abre `FollowupPanel` (Dialog centrado, hilo | borrador; click afuera o Esc cierra):
   hilo completo del último mail (`GET /api/clients/[id]/thread/[threadId]`, más nuevo primero) + `FollowupComposer`
   `status` precalculado en `app/page.tsx` con `getDraft`.
 - `/cuentas/[id]` (`?borrador=status`; `app/cuentas/page.tsx` solo redirige: `?id=` de links viejos → `/cuentas/[id]`, sin id → primera cuenta de `?tab=`). `app/cuentas/layout.tsx` = directorio (todas las cuentas, no se re-renderiza al cambiar de cuenta); `[id]/page.tsx` = workspace leyendo solo esa fila (`getClient`), `[id]/loading.tsx` = esqueleto: 3 columnas a una pantalla en `lg`
@@ -49,9 +49,9 @@ se vuelve menú desplegable `MobileNav`). Sin sidebar. 5 secciones. Navegación 
   `coreStart–coreEnd` (10–17:30); ocupado = eventos de Calendar (`listEventsBetween`, sin
   "disponible"/declinados) + almuerzo = eventos /almuerzo|lunch|comida/ del día (fallback
   `lunchStart`/`lunchMinutes` marcado "estimado"); accionables propios pendientes (`plannedItems`, uno por
-  uno, en el orden de `compareItems`: `focusTier` vencido → **preparación** [debo de cuentas con reunión ≤ `PREP_BUSINESS_DAYS` (5) hábiles,
+  uno, en el orden de `compareItems`: `focusTier` vencido → **preparación** (solo sube si la reunión es hoy/mañana, `prepUrgent`/`PREP_URGENT_DAYS`) [debo de cuentas con reunión ≤ `PREP_BUSINESS_DAYS` (5) hábiles,
   `meetingSoonAt`/`prep`, la reunión más cercana primero; límite efectivo = inicio de la reunión, `prepLate`, bloque "Prep. · Cuenta" con `prepFor`,
-  `totals.prepCount/prepLateCount` en el veredicto] → más atención → resto por fecha y prioridad; la página pide una semana más de eventos
+  `totals.prepCount/prepLateCount` en el veredicto] → **cuentas en silencio** (`silent`, `isSilent`) → más atención → resto por fecha y prioridad; la página pide una semana más de eventos
   solo para `nextMeetings`) × estimación (manual o h/accionable): 1ª pasada huecos normales de toda la
   semana, 2ª pasada flex; resto = déficit; `atRisk` = termina después de su límite o no entra y vence en la semana
   (`totals.atRiskCount`). Bloques seguidos de la misma cuenta se unen (`itemIds`). Reunión ↔ cuenta por
@@ -196,13 +196,28 @@ tiempo/dificultad → quick_win/major_project/fill_in/thankless_task), no se per
   sin LLM: `Resumen`/`Próximos pasos`). Retry con backoff ante rate limit de Gmail. Merge no
   destructivo en `.data/clients.json` (`lib/store/clients-store.ts`); re-escaneo salta mails ya
   procesados.
-- `/api/clients/[id]/followup` acepta `kind` `meeting|status|reminder` (+ `ticketId` para el recordatorio de un punto).
+- `/api/clients/[id]/followup` acepta `kind` `meeting|status|reminder|reply` (+ `ticketId` para el recordatorio de un punto). `reply` (clave `reply:<meetingId>`,
+  `buildReply`/`getReplyDraft`/`pendingReplies` en `followup.ts`): un solo mail que responde todo lo que el cliente escribió en cada hilo después de nuestro
+  último mail ahí (≤21 días, máx. 6; tenga o no pedidos) + los mails con pedidos abiertos; Para = quienes escribieron; hilo del más reciente (editable en
+  Dónde), Cc de los otros. **IA en tu voz** (`lib/llm/reply-mail.ts`, `generateClientMail`, modos `reply` y `reminder` = Pedir status de toda la cuenta;
+  `clientMailRequest`: mails del cliente, mi último mail, pedidos, abiertos con refs A…/C…, hechos y 2–3 extractos de mis mails como `estilo_pm`; tuteo neutro,
+  2–6 líneas, sin etiquetas ni frases de plantilla, plural con 2+ destinatarios; lo que dice el cliente manda sobre el estado de la app). Lo que el cliente
+  confirmó como hecho (`resueltos`) se **tilda solo** y queda avisado en `reviewNotes` (`ReplyAI.resolved`); contradicciones → `revision`. Guardado en
+  `client.replyAI` / `client.reminderAI` (huella `clientMailKey`), solo bajo demanda: PATCH al abrir la pestaña en `FollowupPanel` o Actualizar
+  (`generateClientMailAI`, `lib/integrations/reply-ai.ts`); sin IA, texto por reglas. Al enviar la respuesta tilda `draft.replyTicketIds`. Detector de
+  pedidos (`extractRequests`): ignora texto citado de nuestra plantilla (`Status: …`, ⏳/✅, `isOurTemplateText`) y suma "les pido / pedimos / necesitamos que".
+  Sync: pedido contestado en su mismo hilo por un mail mío/del equipo → tildado con la fecha de esa respuesta, no la de la sync (`answeredRequests` → `{id, at}`, `MailItem.threadId`, en `setClientActivity`).
 - `PATCH /api/clients/[id]` → `{status?, name?}`, `{ticketId, isDone}` o
   `{profile: {emailName?, erp?, ownerEmail?, notes?, referentOverrides?}, name?}`.
 - `POST /api/clients/sync-activity` (body opcional `{ids}`; default asignados+no asignados) →
   `lib/integrations/client-activity.ts`: por cliente guarda `activity` en `.data/clients.json`:
   `lastMail`/`recentMails` = últimos mails REALES en cualquier dirección (`direction`
-  client/team/me; cliente = dominio + referentes + invitados externos; team = dominio propio),
+  client/team/me; cliente = dominio + referentes + invitados externos + `profile.linkedContacts` exclusivos; team = dominio propio;
+  **terceros** (partner, dev externo, proveedor del ERP): `direction: "client"` + `thirdParty: true` si el cliente está en el mail o en el
+  hilo y no aparece otra cuenta asignada (`otherAccounts`); los hilos del cliente con terceros se leen enteros, máx. 3 por cuenta, para sumar
+  los mensajes que no lo copian. Dominios vinculados en el perfil de la cuenta (`AccountProfileForm`, `PATCH {profile: {linkedContacts:
+  [{value, shared}]}}`): exclusivo = se busca y siempre es de la cuenta; compartido = no se busca ni genera conflicto. El análisis semanal
+  (`account-mails.ts`) también acepta terceros en hilos del cliente, marcados "(tercero, dominio)"),
   descartando invitaciones/respuestas de Calendar, auto-respuestas, minutas y envíos de mis Apps Script
   (`isAutomationSubject`: asunto con CMA, "[ERP Algoritmo]"/"Importación lista:", "fournisseurs NON paramétrés", "Reporte de Gastos", "Interface Oracle prête"; también en hilos y `mailActionables`)
   (`lib/utils/mail-classify.ts`); `lastInboundMail` = último del cliente con `requests`
@@ -222,9 +237,16 @@ tiempo/dificultad → quick_win/major_project/fill_in/thankless_task), no se per
   resumen) de cualquier mail desde 2026-10-31: `collectMailItems` (`mail-items.ts`) y `client.mailActionables` los conservan aunque el mail salga de `recentMails`; abiertos siguen
   salvo que repitan algo ya listado. Entran en `clientsToBoard`, `week-plan` y alertas; en los borradores solo van los `request` del mail de partida.
 - Alertas (`lib/utils/followup-alerts.ts`, `FollowupAlerts` en Dashboard, sección Seguimiento):
-  solo asignados; `client_waiting` (mail del cliente sin responder ≥1 día hábil), `client_request` (pedidos por mail abiertos ≥1 día hábil, tildables en la tarjeta),
-  `no_progress` / `awaiting_client` (sin mails ni reuniones ≥ `settings.staleBusinessDays`
-  (default 2) días hábiles con accionables abiertos).
+  solo asignados y **solo en silencio** (`isSilent`): sin interacción ≥ `settings.staleBusinessDays` (2; Más atención `attentionStaleDays`) días hábiles,
+  sin reunión esta semana (`metThisWeek`, lun→hoy) ni agendada ≤ `SOON_MEETING_DAYS` (2) hábiles, con algo abierto de cualquier lado. Interacción
+  (`lib/utils/interaction.ts`, `interactions`/`interactionTrail`): mail mío o del cliente, reunión realizada, accionable tildado (`doneTicketAt` de minuta/propios/IA; no los `:mail-` ni `-followup` que tilda la sync; cualquier
+  lado) y mail del equipo solo si `relatedTicketIds` toca accionables míos. Motivo (`kind`): `client_waiting` (quedan pedidos abiertos de su último mail;
+  adjuntos/agradecimientos no), `client_request`, `awaiting_client`, `no_progress` (`own_overdue` en desuso). Cuentas activas con pedidos por mail abiertos →
+  franja **"Por responder"** arriba de las tarjetas (`replyQueue`, abre `FollowupPanel` en Responder). En la tarjeta: ✓ / ✕ Quitar = `actionable remove` /
+  "Ya respondí todo" (`replyTicketId`). `AccountAlert.actions` (reply o status, + reminder si el cliente tiene puntos → botones en la
+  tarjeta, `FollowupPanel initialChoice`), pedidos por mail plegables, `silentDays`, `trail`, `reasons` (vencidos, avances tildados sin
+  comunicar, abiertos, del cliente, próxima reunión), `lastMovementLabel` sin asunto. Posponer: `profile.followupSnooze {at, until?}`
+  (`PATCH {profile: {followupSnooze: "tomorrow"|"interaction"|null}}`; sin `until` = hasta una interacción posterior a `at`).
 - Borradores (`lib/utils/followup.ts`, `getDraft(kind)`), por reglas y sin placeholders en el cuerpo:
   `meeting` = saludo según la hora de generación (`salutation`: "Buenos días" hasta 11:55, después "Buenas tardes"; un destinatario → su nombre, varios → "equipo") + agradecimiento por la reunión (`meetingDay`: de hoy / de ayer / del miércoles / del miércoles de la semana pasada / del día dd/mm), tiempo y disposición; sin fecha objetivo en los accionables (queda en la card) (tú si hay 1 referente en `to`, plural si son 2+), Puntos importantes (solo el título de cada hito, antes de ":"), Lo que charlamos (resumen + decisiones, "Por definir: …"), Accionables de {empresa} (cliente/compartidos/sin lado; responsable de la minuta o "Equipo"), Accionables de Xtract (propios/equipo/consultas por mail, todos a nombre de `ownerAliases[0]`) y al final "Ya avanzamos con" (tildados), cierre "Quedo a disposición por si tienes/tienen alguna consulta…"; fecha objetivo (`parseStep`/`parseDue`, resuelta contra la fecha de la reunión); `status` parte de `latestInteraction`: último mail recibido del cliente
   o enviado por mí (no del equipo) si es posterior a la reunión; si no hay, accionables de la última reunión con lo tildado como avance. Destinatarios de la minuta (`followupRecipients`): del lado cliente, quienes hablaron en la transcripción (`meeting.speakers`, de `backfillTranscripts`; yo por alias, equipo/partners fuera); si habló alguien no identificable (sala, usuario genérico) o no hay transcripción → invitados del cliente. Con mail: responde en
@@ -308,7 +330,7 @@ correcciones, ERP y abiertos previos. `setMeetingAI` guarda `meeting.ai` (status
 Template único `lib/utils/postmeeting-mail.ts` (`renderPostMeetingMail`, `actionableLine` =
 `• Título: Descripción. (Responsable) - Status: X ⏳|✅ (dd/mm)`), usado por `buildFollowup` con IA o por reglas.
 Tests: `pnpm test` (vitest, `tests/`); `RUN_LLM=1 LLM_DOC=<minuta.txt>` corre la prueba real contra la API.
-**Registro de consumo**: las 3 llamadas (`postmeeting`, `status`, `analysis`) registran `response.usage` con `recordResponse`
+**Registro de consumo**: las 4 llamadas (`postmeeting`, `status`, `analysis`, `reply`) registran `response.usage` con `recordResponse`
 (`lib/store/ai-usage-store.ts`, `app_state.ai_usage` / `.data/ai-usage.json`, 120 días, escrituras encadenadas en el proceso; cuenta + `trigger`
 sync/actualizar/semanal/reanalizar/preview; `ok: false` = cobrada pero inútil). `GET /api/ai-usage?days=30` = totales, por tipo/día/cuenta y
 últimas 50, con costo **estimado** (`lib/llm/pricing.ts`, precios de lista por modelo; actualizar si cambian).

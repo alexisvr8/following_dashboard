@@ -1,5 +1,5 @@
 import type { ClientRecord, MailRef } from "@/lib/store/clients-store";
-import { isAutomationSubject } from "@/lib/utils/mail-classify";
+import { isAutomationSubject, isOurTemplateText } from "@/lib/utils/mail-classify";
 
 // Pedidos (mails del cliente) y compromisos (mails míos) detectados. `recentMails` solo guarda los últimos
 // mails, así que se conservan en `client.mailActionables`: un punto abierto no desaparece cuando llegan otros.
@@ -14,6 +14,8 @@ const SINCE = Date.parse("2026-10-31T00:00:00");
 export interface MailItem {
   id: string;
   messageId: string;
+  /** Hilo del mail (para dar el pedido por respondido si contestamos en ese hilo). */
+  threadId?: string;
   title: string;
   subject: string;
   description: string;
@@ -39,7 +41,7 @@ export function collectMailItems(client: ClientRecord): Record<string, MailItem>
   );
   for (const m of client.activity?.recentMails ?? client.activity?.recentInbound ?? []) {
     if (Date.parse(m.date) < SINCE || isAutomationSubject(m.subject)) continue;
-    const base = { messageId: m.messageId, subject: m.subject, date: m.date };
+    const base = { messageId: m.messageId, threadId: m.threadId, subject: m.subject, date: m.date };
     if (m.direction === "me" && !isRecapMail(m)) {
       (m.commitments ?? []).forEach((title, i) => {
         const id = mailTicketId(client.id, m.messageId, `c${i}`);
@@ -48,11 +50,31 @@ export function collectMailItems(client: ClientRecord): Record<string, MailItem>
       });
     } else if (m.direction === "client" || m.direction === undefined) {
       (m.requests ?? []).forEach((title, i) => {
+        if (isOurTemplateText(title)) return;
         const id = mailTicketId(client.id, m.messageId, i);
         const description = `Pedido en mail de ${mailAuthor(m)} (${fmtMailDate(m.date)}): “${m.subject}”`;
         items[id] = { ...base, id, title, description, kind: "request" };
       });
     }
   }
+  // Pedidos que en realidad eran texto citado de nuestros mails ("Status: Pendiente ⏳"): se descartan.
+  for (const [id, item] of Object.entries(items)) if (item.kind === "request" && isOurTemplateText(item.title)) delete items[id];
   return items;
+}
+
+/**
+ * Pedidos del cliente ya contestados: hay un mail nuestro (mío o del equipo) posterior en el mismo hilo. Lo usa la
+ * sync para tildarlos solos; un pedido de otro hilo sigue abierto hasta responderlo ahí (o enviar la Respuesta).
+ */
+export function answeredRequests(client: ClientRecord, items: Record<string, MailItem>): { id: string; at: string }[] {
+  const mails = [...(client.activity?.recentMails ?? [])].sort((a, b) => a.date.localeCompare(b.date));
+  const threadOf = new Map(mails.map((m) => [m.messageId, m.threadId]));
+  const done = new Set(client.doneTicketIds ?? []);
+  return Object.values(items).flatMap((i) => {
+    if (i.kind !== "request" || done.has(i.id)) return [];
+    const thread = i.threadId ?? threadOf.get(i.messageId);
+    // La primera respuesta nuestra posterior: el pedido quedó respondido en esa fecha (no en la de la sync).
+    const answer = thread && mails.find((m) => m.threadId === thread && (m.direction === "me" || m.direction === "team") && m.date > i.date);
+    return answer ? [{ id: i.id, at: answer.date }] : [];
+  });
 }

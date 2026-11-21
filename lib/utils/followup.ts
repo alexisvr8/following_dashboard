@@ -28,6 +28,7 @@ import { actionableLine, renderPostMeetingMail, statusSuffix, type MailStatus } 
 import type { Actionable } from "@/lib/utils/actionables";
 import type { AISide } from "@/lib/llm/postmeeting-schema";
 import { statusKey, type StatusMailInput } from "@/lib/llm/status-mail";
+import { clientMailKey, type ClientMailInput, type ClientMailMode } from "@/lib/llm/reply-mail";
 
 // Borradores recalculados con cada mail, reunión o accionable tildado. El de la minuta (`buildFollowup`) usa el
 // contenido generado por Claude cuando la reunión lo tiene (`meeting.ai`) y, si no, el armado por reglas; en ambos
@@ -750,7 +751,13 @@ export function buildReminder(
     const when = due ? ` (${due.until < now ? "lo teníamos para" : "quedamos para"} el ${fmtShort(due.until.toISOString())})` : "";
     return `• ${reminderText(client, a)}${single ? "" : ownerTag(a.step)}${when}`;
   });
-  if (!items.length) {
+  // De toda la cuenta: redactado con IA en tu tono si está vigente (`client.reminderAI`); si no, el texto fijo.
+  const reminderAI = !single ? client.reminderAI : undefined;
+  const aiBody = reminderAI && reminderAI.key === clientMailRequest("reminder", client, meeting, ownerEmail, settings).key ? reminderAI : null;
+  if (aiBody) {
+    lines.push(...aiBody.cuerpo.trim().split("\n"));
+    reviewNotes.push(`Redactado con IA (${aiBody.model}) en tu tono: revisalo antes de enviar.`, ...resolvedNotes(aiBody), ...aiBody.revision);
+  } else if (!items.length) {
     lines.push(
       `¿Cómo ${one ? "estás" : "están"}? ${one ? "Te" : "Les"} escribo para saber cómo vienen con lo que quedó de su lado.`,
       "",
@@ -799,6 +806,7 @@ export function buildReminder(
     threadId: anchorMail ? anchorMail.threadId : thread!.threadId,
     threadReason: anchorMail ? "anchor" : thread!.reason,
     reviewNotes,
+    ...(aiBody && { ai: true }),
   };
 }
 
@@ -841,6 +849,203 @@ export function getReminderDraft(
   };
 }
 
+/** Lo que el cliente espera que le respondamos: "Responder" abierto + pedidos por mail sin resolver, y sus mails. */
+export function pendingReplies(client: ClientRecord) {
+  const done = new Set(client.doneTicketIds ?? []);
+  const tickets = mailTickets(client).filter((t) => (t.kind === "reply" || t.kind === "request") && !done.has(t.id));
+  const requests = tickets.filter((t) => t.kind === "request");
+  const reply = tickets.find((t) => t.kind === "reply");
+  // "Responder" solo cuenta si su mail pide o pregunta algo (un envío de adjuntos no).
+  const inbound = client.activity?.lastInboundMail;
+  const replyAsks = !!reply && !!inbound && requests.some((r) => r.messageId === inbound.messageId);
+  const ids = new Set([...requests.map((r) => r.messageId), ...(replyAsks ? [reply.messageId] : [])]);
+  const recent = [...(client.activity?.recentMails ?? [])].sort((a, b) => a.date.localeCompare(b.date));
+  // Todo lo que el cliente escribió en cada hilo después de nuestro último mail ahí (tenga o no pedidos detectados):
+  // una confirmación o un envío también se responde. Más los mails con pedidos todavía abiertos.
+  const ourLast = new Map<string, string>();
+  for (const m of recent) if (m.direction === "me" || m.direction === "team") ourLast.set(m.threadId, m.date);
+  const since = Date.now() - 21 * 86_400_000;
+  const mails = recent
+    .filter(
+      (m) =>
+        ids.has(m.messageId) ||
+        (m.direction === "client" && m.date > (ourLast.get(m.threadId) ?? "") && Date.parse(m.date) >= since && ids.size > 0),
+    )
+    .slice(-6);
+  return {
+    requests,
+    ticketIds: [...requests.map((r) => r.id), ...(replyAsks ? [reply.id] : [])],
+    mails,
+  };
+}
+
+/** Aviso de lo que se tildó solo porque el cliente lo confirmó por mail (se puede destildar en la cuenta). */
+function resolvedNotes(ai: { resolved?: { text: string; motivo: string }[] }): string[] {
+  return (ai.resolved ?? []).map((r) => `Tildado solo (lo confirmó el cliente): ${r.text.split(":")[0]} — ${r.motivo}. Si no corresponde, destildalo en la cuenta.`);
+}
+
+/** Texto del punto para la IA: la versión de mail de la IA de la minuta o el paso, recortado. */
+function stepText(client: ClientRecord, a: Actionable): string {
+  const ai = aiStep(client.id, a);
+  return (ai?.mail && !client.actionableEdits?.[a.id] ? ai.mail : formatStep(a.step)).slice(0, 300);
+}
+
+/** Extractos de mis mails a la cuenta (no resúmenes/minutas): referencia de estilo para la IA. */
+function styleSamples(client: ClientRecord): string[] {
+  return (client.activity?.recentMails ?? [])
+    .filter((m) => m.direction === "me" && !isRecapMail(m) && m.excerpt.trim().length >= 40)
+    .sort((a, b) => b.date.localeCompare(a.date))
+    .slice(0, 3)
+    .map((m) => m.excerpt.replace(/\s+/g, " ").trim().slice(0, 500));
+}
+
+/**
+ * Entrada de la IA para Responder (`reply`) o Pedir status (`reminder`) + su huella (`client.replyAI` /
+ * `client.reminderAI` valen mientras coincida) y el mapa ref → ticket para tildar lo que el cliente dio por hecho.
+ */
+export function clientMailRequest(
+  mode: ClientMailMode,
+  client: ClientRecord,
+  meeting: DiscoveredMeeting,
+  ownerEmail: string | null,
+  settings: WorkSettings,
+) {
+  const { requests, mails: pending } = pendingReplies(client);
+  const recent = [...(client.activity?.recentMails ?? [])].sort((a, b) => a.date.localeCompare(b.date));
+  const lastOwn = [...recent].reverse().find((m) => m.direction === "me");
+  // Recordatorio: lo que escribió el cliente desde mi último mail (para no pedir lo que ya avisaron).
+  const mails = mode === "reply" ? pending : recent.filter((m) => m.direction === "client" && (!lastOwn || m.date > lastOwn.date)).slice(-4);
+  const anchor = mode === "reply" ? (pending.at(-1) ?? null) : null;
+  const recipients =
+    mode === "reply"
+      ? replyRecipients(client, meeting, anchor, pending, ownerEmail, settings)
+      : interactionRecipients(client, meeting, latestInteraction(client, meeting), ownerEmail, settings);
+  const own = accountActionables(client).filter((a) => boardSide(client, a, settings) === "debo");
+  const openOwn = own.filter((a) => !a.done).slice(0, 15);
+  const openClient = reminderSteps(client, ownerEmail, settings).slice(0, 15);
+  const refs = new Map<string, string>([
+    ...openOwn.map((a, i) => [`A${i + 1}`, a.id] as [string, string]),
+    ...openClient.map((a, i) => [`C${i + 1}`, a.id] as [string, string]),
+  ]);
+  const input: ClientMailInput = {
+    mode,
+    clientName: companyName(client),
+    ownerName: settings.ownerAliases[0] ?? "PM",
+    today: fmtDate(new Date().toISOString()),
+    recipients: recipients.map((r) => (r.name && !r.name.includes("@") ? r.name.split(/\s+/)[0] : r.email)),
+    erp: client.profile?.erp || null,
+    mails: mails.map((m) => ({
+      from: m.fromName ?? m.from,
+      date: fmtShort(m.date),
+      text: m.excerpt.replace(/\s+\n/g, "\n").trim().slice(0, 1500),
+      ...(m.thirdParty && { thirdParty: true }),
+    })),
+    lastOwnMail: lastOwn ? lastOwn.excerpt.replace(/\s+/g, " ").trim().slice(0, 700) : null,
+    requests: requests.map((r) => r.title),
+    openOwn: openOwn.map((a, i) => ({ ref: `A${i + 1}`, text: stepText(client, a) })),
+    openClient: openClient.map((a, i) => ({ ref: `C${i + 1}`, text: stepText(client, a) })),
+    doneOwn: own.filter((a) => a.done).slice(0, 15).map((a) => stepText(client, a)),
+    styleSamples: styleSamples(client),
+    attention: Boolean(client.profile?.attention),
+  };
+  const worth = mode === "reply" ? requests.length > 0 || pending.length > 0 : openClient.length > 0;
+  return { input, key: clientMailKey(input), worth, recipients, anchor, mails: pending, refs };
+}
+
+/** Compatibilidad: entrada de la respuesta. */
+export const replyAIRequest = (client: ClientRecord, meeting: DiscoveredMeeting, ownerEmail: string | null, settings: WorkSettings) =>
+  clientMailRequest("reply", client, meeting, ownerEmail, settings);
+
+/** A quién responder: quienes escribieron (lado cliente); si no hay mails a mano, los de la última interacción. */
+function replyRecipients(
+  client: ClientRecord,
+  meeting: DiscoveredMeeting,
+  anchor: MailRef | null,
+  mails: MailRef[],
+  ownerEmail: string | null,
+  settings: WorkSettings,
+): { email: string; name: string | null }[] {
+  if (!anchor) return interactionRecipients(client, meeting, latestInteraction(client, meeting), ownerEmail, settings);
+  const people = new Map(computeParticipants(client, ownerEmail).map((p) => [p.email, p.name]));
+  const seen = new Map<string, string | null>();
+  for (const m of [...mails].reverse()) {
+    const email = m.from.toLowerCase();
+    if (!seen.has(email)) seen.set(email, people.get(email) ?? m.fromName ?? null);
+  }
+  return [...seen].map(([email, name]) => ({ email, name }));
+}
+
+/**
+ * Respuesta a lo que el cliente espera (botón "Responder" del Pulso de cuentas): todos sus mails con consultas o
+ * pedidos sin contestar, en un solo mail, en el hilo del más reciente (editable en el composer) y con Cc a quienes
+ * participaron de los otros hilos. El cuerpo lo redacta la IA (`client.replyAI`, modelo barato) si está vigente; si
+ * no, por reglas con la lista de consultas para completar.
+ */
+export function buildReply(
+  client: ClientRecord,
+  meeting: DiscoveredMeeting,
+  ownerEmail: string | null,
+  settings: WorkSettings,
+): FollowupDraft {
+  const now = new Date();
+  const { key, recipients, anchor, mails } = replyAIRequest(client, meeting, ownerEmail, settings);
+  const { requests, ticketIds } = pendingReplies(client);
+  const one = recipients.length === 1;
+  const ai = client.replyAI?.key === key ? client.replyAI : null;
+  const reviewNotes: string[] = [];
+  let body: string[];
+  if (ai) {
+    body = ai.cuerpo.trim().split("\n");
+    reviewNotes.push(`Redactado con IA (${ai.model}) en tu tono: revisá cada respuesta antes de enviar.`, ...resolvedNotes(ai), ...ai.revision);
+  } else if (requests.length) {
+    body = [
+      `Gracias por ${one ? "tu" : "su"} mensaje. Sobre lo que ${one ? "consultas" : "consultan"}:`,
+      "",
+      ...requests.map((r) => `• ${r.title}`),
+      "",
+      `Lo estoy revisando y ${one ? "te" : "les"} confirmo a la brevedad.`,
+    ];
+    reviewNotes.push("Respuesta por reglas: completá cada punto o usá Actualizar para que la IA la redacte.");
+  } else {
+    body = [`Gracias por ${one ? "tu" : "su"} mensaje.`];
+    reviewNotes.push("No hay consultas detectadas sin responder: revisá si hace falta este mail.");
+  }
+  if (mails.length > 1) reviewNotes.push(`Responde ${mails.length} mails en uno solo; elegí el hilo en "Dónde" si preferís otro.`);
+  const others = mails.filter((m) => anchor && m.threadId !== anchor.threadId);
+  if (others.length) reviewNotes.push("Hay consultas en otros hilos: sus participantes van en Cc.");
+  const thread = anchor ? null : pickFollowupThread(client);
+  if (thread) reviewNotes.unshift(...thread.notes);
+  const baseCc = anchor ? replyAllCc(client, anchor.threadId, ownerEmail, recipients) : newMailCc(client, ownerEmail, recipients);
+  const extra = others.flatMap((m) => [m.from, ...(m.recipients ?? [])].map((e) => e.toLowerCase()));
+
+  return {
+    meetingId: meeting.id,
+    subject: anchor
+      ? `Re: ${cleanSubject(anchor.subject)}`
+      : thread?.subject
+        ? `Re: ${cleanThreadSubject(thread.subject)}`
+        : `Consultas – ${companyName(client)}`,
+    body: [greet(recipients, client), "", ...body, "", "Saludos"].join("\n"),
+    to: recipients.map((r) => r.email),
+    cc: withStrayCc(baseCc, extra, ownerEmail, recipients),
+    updatedAt: now.toISOString(),
+    threadId: anchor ? anchor.threadId : thread!.threadId,
+    threadReason: anchor ? "anchor" : thread!.reason,
+    reviewNotes,
+    replyTicketIds: ticketIds,
+    ...(ai && { ai: true }),
+  };
+}
+
+/** Respuesta sugerida (`buildReply`) + cuántas consultas/pedidos responde. */
+export function getReplyDraft(client: ClientRecord, meeting: DiscoveredMeeting, ownerEmail: string | null, settings: WorkSettings) {
+  return {
+    kind: "reply" as const,
+    count: pendingReplies(client).requests.length,
+    ...getDraft("reply", client, meeting, ownerEmail, settings),
+  };
+}
+
 /**
  * Borrador vigente según el tipo. Un envío previo cierra ese mensaje (se genera uno nuevo). Una edición
  * guardada se conserva hasta que cambien los accionables o llegue un mail; ahí se regenera con el
@@ -856,7 +1061,9 @@ export function getDraft(
   ticketId?: string | null,
 ): { draft: FollowupDraft; generated: FollowupDraft; regenerated: boolean; lastSentAt: string | null } {
   const generated =
-    kind === "status"
+    kind === "reply"
+      ? buildReply(client, meeting, ownerEmail, settings)
+      : kind === "status"
       ? buildStatusUpdate(client, meeting, ownerEmail, settings)
       : kind === "reminder"
         ? buildReminder(client, meeting, ownerEmail, settings, ticketId)

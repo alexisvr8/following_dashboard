@@ -2,7 +2,7 @@
 
 import { useState } from "react";
 import { useRouter } from "next/navigation";
-import { Check, ChevronDown, Loader2, Settings2 } from "lucide-react";
+import { Check, ChevronDown, Loader2, Plus, Settings2, X } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Label } from "@/components/ui/label";
@@ -23,8 +23,10 @@ type ProfileValues = {
   ownerEmail: string;
   notes: string;
   contactNames: Record<string, string>;
+  /** Dominios o mails de partners / devs externos / otras razones sociales que también son de esta cuenta. */
+  linkedContacts: { value: string; shared: boolean }[];
 };
-type TextField = Exclude<keyof ProfileValues, "contactNames">;
+type TextField = Exclude<keyof ProfileValues, "contactNames" | "linkedContacts">;
 
 
 // Encabezado de la cuenta con el perfil desplegable: nombre en correos, cómo saludar, ERP, owner y notas.
@@ -54,6 +56,18 @@ export function AccountProfileForm({
   const set = (k: TextField) => (e: React.ChangeEvent<HTMLInputElement | HTMLTextAreaElement>) => {
     setValues((v) => ({ ...v, [k]: e.target.value }));
     setState("idle");
+  };
+
+  const [newLink, setNewLink] = useState("");
+  const setLinks = (fn: (l: ProfileValues["linkedContacts"]) => ProfileValues["linkedContacts"]) => {
+    setValues((v) => ({ ...v, linkedContacts: fn(v.linkedContacts) }));
+    setState("idle");
+  };
+  const addLink = () => {
+    const value = newLink.trim().toLowerCase().replace(/^@/, "");
+    if (!/^([^\s@]+@)?[a-z0-9-]+(\.[a-z0-9-]+)+$/.test(value)) return;
+    setLinks((l) => (l.some((x) => x.value === value) ? l : [...l, { value, shared: false }]));
+    setNewLink("");
   };
 
   const setContact = (email: string, name: string) => {
@@ -145,6 +159,69 @@ export function AccountProfileForm({
                   </div>
                 </section>
               )}
+
+              <section className="space-y-3">
+                <div>
+                  <h4 className="text-xs font-medium">Dominios vinculados</h4>
+                  <p className="text-[11px] text-muted-foreground">
+                    Partners, desarrolladores externos u otras razones sociales del cliente. <b>Exclusivo</b>: todo mail de ese
+                    dominio es de esta cuenta. <b>Compartido</b> (trabaja con varias cuentas): solo cuenta en hilos donde está el
+                    cliente. Un tercero que escribe en un hilo del cliente ya entra solo, sin cargarlo.
+                  </p>
+                </div>
+                {values.linkedContacts.length > 0 && (
+                  <ul className="flex flex-col gap-1.5">
+                    {values.linkedContacts.map((l) => (
+                      <li key={l.value} className="flex items-center gap-2 rounded-md border border-border px-2 py-1">
+                        <span className="min-w-0 flex-1 truncate font-mono text-xs">{l.value.includes("@") ? l.value : `@${l.value}`}</span>
+                        <div className="flex rounded-md border border-input bg-surface p-0.5 text-[11px]" role="group" aria-label={`Uso de ${l.value}`}>
+                          {([false, true] as const).map((shared) => (
+                            <button
+                              key={String(shared)}
+                              type="button"
+                              aria-pressed={l.shared === shared}
+                              onClick={() => setLinks((list) => list.map((x) => (x.value === l.value ? { ...x, shared } : x)))}
+                              className={cn(
+                                "rounded px-1.5 py-0.5",
+                                l.shared === shared ? "bg-accent font-medium text-foreground" : "text-muted-foreground hover:text-foreground",
+                              )}
+                            >
+                              {shared ? "Compartido" : "Exclusivo"}
+                            </button>
+                          ))}
+                        </div>
+                        <Button
+                          type="button"
+                          size="icon-xs"
+                          variant="ghost"
+                          aria-label={`Quitar ${l.value}`}
+                          onClick={() => setLinks((list) => list.filter((x) => x.value !== l.value))}
+                        >
+                          <X />
+                        </Button>
+                      </li>
+                    ))}
+                  </ul>
+                )}
+                <div className="flex gap-2">
+                  <input
+                    className={inputClass}
+                    value={newLink}
+                    onChange={(e) => setNewLink(e.target.value)}
+                    onKeyDown={(e) => {
+                      if (e.key === "Enter") {
+                        e.preventDefault();
+                        addLink();
+                      }
+                    }}
+                    placeholder="externos.partner.com.ar o persona@partner.com"
+                    aria-label="Agregar dominio o mail vinculado"
+                  />
+                  <Button type="button" variant="outline" onClick={addLink} disabled={!newLink.trim()}>
+                    <Plus /> Agregar
+                  </Button>
+                </div>
+              </section>
 
               <Field label="Notas" htmlFor="notes">
                 <textarea

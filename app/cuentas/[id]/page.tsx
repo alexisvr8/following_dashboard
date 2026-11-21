@@ -76,6 +76,7 @@ function Workspace({
         ownerEmail: client.profile?.ownerEmail ?? "",
         notes: client.profile?.notes ?? "",
         contactNames: client.profile?.contactNames ?? {},
+        linkedContacts: client.profile?.linkedContacts ?? [],
       }}
       defaultOwnerEmail={file.ownerEmail ?? null}
       contacts={v.contacts}
@@ -132,6 +133,8 @@ function Workspace({
               ? `El cliente espera respuesta hace ${alert.businessDays} día(s) hábil(es).`
               : alert.kind === "client_request"
                 ? `Pedidos del cliente por mail sin resolver hace ${alert.businessDays} día(s) hábil(es).`
+                : alert.kind === "own_overdue"
+                ? `Tienes ${alert.overdueOwn} accionable(s) vencido(s).`
                 : alert.kind === "awaiting_client"
                 ? `Sin respuesta del cliente hace ${alert.businessDays} día(s) hábil(es): conviene un seguimiento.`
                 : `Sin avances comunicados hace ${alert.businessDays} día(s) hábil(es).`}{" "}
