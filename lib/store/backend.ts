@@ -23,7 +23,8 @@ export type StateKey =
   | "weekly_ai"
   | "ai_usage"
   | "board_order"
-  | "scheduler_lock";
+  | "scheduler_lock"
+  | "unassigned_mails";
 
 /** Archivo local equivalente a cada clave (modo `file`). */
 const STATE_FILES: Partial<Record<StateKey, string>> = {
@@ -35,6 +36,7 @@ const STATE_FILES: Partial<Record<StateKey, string>> = {
   ai_usage: "ai-usage.json",
   board_order: "board-order.json",
   scheduler_lock: "scheduler-lock.json",
+  unassigned_mails: "unassigned-mails.json",
 };
 
 /** Lee una clave de `app_state` (o su archivo). `null` si no existe. */

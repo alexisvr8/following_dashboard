@@ -112,7 +112,15 @@ se vuelve menú desplegable `MobileNav`). Sin sidebar. 5 secciones. Navegación 
 - `/clientes`: validación de clientes descubiertos en mails de Gemini Notes
   (`components/clientes/{ClientsReview,ClientCandidateCard}.tsx`): botón de escaneo (60 días),
   tabs Por validar/Asignados/No asignados/Ignorados, nombre editable, y lista de reuniones sin
-  cliente detectado.
+  cliente detectado. Pestaña **"Mails sin cuenta"** (`?tab=mails`, `components/clientes/UnassignedMails.tsx`; capa C):
+  `scanUnassignedMails` (`lib/integrations/unassigned-mail.ts`) busca externos dirigidos a mí (Para/Cc) de los últimos **15 días**
+  que no son de ninguna cuenta de la app (cualquier estado), sin masivos ni notificaciones de herramientas (`TOOL_SENDER`); entran solo
+  si el remitente es recurrente, le respondí o hay pista. Sugerencias por reglas (`suggestFor`): lo nombra (3), dominio compartido
+  vinculado o cita un mail del cliente (2), habla de un accionable abierto (1). Acciones (`/api/unassigned-mails`): Asignar → el hilo
+  queda en `profile.linkedThreads` (la sync y el análisis lo leen siempre como de la cuenta, `consider(..., forced)`; opcional vincular
+  remitente/dominio como Exclusivo) y se sincroniza al momento; "No es de ninguna cuenta" (+ ignorar remitente/dominio). Estado en
+  `app_state.unassigned_mails` (`lib/store/unassigned-mail-store.ts`). Corre en `runSync` cada 30 min (`UNASSIGNED_SCAN_EVERY_MS`) y a
+  mano. En el Dashboard, línea "N mails sin cuenta · Revisar" en el Pulso.
 - `/conexiones`: estado en vivo de las 5 integraciones (`IntegrationsGrid`/
   `IntegrationStatusCard`, reusados del Dashboard original), llamando directamente a los
   handlers `GET` de `/api/integrations/*` (sin fetch HTTP, in-process). Debajo, `AIUsageCard`

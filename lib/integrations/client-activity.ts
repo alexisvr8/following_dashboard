@@ -121,7 +121,7 @@ async function syncOne(
     const clientThreads = new Set<string>();
     const seen = new Set<string>();
     /** Procesa un mensaje; `inClientThread` = viene de leer entero un hilo donde está el cliente. */
-    const consider = (msg: gmail_v1.Schema$Message, inClientThread: boolean) => {
+    const consider = (msg: gmail_v1.Schema$Message, inClientThread: boolean, forced = false) => {
       if (!msg.id || seen.has(msg.id)) return;
       seen.add(msg.id);
       if (msg.labelIds?.includes("DRAFT")) return; // un borrador no es un mail: nadie lo recibió
@@ -136,7 +136,7 @@ async function syncOne(
       let thirdParty = false;
       if (dir === "client" && !matches(from.email)) {
         const inThread = inClientThread || (!!msg.threadId && clientThreads.has(msg.threadId));
-        if (!(withClient || inThread) || addrs.some((a) => !matches(a) && otherAccounts(a))) return;
+        if (!forced && (!(withClient || inThread) || addrs.some((a) => !matches(a) && otherAccounts(a)))) return;
         thirdParty = true;
       }
       const kind = classifyMail({
@@ -176,6 +176,17 @@ async function syncOne(
       if (recentMails.length >= KEEP_MAILS && hasClient) break;
       if (recentMails.length >= KEEP_MAILS * 2) break;
       consider((await withRetry(() => gmail.users.messages.get({ userId: "me", id: id!, format: "full" }))).data, false);
+    }
+    // Hilos asignados a mano desde "Mails sin cuenta": siempre son de la cuenta (los 5 más recientes).
+    const linkedThreads = [...(client.profile?.linkedThreads ?? [])].sort((a, b) => b.at.localeCompare(a.at)).slice(0, 5);
+    for (const lt of linkedThreads) {
+      try {
+        const th = (await withRetry(() => gmail.users.threads.get({ userId: "me", id: lt.threadId, format: "full" }))).data;
+        clientThreads.add(lt.threadId);
+        for (const msg of th.messages ?? []) consider(msg, true, true);
+      } catch {
+        // Hilo borrado o inaccesible: se ignora (queda en el perfil por si vuelve).
+      }
     }
     // Hilos del cliente con terceros (alguien que no es del cliente ni nuestro): se leen enteros para sumar los
     // mensajes que no copian al cliente (p. ej. el partner que escribe antes de sumarlo). Máx. 3 por cuenta.

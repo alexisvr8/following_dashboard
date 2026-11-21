@@ -356,6 +356,11 @@ export interface ClientProfile {
    * compartido = trabaja con varias cuentas: solo cuenta en hilos donde está el cliente.
    */
   linkedContacts?: LinkedContact[];
+  /**
+   * Hilos asignados a mano desde "Mails sin cuenta": la sync los lee siempre como de esta cuenta (aunque no aparezca
+   * nadie del cliente), así cuentan como interacción, sus pedidos van a "Por responder" y entran en la trazabilidad.
+   */
+  linkedThreads?: { threadId: string; subject: string; at: string }[];
   /** Cierre de la cuenta (pase a Soporte, `status: "closed"`): cuándo, a quién y nota. Se borra al reabrir. */
   closure?: { at: string; handedTo: string; note?: string };
 }
@@ -669,6 +674,10 @@ export async function updateClientProfile(
       } else if (k === "attention") {
         if (v === true) profile.attention = true;
         else delete profile.attention;
+      } else if (k === "linkedThreads") {
+        const list = (v as ClientProfile["linkedThreads"] | null) ?? [];
+        if (list.length) profile.linkedThreads = list.slice(-30);
+        else delete profile.linkedThreads;
       } else if (k === "linkedContacts") {
         const list = (v as LinkedContact[] | null) ?? [];
         if (list.length) profile.linkedContacts = list;

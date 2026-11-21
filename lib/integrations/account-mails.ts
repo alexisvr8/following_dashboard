@@ -52,14 +52,23 @@ export async function collectAccountThreads(
     pageToken = res.data.nextPageToken ?? undefined;
   } while (pageToken && seen < MAX_MESSAGES && threadIds.length < MAX_THREADS);
 
+  // Hilos asignados a mano desde "Mails sin cuenta": también son de la cuenta.
+  const linked = new Set((client.profile?.linkedThreads ?? []).map((t) => t.threadId));
+  for (const id of linked) if (!threadIds.includes(id)) threadIds.push(id);
+
   // 2) Cada hilo completo, solo los mensajes reales del período.
   const threads: (AnalysisThread & { last: string })[] = [];
   for (const id of threadIds.slice(0, MAX_THREADS)) {
-    const th = (await withRetry(() => gmail.users.threads.get({ userId: "me", id, format: "full" }))).data;
+    let th;
+    try {
+      th = (await withRetry(() => gmail.users.threads.get({ userId: "me", id, format: "full" }))).data;
+    } catch {
+      continue; // hilo vinculado que ya no existe
+    }
     const messages: AnalysisThread["messages"] = [];
     let subject = "";
-    // Un tercero (partner, dev externo) entra solo en hilos donde participa el cliente, y como "tercero".
-    const withClient = (th.messages ?? []).some((m) => {
+    // Un tercero (partner, dev externo) entra solo en hilos donde participa el cliente (o asignados), como "tercero".
+    const withClient = linked.has(id) || (th.messages ?? []).some((m) => {
       const hh = hdr(m);
       return [parseFrom(hh["from"] ?? "").email, ...parseAddresses(`${hh["to"] ?? ""},${hh["cc"] ?? ""}`)].some(matches);
     });

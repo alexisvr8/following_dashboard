@@ -3,6 +3,8 @@ import { generateMeetingAI } from "@/lib/integrations/meeting-ai";
 import { generateStatusMails } from "@/lib/integrations/status-ai";
 import { createThreadDraft, draftFate } from "@/lib/integrations/gmail";
 import { syncClientsActivity } from "@/lib/integrations/client-activity";
+import { scanUnassignedMails, UNASSIGNED_SCAN_EVERY_MS } from "@/lib/integrations/unassigned-mail";
+import { getUnassignedMails } from "@/lib/store/unassigned-mail-store";
 import {
   followupKey,
   getClientsFile,
@@ -105,6 +107,12 @@ async function doSync({ drafts: withDrafts, trigger }: SyncOptions): Promise<Syn
     await setClientActivity(ok);
     status.synced = ok.length;
     status.failed = results.length - ok.length;
+
+    // 2b) Mails sin cuenta (capa C): externos dirigidos a mí que nadie tomó. Cada 30 min (muchas llamadas a Gmail).
+    const inbox = await getUnassignedMails().catch(() => null);
+    if (inbox && (!inbox.scannedAt || Date.now() - Date.parse(inbox.scannedAt) >= UNASSIGNED_SCAN_EVERY_MS)) {
+      await scanUnassignedMails(await getClientsFile()).catch(() => undefined);
+    }
 
     // 3) Minuta en borrador apenas llega la nota de Gemini (y ya se sincronizaron hilos y destinatarios).
     const file = await getClientsFile();
