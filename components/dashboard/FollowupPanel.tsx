@@ -1,11 +1,12 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import Link from "next/link";
-import { ArrowRight, Loader2 } from "lucide-react";
+import { useRouter } from "next/navigation";
+import { ArrowRight, Loader2, Sparkles } from "lucide-react";
 import { Dialog, DialogContent, DialogDescription, DialogTitle } from "@/components/ui/dialog";
 import { FollowupComposer } from "@/components/cuentas/FollowupComposer";
-import { MailKindProvider } from "@/components/cuentas/MailKindSwitch";
+import { MailKindProvider, type MailKindChoice } from "@/components/cuentas/MailKindSwitch";
 import type { FollowupDraft, FollowupKind, MailRef, ThreadRef } from "@/lib/store/clients-store";
 import type { ThreadMessage } from "@/lib/integrations/client-activity";
 import type { AccountAlert } from "@/lib/utils/followup-alerts";
@@ -18,6 +19,10 @@ export type FollowupPanelData = {
   draft: PanelDraft;
   /** Alternativa elegible: recordatorio corto pidiendo status de lo que está en Seguimiento (me deben). */
   reminder?: PanelDraft & { count: number };
+  /** Respuesta a lo que el cliente espera (Pulso de cuentas): sus consultas/pedidos sin contestar, en un solo mail. */
+  reply?: PanelDraft & { count: number };
+  /** Mail más reciente que se responde (el hilo que se muestra a la izquierda en "Responder"). */
+  replyMail?: MailRef | null;
   threads: ThreadRef[];
   lastMail: MailRef | null;
 };
@@ -34,16 +39,44 @@ export function FollowupPanel({
   data,
   open,
   onOpenChange,
+  initialChoice = "general",
 }: {
   alert: Pick<AccountAlert, "clientId" | "name"> & Partial<Pick<AccountAlert, "lastMovementLabel" | "businessDays">>;
   data: FollowupPanelData | undefined;
   open: boolean;
   onOpenChange: (open: boolean) => void;
+  /** Mail con el que abre (Pulso de cuentas: Responder / Enviar status / Pedir status). */
+  initialChoice?: MailKindChoice;
 }) {
-  const [choice, setChoice] = useState<"general" | "reminder">("general");
-  const current = choice === "reminder" && data?.reminder ? data.reminder : data?.draft;
+  const router = useRouter();
+  const [choice, setChoice] = useState<MailKindChoice>(initialChoice);
+  const current = choice === "reminder" && data?.reminder ? data.reminder : choice === "reply" && data?.reply ? data.reply : data?.draft;
   const kind: FollowupKind = current?.kind ?? "status";
   const single = kind === "reminder" && !!current?.draft.ticketId;
+  // Responder y Pedir status (de toda la cuenta): al abrirlos, la IA (modelo barato) los redacta en tu tono si
+  // todavía no están (una vez por apertura y por tipo).
+  const [drafting, setDrafting] = useState<"idle" | "busy" | "failed">("idle");
+  const asked = useRef(new Set<string>());
+  const aiTarget = open && !single && (kind === "reply" || kind === "reminder") ? current : undefined;
+  const needsAI = !!aiTarget && (aiTarget as { count?: number }).count !== 0 && !aiTarget.draft.ai && !aiTarget.lastSentAt;
+  const meetingId = aiTarget?.draft.meetingId;
+  useEffect(() => {
+    if (!needsAI || !meetingId || asked.current.has(kind)) return;
+    asked.current.add(kind);
+    setDrafting("busy");
+    fetch(`/api/clients/${encodeURIComponent(alert.clientId)}/followup`, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ kind, meetingId }),
+    })
+      .then(async (res) => {
+        const body = res.ok ? ((await res.json()) as { ai?: string }) : null;
+        setDrafting(body?.ai === "generated" || body?.ai === "cached" ? "idle" : "failed");
+        router.refresh();
+      })
+      .catch(() => setDrafting("failed"));
+  }, [needsAI, meetingId, kind, alert.clientId, router]);
+  const threadMail = choice === "reply" && data?.replyMail ? data.replyMail : (data?.lastMail ?? null);
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent className="flex max-h-[88dvh] w-[min(78rem,calc(100%-2rem))] max-w-none flex-col gap-0 p-0 sm:max-w-none">
@@ -52,9 +85,9 @@ export function FollowupPanel({
           <DialogDescription className="mt-1 text-xs">
             {alert.lastMovementLabel != null && alert.businessDays != null && (
               <>
-                Último movimiento: {alert.lastMovementLabel} ·{" "}
+                Último contacto: {alert.lastMovementLabel} ·{" "}
                 <span className="tabular">
-                  {alert.businessDays} día{alert.businessDays === 1 ? "" : "s"} háb.
+                  hace {alert.businessDays} día{alert.businessDays === 1 ? "" : "s"} háb.
                 </span>{" "}
                 ·{" "}
               </>
@@ -70,31 +103,47 @@ export function FollowupPanel({
         </div>
         <div className="grid min-h-0 flex-1 overflow-y-auto md:grid-cols-[minmax(0,1fr)_minmax(0,1.45fr)] md:overflow-hidden">
           <div className="min-w-0 min-h-0 overflow-x-hidden border-border p-4 md:overflow-y-auto md:border-r [scrollbar-width:thin]">
-            {open && <ThreadView clientId={alert.clientId} mail={data?.lastMail ?? null} />}
+            {open && <ThreadView key={threadMail?.threadId ?? "none"} clientId={alert.clientId} mail={threadMail} />}
           </div>
           <div className="min-h-0 p-4 md:overflow-y-auto [scrollbar-width:thin]">
+            {(kind === "reply" || kind === "reminder") && !single && drafting !== "idle" && (
+              <p className="mb-3 flex items-center gap-2 rounded-md border border-border-strong bg-surface px-3 py-1.5 text-xs text-muted-foreground">
+                {drafting === "busy" ? (
+                  <>
+                    <Loader2 className="size-3.5 animate-spin" /> Redactando {kind === "reply" ? "la respuesta" : "el pedido de status"} en tu tono…
+                  </>
+                ) : (
+                  <>
+                    <Sparkles className="size-3.5" /> No se pudo redactar con IA: quedó la versión por reglas (Actualizar reintenta).
+                  </>
+                )}
+              </p>
+            )}
             {data && current ? (
               <MailKindProvider
-                enabled={!!data.reminder && !single}
+                enabled={(!!data.reminder || !!data.reply) && !single}
                 value={{
                   choice,
                   setChoice,
                   generalLabel: data.draft.kind === "meeting" ? "Post-reunión" : "Seguimiento general",
                   reminderCount: data.reminder?.count ?? 0,
+                  ...(data.reply && { replyCount: data.reply.count }),
                 }}
               >
               <FollowupComposer
-                key={`${kind}-${current.draft.ticketId ?? current.draft.meetingId}`}
+                key={`${kind}-${current.draft.ticketId ?? current.draft.meetingId}-${current.draft.ai ? "ai" : "rules"}`}
                 kind={kind}
                 showTitle
                 className="border-0 bg-transparent py-0 lg:h-auto [--card-spacing:0px]"
                 bodyMaxClass="max-h-[calc(88dvh-24rem)]"
                 clientId={alert.clientId}
                 title={
-                  kind === "meeting" ? "Mail post-reunión" : kind === "reminder" ? (single ? "Pedir status de este punto" : "Pedir status") : "Respuesta / actualización"
+                  kind === "reply" ? "Responder al cliente" : kind === "meeting" ? "Mail post-reunión" : kind === "reminder" ? (single ? "Pedir status de este punto" : "Pedir status") : "Respuesta / actualización"
                 }
                 hint={
-                  kind === "meeting"
+                  kind === "reply"
+                    ? "Responde sus consultas y pedidos sin contestar en un solo mail; elegí el hilo en Dónde para centralizarlo. Al enviarlo, quedan como respondidos."
+                    : kind === "meeting"
                     ? `Minuta de “${data.meetingTitle}”: puntos importantes, lo conversado y los accionables de cada lado.`
                     : kind === "reminder"
                     ? single

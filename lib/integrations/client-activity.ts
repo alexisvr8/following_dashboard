@@ -65,15 +65,23 @@ export function clientTargets(client: ClientRecord, ownerEmail: string | null, s
     .filter((p) => p.role === "referent" || (p.role === "external" && !shared.has(p.email)))
     .map((p) => p.email);
   const domain = FREEMAIL.test(client.domain) ? null : client.domain;
+  // Vinculados a mano (`profile.linkedContacts`): los exclusivos son de la cuenta (se buscan en Gmail); los
+  // compartidos (partner con varias cuentas) no se buscan: solo se aceptan como tercero en hilos donde está el cliente.
+  const linked = (client.profile?.linkedContacts ?? []).filter((l) => !l.shared).map((l) => l.value.trim().toLowerCase().replace(/^@/, ""));
+  const linkedDomains = linked.filter((v) => !v.includes("@"));
   // Cliente de dominio propio: dominio + referentes (incl. overrides de otro dominio).
   // Cliente freemail (id = email): sus contactos directos.
   const emails = [
-    ...new Set([...referents, ...(domain ? [] : client.contactEmails.map((e) => e.toLowerCase()))]),
+    ...new Set([
+      ...referents,
+      ...linked.filter((v) => v.includes("@")),
+      ...(domain ? [] : client.contactEmails.map((e) => e.toLowerCase())),
+    ]),
   ];
   const extra = domain ? emails.filter((e) => !e.endsWith(`@${domain}`)) : emails;
-  const query = [...(domain ? [`@${domain}`] : []), ...extra];
+  const query = [...(domain ? [`@${domain}`] : []), ...linkedDomains.map((d) => `@${d}`), ...extra];
   const matches = (email: string) =>
-    (domain != null && email.endsWith(`@${domain}`)) || emails.includes(email);
+    (domain != null && email.endsWith(`@${domain}`)) || linkedDomains.some((d) => email.endsWith(`@${d}`)) || emails.includes(email);
   return { query, matches };
 }
 
@@ -83,6 +91,8 @@ async function syncOne(
   ownerEmail: string | null,
   events: Awaited<ReturnType<typeof listEventsBetween>>,
   shared: Set<string>,
+  /** Otras cuentas asignadas: un mail de un tercero que también las involucra no se asigna a esta (ambiguo). */
+  otherAccounts: (email: string) => boolean = () => false,
 ): Promise<{ activity: ClientActivity; autoDoneTicketIds: string[] }> {
   const { query, matches } = clientTargets(client, ownerEmail, shared);
   const or = query.join(" OR ");
@@ -107,17 +117,28 @@ async function syncOne(
         maxResults: MAX_MAILS_CHECK,
       }),
     );
-    for (const { id } of list.data.messages ?? []) {
-      const hasClient = recentMails.some((m) => m.direction === "client");
-      if (recentMails.length >= KEEP_MAILS && hasClient) break;
-      if (recentMails.length >= KEEP_MAILS * 2) break;
-      const msg = (await withRetry(() => gmail.users.messages.get({ userId: "me", id: id!, format: "full" }))).data;
-      if (msg.labelIds?.includes("DRAFT")) continue; // un borrador no es un mail: nadie lo recibió
+    // Hilos donde ya apareció el cliente: un tercero que escribe ahí (aunque no lo copie) también es de la cuenta.
+    const clientThreads = new Set<string>();
+    const seen = new Set<string>();
+    /** Procesa un mensaje; `inClientThread` = viene de leer entero un hilo donde está el cliente. */
+    const consider = (msg: gmail_v1.Schema$Message, inClientThread: boolean) => {
+      if (!msg.id || seen.has(msg.id)) return;
+      seen.add(msg.id);
+      if (msg.labelIds?.includes("DRAFT")) return; // un borrador no es un mail: nadie lo recibió
       const h = hdr(msg);
       const from = parseFrom(h["from"] ?? "");
       const dir = direction(from.email);
-      // Del lado cliente solo cuentan remitentes reconocidos (evita terceros que nos copian).
-      if (dir === "client" && !matches(from.email)) continue;
+      const addrs = [from.email, ...parseAddresses(`${h["to"] ?? ""},${h["cc"] ?? ""}`)];
+      const withClient = addrs.some(matches);
+      if (withClient && msg.threadId) clientThreads.add(msg.threadId);
+      // Del lado cliente, un remitente no reconocido (partner, dev externo, proveedor del ERP) solo cuenta si el
+      // cliente está en el mail o en el hilo y no aparece otra cuenta asignada (sería ambiguo).
+      let thirdParty = false;
+      if (dir === "client" && !matches(from.email)) {
+        const inThread = inClientThread || (!!msg.threadId && clientThreads.has(msg.threadId));
+        if (!(withClient || inThread) || addrs.some((a) => !matches(a) && otherAccounts(a))) return;
+        thirdParty = true;
+      }
       const kind = classifyMail({
         subject: h["subject"] ?? "",
         from: from.email,
@@ -126,10 +147,10 @@ async function syncOne(
       });
       if (kind !== "message") {
         skipped[kind]++;
-        continue;
+        return;
       }
       // Pasado el cupo solo seguimos buscando el último mail del cliente.
-      if (recentMails.length >= KEEP_MAILS && dir !== "client") continue;
+      if (recentMails.length >= KEEP_MAILS && dir !== "client") return;
       const { text, html } = extractBody(msg.payload ?? undefined);
       const own = stripQuoted(text ? unwrapPlain(text) : stripHtml(html));
       const subject = h["subject"] ?? "(sin asunto)";
@@ -145,9 +166,30 @@ async function syncOne(
         excerpt: (own || msg.snippet || "").slice(0, 1200),
         relatedTicketIds: related,
         direction: dir,
+        ...(thirdParty && { thirdParty: true }),
         ...(dir === "client" ? { requests: extractRequests(own) } : {}),
         ...(dir === "me" ? { commitments: extractCommitments(own) } : {}),
       });
+    };
+    for (const { id } of list.data.messages ?? []) {
+      const hasClient = recentMails.some((m) => m.direction === "client");
+      if (recentMails.length >= KEEP_MAILS && hasClient) break;
+      if (recentMails.length >= KEEP_MAILS * 2) break;
+      consider((await withRetry(() => gmail.users.messages.get({ userId: "me", id: id!, format: "full" }))).data, false);
+    }
+    // Hilos del cliente con terceros (alguien que no es del cliente ni nuestro): se leen enteros para sumar los
+    // mensajes que no copian al cliente (p. ej. el partner que escribe antes de sumarlo). Máx. 3 por cuenta.
+    const outsider = (a: string) => !matches(a) && direction(a) === "client";
+    const mixed = [
+      ...new Set(
+        recentMails
+          .filter((m) => clientThreads.has(m.threadId) && [m.from, ...(m.recipients ?? [])].some(outsider))
+          .map((m) => m.threadId),
+      ),
+    ].slice(0, 3);
+    for (const threadId of mixed) {
+      const th = (await withRetry(() => gmail.users.threads.get({ userId: "me", id: threadId, format: "full" }))).data;
+      for (const msg of th.messages ?? []) consider(msg, true);
     }
     recentMails.sort((a, b) => b.date.localeCompare(a.date));
 
@@ -186,11 +228,14 @@ async function syncOne(
           "message"
         );
       });
-      // Solo hilos donde participa un referente o yo (descarta reportes automáticos de terceros).
-      const involved = real.some((m) => {
-        const from = parseFrom(hdr(m)["from"] ?? "").email;
-        return matches(from) || from === me;
-      });
+      // Solo hilos donde participa un referente o yo (descarta reportes automáticos de terceros), o ya asociados a
+      // la cuenta por un mail de un tercero en un hilo del cliente.
+      const involved =
+        recentMails.some((m) => m.threadId === t.id) ||
+        real.some((m) => {
+          const from = parseFrom(hdr(m)["from"] ?? "").email;
+          return matches(from) || from === me;
+        });
       if (!real.length || !involved) continue;
       const last = real.at(-1)!;
       threads.push({
@@ -308,10 +353,16 @@ export async function syncClientsActivity(
   const gmail = google.gmail({ version: "v1", auth });
   const events = await listEventsBetween(new Date(Date.now() - 90 * 86_400_000), new Date());
   const shared = sharedExternals(allClients);
+  // Para no asignar a una cuenta el mail de un tercero donde también aparece otra cuenta asignada (sería ambiguo).
+  const targets = allClients
+    .filter((c) => c.status === "assigned")
+    .map((c) => ({ id: c.id, matches: clientTargets(c, ownerEmail, shared).matches }));
 
   return mapLimit(clients, CONCURRENCY, async (client) => {
     try {
-      return { id: client.id, ...(await syncOne(gmail, client, ownerEmail, events, shared)) };
+      const others = targets.filter((t) => t.id !== client.id);
+      const otherAccounts = (email: string) => others.some((t) => t.matches(email));
+      return { id: client.id, ...(await syncOne(gmail, client, ownerEmail, events, shared, otherAccounts)) };
     } catch (error) {
       // Conserva el snapshot previo si falla (rate limit, etc.).
       return {

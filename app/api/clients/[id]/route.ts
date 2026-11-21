@@ -27,7 +27,7 @@ export async function PATCH(
     name?: string;
     ticketId?: string;
     isDone?: boolean;
-    profile?: Partial<ClientProfile>;
+    profile?: Omit<Partial<ClientProfile>, "followupSnooze"> & { followupSnooze?: "tomorrow" | "interaction" | null };
     actionable?: ActionableChange;
     plan?: { ticketId?: unknown; due?: unknown; estimateMinutes?: unknown; side?: unknown };
     suggestion?: { suggestionId?: unknown; action?: unknown; title?: unknown; due?: unknown };
@@ -152,6 +152,29 @@ export async function PATCH(
       if (typeof p[k] === "string") patch[k] = p[k].slice(0, 2000);
     }
     if (typeof p.attention === "boolean") patch.attention = p.attention;
+    // Dominios / mails vinculados (partners, devs externos): "dominio.com" o "persona@dominio.com".
+    if (Array.isArray(p.linkedContacts)) {
+      const seen = new Set<string>();
+      patch.linkedContacts = p.linkedContacts
+        .map((l) => ({ value: String(l?.value ?? "").trim().toLowerCase().replace(/^@/, ""), shared: l?.shared === true }))
+        .filter((l) => /^([^\s@]+@)?[a-z0-9-]+(\.[a-z0-9-]+)+$/.test(l.value) && !seen.has(l.value) && seen.add(l.value))
+        .slice(0, 30);
+    }
+    // Posponer en el Pulso de cuentas: "tomorrow" = hasta el próximo día hábil, "interaction" = hasta la próxima
+    // interacción, null = volver a mostrar.
+    if (p.followupSnooze === null) patch.followupSnooze = undefined;
+    else if (p.followupSnooze === "tomorrow" || p.followupSnooze === "interaction") {
+      const now = new Date();
+      let until: string | undefined;
+      if (p.followupSnooze === "tomorrow") {
+        const { workDays } = await getSettings();
+        const d = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+        do d.setDate(d.getDate() + 1);
+        while (!workDays.includes(d.getDay()));
+        until = d.toISOString();
+      }
+      patch.followupSnooze = { at: now.toISOString(), ...(until && { until }) };
+    }
     if (p.referentOverrides && typeof p.referentOverrides === "object") {
       patch.referentOverrides = Object.fromEntries(
         Object.entries(p.referentOverrides)

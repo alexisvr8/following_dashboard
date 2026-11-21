@@ -6,7 +6,7 @@ import { supabaseAdmin } from "@/lib/supabase/admin";
 import type { MeetingDecision } from "@/lib/utils/gemini-notes-parser";
 import { applyCorrections, type TranscriptSuggestion } from "@/lib/utils/transcript";
 import type { Correction } from "@/lib/store/settings-store";
-import { collectMailItems, mailTicketId, type MailItem } from "@/lib/utils/mail-items";
+import { answeredRequests, collectMailItems, mailTicketId, type MailItem } from "@/lib/utils/mail-items";
 import type { AISide, AIStatus, PostMeetingOutput } from "@/lib/llm/postmeeting-schema";
 import type { AccountAnalysisOutput, Level } from "@/lib/llm/account-analysis-schema";
 import { keywordSimilarity } from "@/lib/utils/mail-classify";
@@ -105,6 +105,19 @@ export interface StatusAI {
   error?: string;
 }
 
+/** Respuesta sugerida con IA a los mails del cliente sin contestar (`lib/integrations/reply-ai.ts`). */
+export interface ReplyAI {
+  /** Huella de la entrada (`replyKey`): si llegó otro mail o cambió lo tildado, deja de aplicarse. */
+  key: string;
+  generatedAt: string;
+  model: string;
+  /** Cuerpo sin saludo ni firma (los pone la app). */
+  cuerpo: string;
+  revision: string[];
+  /** Accionables que el cliente dio por hechos en sus mails y la app tildó sola (para avisarlo en el borrador). */
+  resolved?: { ticketId: string; text: string; motivo: string }[];
+}
+
 /** Análisis semanal de la cuenta con IA (`lib/integrations/account-analysis.ts`). */
 export interface AccountAnalysis {
   /** Lunes de la semana analizada (AAAA-MM-DD). */
@@ -178,6 +191,10 @@ export interface ClientRecord {
   aiEstimate?: Record<string, number>;
   /** Redacción con IA del mail de seguimiento vigente (`lib/integrations/status-ai.ts`); vale mientras `key` coincida. */
   statusAI?: StatusAI;
+  /** Respuesta sugerida con IA a lo que el cliente espera (botón Responder del Pulso de cuentas). */
+  replyAI?: ReplyAI;
+  /** "Pedir status" redactado con IA (mismo formato que `replyAI`). */
+  reminderAI?: ReplyAI;
   /** Fallos seguidos al redactar el mail de seguimiento para la huella `key` (la sync corta tras `STATUS_AI_MAX_ATTEMPTS`). */
   statusAIError?: { key: string; attempts: number; at: string; message: string };
 }
@@ -198,6 +215,11 @@ export interface MailRef {
   relatedTicketIds: string[];
   /** Quién lo escribió: el cliente (referentes/invitados), un compañero del dominio propio, o yo. */
   direction?: MailDirection;
+  /**
+   * Del lado cliente pero escrito por un tercero (partner, desarrollador externo, proveedor del ERP): entra porque el
+   * cliente está en el mail o en el hilo, o porque su dominio está vinculado a la cuenta (`profile.linkedContacts`).
+   */
+  thirdParty?: boolean;
   /** Pedidos/preguntas detectados en mails del cliente (→ accionables de mi lado). */
   requests?: string[];
   /** Compromisos detectados en mails míos (→ accionables de mi lado). */
@@ -268,16 +290,23 @@ export interface FollowupDraft {
   threadReason?: "pinned" | "standard" | "recent" | "new" | "anchor";
   /** Recordatorio de un solo punto: el accionable (me deben) por el que se pide status. */
   ticketId?: string;
+  /** Respuesta (`reply`): "Responder" y pedidos por mail que contesta; al enviarla se dan por respondidos. */
+  replyTicketIds?: string[];
+  /** Respuesta (`reply`): el cuerpo lo redactó la IA (`client.replyAI` vigente). */
+  ai?: boolean;
 }
 
 /** meeting = minuta; status = avances + pendientes; reminder = recordatorio corto pidiendo status de lo que me deben. */
-export type FollowupKind = "meeting" | "status" | "reminder";
+export type FollowupKind = "meeting" | "status" | "reminder" | "reply";
 /**
  * Clave en `client.followups`: follow-up de reunión = id de meeting; seguimiento = `status:<id>`; recordatorio =
- * `reminder:<id>` (toda la cuenta) o `reminder:item:<ticketId>` (un solo punto, desde la card del accionable).
+ * `reminder:<id>` (toda la cuenta) o `reminder:item:<ticketId>` (un solo punto, desde la card del accionable);
+ * respuesta a los mails del cliente sin contestar = `reply:<id>`.
  */
 export const followupKey = (kind: FollowupKind, meetingId: string, ticketId?: string | null) =>
-  kind === "status"
+  kind === "reply"
+    ? `reply:${meetingId}`
+    : kind === "status"
     ? `status:${meetingId}`
     : kind === "reminder"
       ? ticketId
@@ -316,8 +345,24 @@ export interface ClientProfile {
    * `settings.attentionTargetDays` (1) día hábil, alerta de seguimiento al 1er día hábil sin novedades y la IA lo sabe.
    */
   attention?: boolean;
+  /**
+   * Pulso de cuentas (Dashboard) pospuesto: con `until` (ISO) no aparece hasta esa fecha; sin `until`, hasta que haya
+   * una interacción posterior a `at`.
+   */
+  followupSnooze?: { at: string; until?: string };
+  /**
+   * Dominios o mails vinculados a la cuenta (partners, desarrolladores externos, otras razones sociales): `value` =
+   * "dominio.com" o "persona@dominio.com". Exclusivo (`shared` false) = siempre es de esta cuenta (se busca en Gmail);
+   * compartido = trabaja con varias cuentas: solo cuenta en hilos donde está el cliente.
+   */
+  linkedContacts?: LinkedContact[];
   /** Cierre de la cuenta (pase a Soporte, `status: "closed"`): cuándo, a quién y nota. Se borra al reabrir. */
   closure?: { at: string; handedTo: string; note?: string };
+}
+
+export interface LinkedContact {
+  value: string;
+  shared: boolean;
 }
 
 export interface ClientsFile {
@@ -624,6 +669,13 @@ export async function updateClientProfile(
       } else if (k === "attention") {
         if (v === true) profile.attention = true;
         else delete profile.attention;
+      } else if (k === "linkedContacts") {
+        const list = (v as LinkedContact[] | null) ?? [];
+        if (list.length) profile.linkedContacts = list;
+        else delete profile.linkedContacts;
+      } else if (k === "followupSnooze") {
+        if (v && typeof v === "object") profile.followupSnooze = v as ClientProfile["followupSnooze"];
+        else delete profile.followupSnooze;
       } else if (typeof v === "string") {
         if (v.trim()) (profile[k] as string) = v.trim();
         else delete profile[k];
@@ -799,11 +851,16 @@ export async function setClientActivity(
     client.activity = u.activity;
     client.mailActionables = collectMailItems(client);
     const already = new Set(client.doneTicketIds ?? []);
-    const fresh = u.autoDoneTicketIds.filter((t) => !already.has(t));
+    // Pedidos por mail contestados en su hilo (mío o del equipo) → respondidos.
+    // Con la fecha del mail que los respondió (no la de la sync): así no parecen movimiento de hoy.
+    const answered = answeredRequests(client, client.mailActionables);
+    const answeredAt = new Map(answered.map((a) => [a.id, a.at]));
+    const auto = [...u.autoDoneTicketIds, ...answered.map((a) => a.id)];
+    const fresh = [...new Set(auto)].filter((t) => !already.has(t));
     if (fresh.length) {
       const now = new Date().toISOString();
       client.doneTicketIds = [...already, ...fresh];
-      client.doneTicketAt = { ...client.doneTicketAt, ...Object.fromEntries(fresh.map((t) => [t, now])) };
+      client.doneTicketAt = { ...client.doneTicketAt, ...Object.fromEntries(fresh.map((t) => [t, answeredAt.get(t) ?? now])) };
       client.ticketsUpdatedAt = now;
     }
   });
@@ -1166,6 +1223,15 @@ export async function setStatusAI(clientId: string, value: StatusAI): Promise<bo
   const res = await mutateClient(clientId, (client) => {
     client.statusAI = value;
     delete client.statusAIError;
+    return true;
+  });
+  return Boolean(res);
+}
+
+export async function setReplyAI(clientId: string, value: ReplyAI, mode: "reply" | "reminder" = "reply"): Promise<boolean> {
+  const res = await mutateClient(clientId, (client) => {
+    if (mode === "reminder") client.reminderAI = value;
+    else client.replyAI = value;
     return true;
   });
   return Boolean(res);

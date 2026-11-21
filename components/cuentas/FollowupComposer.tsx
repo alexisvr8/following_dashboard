@@ -133,7 +133,7 @@ export function FollowupComposer({
   const mailKind = useMailKind();
   const [localExpanded, setLocalExpanded] = useState(false);
   const shared = mailKind?.setExpanded != null;
-  const active = !mailKind || mailKind.choice === (kind === "reminder" ? "reminder" : "general");
+  const active = !mailKind || mailKind.choice === (kind === "reminder" ? "reminder" : kind === "reply" ? "reply" : "general");
   const expanded = shared ? !!mailKind.expanded && active : localExpanded;
   const setExpanded = (next: boolean | ((e: boolean) => boolean)) => {
     const value = typeof next === "function" ? next(expanded) : next;

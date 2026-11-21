@@ -10,6 +10,7 @@ import { addBusinessDays, lastWorkdayOfWeek, parseStep, rollToWorkday, type Step
 import { ACCOUNT_PRIORITY_RANK, accountPriority } from "@/lib/utils/account-priority";
 import { ROUND_BUSINESS_DAYS, type Round } from "@/lib/utils/round";
 import { DEFAULT_ESTIMATE_GUIDE, guidedMinutes, taskKind } from "@/lib/utils/task-kind";
+import { isSilent } from "@/lib/utils/interaction";
 
 // Plazo de cada accionable pendiente (meta: cerrar todo dentro de la semana hábil con el cliente).
 // Fecha, por orden: manual (`client.actionableDue`) → acordada (dicha en la reunión o el mail, resuelta
@@ -84,6 +85,10 @@ export interface PlannedItem {
   meetingSoonAt?: string;
   /** Mío y con reunión próxima: Capacidad lo cierra antes de la reunión (orden y límite efectivo). */
   prep?: boolean;
+  /** Preparación de una reunión de hoy o mañana (`PREP_URGENT_DAYS`): solo ésta sube en el orden (`focusTier`). */
+  prepUrgent?: boolean;
+  /** Cuenta en silencio (`isSilent`): sin interacción hace ≥N días hábiles y sin reunión cerca; sube en el orden. */
+  silent?: boolean;
   /** Preparación que no llega a terminarse antes de la reunión (lo completa `computeWeekPlan`). */
   prepLate?: boolean;
   /** No entra en los huecos libres antes de su fecha (lo completa `computeWeekPlan`). */
@@ -168,12 +173,16 @@ const PRIORITY_RANK: Record<Priority, number> = { alta: 0, media: 1, baja: 2 };
 /** Ventana de "reunión próxima": días hábiles desde hoy hasta la reunión con la cuenta. */
 export const PREP_BUSINESS_DAYS = 5;
 
+/** Preparación que sube en el orden: reunión dentro de estos días hábiles (0 = hoy, 1 = mañana). */
+export const PREP_URGENT_DAYS = 1;
+
 /**
- * Nivel de foco (menor = primero): 0 vencido (ya está atrasado) → 1 preparación de reunión próxima (debo) →
- * 2 cuenta de "Más atención" → 3 el resto.
+ * Nivel de foco (menor = primero): 0 vencido (ya está atrasado) → 1 preparación de la reunión de hoy/mañana (debo) →
+ * 2 cuenta en silencio (sin interacción hace ≥N días hábiles, sin reunión cerca) → 3 "Más atención" → 4 el resto.
+ * Así una cuenta con la que te reunís seguido no tapa a las que no tocaste en la semana.
  */
-export function focusTier(i: Pick<PlannedItem, "bucket" | "prep" | "attention">): number {
-  return i.bucket === "overdue" ? 0 : i.prep ? 1 : i.attention ? 2 : 3;
+export function focusTier(i: Pick<PlannedItem, "bucket" | "prepUrgent" | "silent" | "attention">): number {
+  return i.bucket === "overdue" ? 0 : i.prepUrgent ? 1 : i.silent ? 2 : i.attention ? 3 : 4;
 }
 
 /** Cuenta prioritaria: sus accionables suben un nivel (baja → media → alta). Nunca baja una prioridad. */
@@ -184,12 +193,13 @@ export function bumpForAccount(priority: Priority, account: Priority): Priority 
 
 /**
  * Orden de trabajo (Capacidad reparte los huecos en este orden): foco (`focusTier`: vencido → preparar la reunión
- * más cercana → más atención → resto); después lo que vence antes; a igual fecha, prioridad, cuenta prioritaria y lo mío.
+ * de hoy/mañana → cuentas en silencio → más atención → resto); después lo que vence antes; a igual fecha, prioridad,
+ * cuenta prioritaria y lo mío.
  */
 export function compareItems(a: PlannedItem, b: PlannedItem): number {
   return (
     focusTier(a) - focusTier(b) ||
-    (a.prep && b.prep ? (a.meetingSoonAt ?? "").localeCompare(b.meetingSoonAt ?? "") : 0) ||
+    (a.prepUrgent && b.prepUrgent ? (a.meetingSoonAt ?? "").localeCompare(b.meetingSoonAt ?? "") : 0) ||
     a.due.localeCompare(b.due) ||
     Number(Boolean(b.attention)) - Number(Boolean(a.attention)) ||
     PRIORITY_RANK[a.priority] - PRIORITY_RANK[b.priority] ||
@@ -367,6 +377,10 @@ export function plannedItems(
       return [c.id, p.source === "atencion" || p.source === "manual" ? p.level : "media"] as const;
     }),
   );
+  // Cuentas en silencio (sin interacción reciente ni reunión cerca): sus accionables suben en el orden de trabajo.
+  const silent = new Map(
+    clients.filter((c) => c.status === "assigned").map((c) => [c.id, isSilent(c, settings, now, meetingsByClient.get(c.id))] as const),
+  );
   for (const { c, r } of raws) {
     const origin = new Date(r.originDate);
     const manual = c.actionableDue?.[r.id];
@@ -405,7 +419,8 @@ export function plannedItems(
         : null;
     const sideOverride = c.actionableSide?.[r.id];
     const meetingAt = meetingsByClient.get(c.id) ?? null;
-    const meetingSoon = meetingAt != null && businessDaysBetween(now, new Date(meetingAt), workDays) <= PREP_BUSINESS_DAYS;
+    const meetingIn = meetingAt != null ? businessDaysBetween(now, new Date(meetingAt), workDays) : null;
+    const meetingSoon = meetingIn != null && meetingIn <= PREP_BUSINESS_DAYS;
     const base = {
       bucket: bucketOf(due, limit, dueKind, now),
       kind: r.kind,
@@ -440,7 +455,11 @@ export function plannedItems(
       sideManual: sideOverride != null,
       priority: c.profile?.attention ? "alta" : bumpForAccount(priorityOf(base, now, workDays), accountLevel.get(c.id) ?? "media"),
       ...(c.profile?.attention && { attention: true }),
-      ...(meetingSoon && { meetingSoonAt: meetingAt, ...(base.side === "debo" && { prep: true }) }),
+      ...(meetingSoon && {
+        meetingSoonAt: meetingAt!,
+        ...(base.side === "debo" && { prep: true, ...(meetingIn! <= PREP_URGENT_DAYS && { prepUrgent: true }) }),
+      }),
+      ...(silent.get(c.id) && { silent: true }),
       accountPriority: accountLevel.get(c.id) ?? "media",
       ...(r.evidence !== undefined && { aiAdded: true, evidence: r.evidence }),
       ...(nextWeekTarget && { nextWeekTarget: true }),

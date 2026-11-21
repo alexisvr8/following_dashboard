@@ -11,6 +11,8 @@ const KIND_LABEL: Record<string, { name: string; hint: string }> = {
   postmeeting: { name: "Mail post-reunión", hint: "1 por reunión nueva" },
   status: { name: "Mail de seguimiento", hint: "Al cambiar el contenido · máx. 1 c/3 h por cuenta · modelo barato" },
   analysis: { name: "Análisis semanal", hint: "Lunes 07:00 · 1 por cuenta" },
+  reply: { name: "Respuesta al cliente", hint: "Al abrir Responder en el Dashboard · solo si cambió · modelo barato" },
+  reminder: { name: "Pedir status", hint: "Al abrir Pedir status · solo si cambió · modelo barato" },
 };
 
 const TRIGGER_LABEL: Record<string, string> = {
@@ -19,6 +21,8 @@ const TRIGGER_LABEL: Record<string, string> = {
   semanal: "Rutina del lunes",
   reanalizar: "Botón Reanalizar",
   preview: "Scripts de prueba",
+  responder: "Botón Responder",
+  "pedir-status": "Botón Pedir status",
 };
 
 const usd = (n: number) => (n > 0 && n < 0.01 ? "< US$ 0,01" : `US$ ${n.toLocaleString("es", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`);
