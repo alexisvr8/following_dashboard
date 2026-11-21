@@ -62,7 +62,7 @@ export function SuggestionsDialog({
                     {s.atClose && " · cierre"}
                   </span>
                   <Badge variant={s.side === "debo" ? "secondary" : "outline"}>
-                    {s.side === "debo" ? "Debo" : `Me deben${s.owner ? ` · ${s.owner.split(/\s+/)[0]}` : ""}`}
+                    {s.side === "debo" ? "Accionar" : `Seguimiento${s.owner ? ` · ${s.owner.split(/\s+/)[0]}` : ""}`}
                   </Badge>
                   {s.dueLabel && <Badge variant="outline">Fecha dicha: {s.dueLabel}</Badge>}
                 </div>

@@ -90,7 +90,7 @@ export function buildWeeklyDigest(
     const debo = r.items.filter((i) => i.side === "debo");
     const next = debo[0];
     return {
-      line: `${debo.length} míos${next ? ` (próximo: ${next.title}, ${next.dueLabel})` : ""} · ${r.items.filter((i) => i.side === "me_deben").length} me deben`,
+      line: `${debo.length} para accionar${next ? ` (próximo: ${next.title}, ${next.dueLabel})` : ""} · ${r.items.filter((i) => i.side === "me_deben").length} en seguimiento`,
       nextMail: r.view ? clip(r.view.nextMail, 220) : null,
     };
   };
@@ -106,8 +106,8 @@ export function buildWeeklyDigest(
       "────────────────────────",
       `${title(r)}${r.view ? ` · ${r.view.stateLabel}` : ""}:`,
       d.summary,
-      ...(d.debo.length ? ["", "Debo:", ...d.debo.map((i) => `• ${itemText(i)}`)] : []),
-      ...(d.meDeben.length ? ["", "Me deben:", ...d.meDeben.map((i) => `• ${itemText(i)}`)] : []),
+      ...(d.debo.length ? ["", "Accionar:", ...d.debo.map((i) => `• ${itemText(i)}`)] : []),
+      ...(d.meDeben.length ? ["", "Seguimiento:", ...d.meDeben.map((i) => `• ${itemText(i)}`)] : []),
       ...(d.resolved.length ? ["", "Posibles resueltos (tildalos si es así):", ...d.resolved.map((x) => `• ${x.title}`)] : []),
       ...(d.risk ? ["", "Riesgo principal:", `• ${d.risk}`] : []),
       ...(d.nextMail ? ["", `Próximo mail: ${d.nextMail}`] : []),
@@ -159,8 +159,8 @@ export function buildWeeklyDigest(
         r,
         head(r, 16) +
           `<p style="${font}margin:8px 0 0;font-size:13px;line-height:1.5;color:#475467;">${esc(d.summary)}</p>` +
-          (d.debo.length ? label("Debo") + list(d.debo.map(itemText)) : "") +
-          (d.meDeben.length ? label("Me deben") + list(d.meDeben.map(itemText)) : "") +
+          (d.debo.length ? label("Accionar") + list(d.debo.map(itemText)) : "") +
+          (d.meDeben.length ? label("Seguimiento") + list(d.meDeben.map(itemText)) : "") +
           (d.resolved.length ? label("Posibles resueltos (tildalos si es así)", "#067647") + list(d.resolved.map((x) => x.title)) : "") +
           (d.risk ? label("Riesgo principal", "#b42318") + list([d.risk]) : "") +
           (d.nextMail

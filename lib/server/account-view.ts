@@ -1,6 +1,6 @@
 import type { ClientRecord, ClientsFile } from "@/lib/store/clients-store";
 import type { WorkSettings } from "@/lib/store/settings-store";
-import { getFollowupDraft, latestInteraction } from "@/lib/utils/followup";
+import { getFollowupDraft, getReminderDraft, latestInteraction } from "@/lib/utils/followup";
 import { computeAlerts } from "@/lib/utils/followup-alerts";
 import { clientsToBoard } from "@/lib/utils/clients-to-board";
 import { executedHistory } from "@/lib/utils/actionables";
@@ -16,6 +16,8 @@ export function loadAccountView(file: ClientsFile, client: ClientRecord, setting
   const owner = file.ownerEmail ?? null;
   // Un solo mail de seguimiento: post-reunión hasta que sale, después avances + pendientes.
   const followup = latest ? getFollowupDraft(client, latest, owner, settings) : null;
+  // Alternativa elegible en la cuenta: recordatorio corto pidiendo status de lo que me deben.
+  const reminder = latest ? getReminderDraft(client, latest, owner, settings) : null;
   const interaction = latest ? latestInteraction(client, latest) : null;
   const statusSource =
     interaction?.kind === "mail"
@@ -50,6 +52,7 @@ export function loadAccountView(file: ClientsFile, client: ClientRecord, setting
     meetings,
     latest,
     followup,
+    reminder,
     statusSource,
     alert,
     ticketTitles,

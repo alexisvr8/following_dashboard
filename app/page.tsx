@@ -10,7 +10,7 @@ import { getClientsFileCached, getSettingsCached } from "@/lib/server/cached-dat
 import type { WorkSettings } from "@/lib/store/settings-store";
 import { computeWeekPlan, hasWorkLeftThisWeek, planWeekBounds, type WeekPlan } from "@/lib/utils/week-plan";
 import { clientsToBoard } from "@/lib/utils/clients-to-board";
-import { getFollowupDraft } from "@/lib/utils/followup";
+import { getFollowupDraft, getReminderDraft } from "@/lib/utils/followup";
 import type { Account } from "@/types/account";
 import type { Ticket } from "@/types/ticket";
 import { composerThreads } from "@/lib/utils/followup-thread";
@@ -53,6 +53,7 @@ export default async function Home({ searchParams }: { searchParams: Promise<{ s
     panels[a.clientId] = {
       meetingTitle: latest.title,
       draft: getFollowupDraft(c, latest, ownerEmail ?? null, settings),
+      reminder: getReminderDraft(c, latest, ownerEmail ?? null, settings),
       threads: composerThreads(c),
       lastMail: c.activity?.lastMail ?? null,
     };

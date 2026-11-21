@@ -4,7 +4,7 @@ import { ArrowLeft, Mail } from "lucide-react";
 import { buttonVariants } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { ChurnRiskBadge } from "@/components/dashboard/ChurnRiskBadge";
-import { AccountWorkspace } from "@/components/cuentas/AccountWorkspace";
+import { AccountWorkspace, EngagementChip } from "@/components/cuentas/AccountWorkspace";
 import { AnalysisPanel } from "@/components/cuentas/AnalysisPanel";
 import { analysisView } from "@/lib/utils/account-analysis";
 import { AccountProfileForm } from "@/components/cuentas/AccountProfileForm";
@@ -16,6 +16,7 @@ import { ParticipantsList } from "@/components/cuentas/ParticipantsList";
 import { ActivityPanel } from "@/components/cuentas/ActivityPanel";
 import { FollowupComposer } from "@/components/cuentas/FollowupComposer";
 import { MeetingsList } from "@/components/cuentas/MeetingsList";
+import { MailKindSwitch } from "@/components/cuentas/MailKindSwitch";
 import type { ClientRecord, ClientsFile } from "@/lib/store/clients-store";
 import type { WorkSettings } from "@/lib/store/settings-store";
 import { loadAccountView } from "@/lib/server/account-view";
@@ -58,7 +59,7 @@ function Workspace({
   desde: string | null;
 }) {
   const v = loadAccountView(file, client, settings);
-  const { latest, followup, alert } = v;
+  const { latest, followup, reminder, alert } = v;
   const enc = encodeURIComponent(client.id);
   const threads = composerThreads(client); // hilo fijado primero
   const closed = client.status === "closed";
@@ -82,6 +83,7 @@ function Workspace({
         <div className="min-w-0 flex-1 basis-72 space-y-1">
           <div className="flex flex-wrap items-center gap-2">
             <h1 className="truncate text-lg font-semibold text-foreground-strong">{client.name}</h1>
+            <EngagementChip />
             {!closed && <ChurnRiskBadge lastActivityAt={v.account.lastActivityAt} />}
             {closed && <ClosedBadge />}
             {client.profile?.attention && <AttentionBadge />}
@@ -108,7 +110,7 @@ function Workspace({
             rel="noopener noreferrer"
             className={buttonVariants({ variant: "outline", size: "sm" })}
           >
-            <Mail /> Último mail en Gmail
+            <Mail /> Último mail<span className="short:hidden"> en Gmail</span>
           </a>
         </>
       }
@@ -123,9 +125,9 @@ function Workspace({
       newMeetings={meetingsAfterClosure(client).map((m) => ({ title: m.title, date: m.date }))}
     />
   ) : latest && followup ? (
-      <section id="borradores" className="flex flex-col gap-3 scroll-mt-20">
+      <section id="borradores" className="flex flex-col gap-3 scroll-mt-20 short:gap-2">
         {alert && (
-          <p className="rounded-md border border-warning/25 bg-warning-muted px-3 py-1.5 text-xs">
+          <p className="rounded-md border border-warning/25 bg-warning-muted px-3 py-1.5 text-xs short:truncate short:py-1">
             {alert.kind === "client_waiting"
               ? `El cliente espera respuesta hace ${alert.businessDays} día(s) hábil(es).`
               : alert.kind === "client_request"
@@ -138,27 +140,57 @@ function Workspace({
         )}
         {/* Un solo mail de seguimiento: post-reunión hasta que sale (con lo tildado como hecho), después
             avances desde la reunión / mi último mail + lo que queda (`currentFollowupKind`). */}
-        <FollowupComposer
-          key={`${followup.kind}-${latest.id}`}
-          kind={followup.kind}
-          showTitle
-          className="lg:h-auto"
-          fitViewport
-          clientId={client.id}
-          title="Mail de seguimiento"
-          hint={
-            followup.kind === "meeting"
-              ? followup.regenerated
-                ? `Resumen de “${latest.title}”, regenerado con los mails y accionables nuevos. Al enviarlo, pasa a mail de avances.`
-                : `Resumen de “${latest.title}” con cada accionable en su estado (lo que marcás como hecho se actualiza). Al enviarlo, pasa a mail de avances.`
-              : followup.regenerated
-                ? `Regenerado porque cambiaron los accionables o llegó un mail nuevo. Parte de ${v.statusSource}.`
-                : `Avances desde ${v.statusSource} y lo que queda pendiente. Se actualiza con cada mail o accionable.`
+        <MailKindSwitch
+          generalLabel={followup.kind === "meeting" ? "Post-reunión" : "Seguimiento general"}
+          reminderCount={reminder?.count ?? 0}
+          general={
+            <FollowupComposer
+              key={`${followup.kind}-${latest.id}`}
+              kind={followup.kind}
+              showTitle
+              className="lg:h-auto"
+              fitViewport
+              expandable
+              clientId={client.id}
+              title="Mail de seguimiento"
+              hint={
+                followup.kind === "meeting"
+                  ? followup.regenerated
+                    ? `Resumen de “${latest.title}”, regenerado con los mails y accionables nuevos. Al enviarlo, pasa a mail de avances.`
+                    : `Resumen de “${latest.title}” con cada accionable en su estado (lo que marcás como hecho se actualiza). Al enviarlo, pasa a mail de avances.`
+                  : followup.regenerated
+                    ? `Regenerado porque cambiaron los accionables o llegó un mail nuevo. Parte de ${v.statusSource}.`
+                    : `Avances desde ${v.statusSource} y lo que queda pendiente. Se actualiza con cada mail o accionable.`
+              }
+              lastSentAt={followup.lastSentAt}
+              initial={followup.draft}
+              generated={followup.generated}
+              threads={threads}
+            />
           }
-          lastSentAt={followup.lastSentAt}
-          initial={followup.draft}
-          generated={followup.generated}
-          threads={threads}
+          reminder={
+            reminder && (
+              <FollowupComposer
+                key={`reminder-${latest.id}`}
+                kind="reminder"
+                showTitle
+                className="lg:h-auto"
+                fitViewport
+                expandable
+                clientId={client.id}
+                title="Pedir status"
+                hint={
+                  reminder.count
+                    ? `Recordatorio corto de ${reminder.count} punto${reminder.count === 1 ? "" : "s"} en Seguimiento (lo que tiene el cliente). Se actualiza al tildar o cambiar accionables.`
+                    : "No hay puntos en Seguimiento del lado del cliente: queda un recordatorio genérico."
+                }
+                lastSentAt={reminder.lastSentAt}
+                initial={reminder.draft}
+                generated={reminder.generated}
+                threads={threads}
+              />
+            )
+          }
         />
       </section>
     ) : (

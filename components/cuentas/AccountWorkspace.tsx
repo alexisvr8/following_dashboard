@@ -1,6 +1,6 @@
 "use client";
 
-import { useRef, useState } from "react";
+import { createContext, useContext, useRef, useState } from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { ArrowRight } from "lucide-react";
@@ -13,9 +13,13 @@ import type { MailRef } from "@/lib/store/clients-store";
 import type { ExecutedEntry } from "@/lib/utils/actionables";
 import type { Ticket } from "@/types/ticket";
 
+type Engagement = { percent: number; detail: string };
+const EngagementContext = createContext<Engagement | null>(null);
+
 // Espacio de trabajo de la cuenta seleccionada en /cuentas: devuelve DOS columnas del grid de la
-// página. Centro = encabezado + franja de engagement + borradores; derecha = contexto operativo en
-// pestañas. Comparten el estado local de tildados (el engagement reacciona sin recargar).
+// página. Centro = encabezado (con el chip de engagement junto al nombre, `EngagementChip`) + borradores;
+// derecha = contexto operativo en pestañas. Comparten el estado local de tildados (el engagement reacciona
+// sin recargar). Los datos de la última reunión quedan en el tooltip del chip (y en la pestaña Reuniones).
 export function AccountWorkspace({
   header,
   clientId,
@@ -85,30 +89,23 @@ export function AccountWorkspace({
   // Sin estirar al alto de la columna: cada pestaña mide lo que su contenido.
   const panel = "min-h-0 overflow-y-auto p-px [scrollbar-width:thin]";
 
+  const engagement: Engagement = {
+    percent,
+    detail: [
+      `Engagement ${percent}% · ${doneCount}/${total} accionables completados`,
+      meeting
+        ? `Última reunión: “${meeting.title}” · ${formatShortDate(meeting.date)} (${daysAgo(meeting.date)}) · ${formatMinutes(meeting.durationMinutes)} · ${meeting.attendeeCount} participantes`
+        : "Sin reuniones",
+      `${totalMeetings} reuniones en 60 días · ${formatMinutes(minutes30d)} en 30 días`,
+    ].join("\n"),
+  };
+
   return (
-    <>
-      <div className="flex min-h-0 min-w-0 flex-col gap-4 lg:overflow-y-auto lg:pr-1 [scrollbar-width:thin]">
+    <EngagementContext.Provider value={engagement}>
+      <div className="flex min-h-0 min-w-0 flex-col gap-4 short:gap-2.5 lg:overflow-y-auto lg:pr-1 [scrollbar-width:thin]">
       <div className="shrink-0 rounded-xl border border-border bg-card">
-      <div className="border-b border-border px-4 py-3">{header}</div>
-      <section className="flex flex-wrap items-center gap-x-8 gap-y-3 px-4 py-3">
-        <EngagementRing percent={percent} />
-        <div className="min-w-48 flex-1">
-          <p className="truncate text-sm font-medium" title={meeting?.title}>
-            {meeting?.title ?? "Sin reuniones"}
-          </p>
-          {meeting?.summary && (
-            <p className="line-clamp-2 text-xs text-muted-foreground" title={meeting.summary}>
-              {meeting.summary}
-            </p>
-          )}
-        </div>
-        <dl className="flex flex-wrap gap-x-6 gap-y-2">
-          <Metric label="Fecha" value={meeting ? formatShortDate(meeting.date) : "—"} hint={meeting ? daysAgo(meeting.date) : undefined} />
-          <Metric label="Duración" value={formatMinutes(meeting?.durationMinutes)} hint={`${formatMinutes(minutes30d)} en 30d`} />
-          <Metric label="Accionables" value={`${doneCount}/${total}`} hint="completados" />
-          <Metric label="Participantes" value={String(meeting?.attendeeCount ?? 0)} hint={`${totalMeetings} reuniones (60d)`} />
-        </dl>
-      </section>
+      <div className="px-4 py-3 short:py-2">{header}</div>
+      {/* Pantallas bajas (`short`): una sola línea de info general, sin resumen ni detalle de cada métrica. */}
       </div>
       {drafts}
       </div>
@@ -172,19 +169,23 @@ export function AccountWorkspace({
             {participants}
           </TabsContent>
         </Tabs>
-    </>
+    </EngagementContext.Provider>
   );
 }
 
-function Metric({ label, value, hint }: { label: string; value: string; hint?: string }) {
+/** Chip junto al nombre de la cuenta: anillo + %; el detalle (accionables, última reunión) va en el tooltip. */
+export function EngagementChip() {
+  const e = useContext(EngagementContext);
+  if (!e) return null;
   return (
-    <div>
-      <dt className="text-label-sm uppercase text-subtle-foreground">{label}</dt>
-      <dd className="font-mono text-sm font-medium leading-tight text-foreground-strong tabular-nums">
-        {value}
-        {hint && <span className="ml-1.5 font-sans text-[11px] font-normal text-muted-foreground">{hint}</span>}
-      </dd>
-    </div>
+    <span
+      title={e.detail}
+      aria-label={e.detail}
+      className="inline-flex h-5 shrink-0 cursor-help items-center gap-1 rounded-md border border-input bg-card pr-1.5 pl-0.5 text-label-sm text-muted-foreground"
+    >
+      <EngagementRing percent={e.percent} />
+      <span className="tabular font-medium text-foreground-strong">{e.percent}%</span>
+    </span>
   );
 }
 
@@ -192,22 +193,21 @@ function EngagementRing({ percent }: { percent: number }) {
   const r = 26;
   const c = 2 * Math.PI * r;
   return (
-    <div className="relative size-11 shrink-0" role="img" aria-label={`Engagement ${percent}%`} title={`Engagement ${percent}%`}>
+    <div className="relative size-4 shrink-0" aria-hidden>
       <svg viewBox="0 0 64 64" className="size-full -rotate-90">
-        <circle cx="32" cy="32" r={r} fill="none" strokeWidth="7" className="stroke-muted" />
+        <circle cx="32" cy="32" r={r} fill="none" strokeWidth="9" className="stroke-muted" />
         <circle
           cx="32"
           cy="32"
           r={r}
           fill="none"
-          strokeWidth="7"
+          strokeWidth="9"
           strokeLinecap="round"
           className="stroke-primary transition-[stroke-dashoffset] duration-500 ease-out"
           strokeDasharray={c}
           strokeDashoffset={c * (1 - percent / 100)}
         />
       </svg>
-      <span className="absolute inset-0 flex items-center justify-center font-mono text-[10px] font-medium tabular-nums">{percent}%</span>
     </div>
   );
 }

@@ -156,7 +156,7 @@ export function AnalysisPanel({ clientId, view }: { clientId: string; view: Anal
                 <div className="flex flex-wrap items-center gap-1.5">
                   {p.ref ? <span className="tabular text-label-sm text-subtle-foreground">{p.ref}</span> : <Badge variant="secondary">Nuevo</Badge>}
                   <span className="text-[13px] font-medium text-foreground-strong">{p.titulo}</span>
-                  <Badge variant="outline">{p.lado === "debo" ? "Debo" : "Me deben"}</Badge>
+                  <Badge variant="outline">{p.lado === "debo" ? "Accionar" : "Seguimiento"}</Badge>
                   <Badge variant={LEVEL[p.prioridad] ?? "outline"}>{p.prioridad}</Badge>
                   {p.fecha && <span className="tabular text-label-sm text-muted-foreground">{p.fecha}</span>}
                 </div>
