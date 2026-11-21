@@ -101,14 +101,16 @@ const byPriority = (a: PlannedItem, b: PlannedItem) =>
 
 /**
  * Grupos de cada columna / sección (solo visual): primero las cuentas de "Más atención", después las cuentas con
- * reunión próxima (`meetingSoonAt`, la más cercana arriba), los arrastrados y al final los nuevos; dentro de cada
+ * reunión próxima (`meetingSoonAt`, la más cercana arriba), los arrastrados (`isOlder`) y al final los nuevos; dentro de cada
  * grupo por prioridad y luego fecha. `order` = orden manual (arrastrar dentro de la columna): lo ordenado a mano va
  * según su posición y lo que nunca se ordenó (nuevo) queda arriba.
  */
 export type BoardGroup = "attention" | "meeting" | "carried" | "fresh";
 export const BOARD_GROUPS: BoardGroup[] = ["attention", "meeting", "carried", "fresh"];
 export const groupOf = (i: PlannedItem): BoardGroup =>
-  i.attention ? "attention" : i.meetingSoonAt ? "meeting" : i.carried ? "carried" : "fresh";
+  i.attention ? "attention" : i.meetingSoonAt ? "meeting" : isOlder(i) ? "carried" : "fresh";
+/** Viene de antes de esta ronda (minuta anterior o de hace más de `ROUND_BUSINESS_DAYS` hábiles): "Para cerrar". */
+export const isOlder = (i: PlannedItem) => i.carried || i.round === "backlog";
 /** Grupos plegados, por columna (`plazo:grupo`, p. ej. "today:fresh"): preferencia del navegador. */
 export const COLLAPSED_KEY = "accionables_collapsed_v2";
 export const collapseKey = (bucket: Bucket, group: BoardGroup) => `${bucket}:${group}`;

@@ -10,6 +10,7 @@ import { inputClass } from "@/components/ui/input";
 import { cn } from "@/lib/utils";
 import type { PlannedItem } from "@/lib/utils/deadlines";
 import {
+  isOlder,
   addWorkdays,
   correctionCandidate,
   DUE_KIND,
@@ -279,7 +280,7 @@ function PanelBody({
               <RotateCcw className="inline size-3" /> auto
             </button>
           )}
-          {item.carried && <Badge variant="outline">Arrastrado</Badge>}
+          {isOlder(item) && <Badge variant="outline">Para cerrar</Badge>}
           {item.atRisk && <Badge variant="critical">Sin espacio</Badge>}
         </div>
 

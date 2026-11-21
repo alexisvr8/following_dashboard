@@ -34,6 +34,7 @@ import { Checkbox } from "@/components/ui/checkbox";
 import { inputClass } from "@/components/ui/input";
 import { cn } from "@/lib/utils";
 import type { Bucket, DueKind, PlannedItem, SuggestedItem } from "@/lib/utils/deadlines";
+import { ROUND_BUSINESS_DAYS, type Round } from "@/lib/utils/round";
 import { ActionablePanel, type PanelAction } from "@/components/accionables/ActionablePanel";
 import { SuggestionsDialog } from "@/components/accionables/SuggestionsSection";
 import { RewritesDialog } from "@/components/accionables/RewritesDialog";
@@ -50,6 +51,7 @@ import {
   collapseKey,
   isCollapseKey,
   groupOf,
+  isOlder,
   meetingChip,
   type BoardGroup,
   movedItem,
@@ -139,7 +141,8 @@ export function ActionablesBoard({
   const [view, setView] = useState<View>(initialView);
   const focusItem = focusId ? (items.find((i) => i.id === focusId) ?? null) : null;
   // La card del acceso directo tiene que verse: lado y cuentas se ajustan si la ocultaban.
-  const [side, setSide] = useState<Side>(() => (focusItem && focusItem.side !== "debo" ? "todo" : "debo"));
+  // Siempre "Todo" al entrar: ver todo por las dudas y filtrar Debo / Me deben a mano.
+  const [side, setSide] = useState<Side>("todo");
   const [accountSel, setAccountSel] = useState<Set<string>>(() =>
     focusItem && initialAccounts.length && !initialAccounts.includes(focusItem.clientId) ? new Set() : new Set(initialAccounts),
   );
@@ -232,7 +235,7 @@ export function ActionablesBoard({
     setFocusMissing(false);
     setSide((s) => (s === "todo" || s === it.side ? s : "todo"));
     setAccountSel((sel) => (sel.size && !sel.has(it.clientId) ? new Set() : sel));
-    setOnlyCarried((v) => (v && !it.carried ? false : v));
+    setOnlyCarried((v) => (v && !isOlder(it) ? false : v));
     setQuery("");
     // "!clave" = desplegado a la fuerza (gana sobre la preferencia guardada que se lee al montar).
     const key = collapseKey(it.bucket, groupOf(it));
@@ -279,12 +282,12 @@ export function ActionablesBoard({
   const visible = open.filter((i) => {
     if (side !== "todo" && i.side !== side) return false;
     if (!inAccounts(i.clientId)) return false;
-    if (onlyCarried && !i.carried) return false;
+    if (onlyCarried && !isOlder(i)) return false;
     const q = query.trim().toLowerCase();
     return !q || `${i.title} ${i.detail ?? ""} ${i.clientName} ${i.owners.join(" ")}`.toLowerCase().includes(q);
   });
   const selected = items.find((i) => i.id === selectedId) ?? null;
-  const carriedOverdue = open.filter((i) => i.carried && i.bucket === "overdue" && (side === "todo" || i.side === side)).length;
+  const carriedOverdue = open.filter((i) => isOlder(i) && i.bucket === "overdue" && (side === "todo" || i.side === side)).length;
 
   const counters = [
     { label: "Vencidos", value: open.filter((i) => i.bucket === "overdue").length, tone: "critical" as const },
@@ -588,9 +591,9 @@ export function ActionablesBoard({
           value={side}
           onChange={setSide}
           options={[
+            ["todo", "Todo"],
             ["debo", "Debo"],
             ["me_deben", "Me deben"],
-            ["todo", "Todo"],
           ]}
         />
         <AccountPicker accounts={accounts} selected={accountSel} onChange={changeAccounts} />
@@ -673,7 +676,7 @@ export function ActionablesBoard({
       {carriedOverdue > 0 && !onlyCarried && (
         <div className="flex flex-wrap items-center justify-between gap-2 rounded-lg border border-warning/25 bg-warning-muted px-3 py-2 text-xs text-foreground">
           <span>
-            <b className="tabular font-medium">{carriedOverdue}</b> vencido{carriedOverdue === 1 ? "" : "s"} vienen de minutas anteriores.
+            <b className="tabular font-medium">{carriedOverdue}</b> vencido{carriedOverdue === 1 ? "" : "s"} vienen de antes de esta semana.
             Revisalos: marcá hecho, quitá lo que no corresponde o reprogramá.
           </span>
           <button type="button" onClick={() => setOnlyCarried(true)} className="font-medium text-warning hover:underline">
@@ -702,7 +705,7 @@ export function ActionablesBoard({
           No hay accionables con estos filtros.
         </p>
       ) : view === "board" ? (
-        <div ref={boardRef} className="relative grid items-start gap-3 md:grid-cols-2 xl:grid-cols-5">
+        <div ref={boardRef} className="relative space-y-5">
           {dragItem && dragGeom && (
             <ul
               ref={floatRef}
@@ -727,105 +730,129 @@ export function ActionablesBoard({
               />
             </ul>
           )}
-          {COLUMNS.map((col) => {
-            // Misma columna = reordenar; otra columna = cambiar la fecha (y quedar en la posición donde se suelta).
-            const own = dragItem?.bucket === col.key;
-            const target = dragItem && !own ? dropDue(col.key, now, workDays) : null;
-            const accepts = !!dragItem && (own || !!target);
-            const isOver = accepts && overCol === col.key;
-            // Vista previa: mientras se arrastra encima, la card aparece (punteada) donde va a quedar.
-            const preview = isOver && dragItem ? (own ? { ...dragItem } : movedItem(dragItem, col.key, target!, now, workDays)) : null;
-            const base = visible.filter((i) => i.bucket === col.key);
-            const insert = preview && dropIndex !== null ? insertAt(base, preview, dropIndex, order) : null;
-            const colOrder = insert ? { ...order, ...insert } : order;
-            const list = preview ? base.concat([preview]) : base;
+          {ROUNDS.map((round) => {
+            const band = visible.filter((i) => roundKey(i) === round.key);
+            if (!band.length) return null;
             return (
-              <section
-                key={col.key}
-                onDragOver={(e) => {
-                  if (!accepts || !dragItem) return;
-                  e.preventDefault();
-                  e.dataTransfer.dropEffect = "move";
-                  if (overCol !== col.key) setOverCol(col.key);
-                  const idx = dropSlot(e.currentTarget, e.clientY, groupOf(dragItem), dragItem.id);
-                  if (idx !== dropIndex) setDropIndex(idx);
-                }}
-                onDragLeave={(e) => {
-                  if (!e.currentTarget.contains(e.relatedTarget as Node | null)) setOverCol((c) => (c === col.key ? null : c));
-                }}
-                onDrop={(e) => {
-                  e.preventDefault();
-                  const item = dragItem;
-                  setOverCol(null);
-                  setDropIndex(null);
-                  setDragId(null);
-                  if (!item || !accepts) return;
-                  dropped.current = true;
-                  flyFromPointer(item.id, e.clientX, e.clientY);
-                  if (insert) saveOrder(insert);
-                  if (target) void moveTo(item, col.key, target);
-                }}
-                className={cn(
-                  "flex min-w-0 flex-col gap-2 rounded-xl border border-border bg-surface p-2 transition-colors",
-                  dragItem && !accepts && "opacity-60",
-                  isOver && target && "border-ring bg-accent/60",
-                )}
-              >
-                <ColumnHeader label={col.label} tone={col.tone} items={own ? base : list} />
-                {isOver && target && (
-                  <p className="rounded-md border border-dashed border-ring px-2 py-1.5 text-center text-label-sm text-foreground">
-                    Soltar → entrega {fmtShortDate(`${target}T12:00:00`)}
-                  </p>
-                )}
-                {list.length === 0 ? (
-                  <p className="px-1 py-6 text-center text-xs text-subtle-foreground">Nada acá</p>
-                ) : (
-                  <ul className="flex flex-col gap-1.5">
-                    <Grouped
-                      bucket={col.key}
-                      items={list}
-                      order={colOrder}
-                      collapsed={collapsed}
-                      openGroup={dragItem ? groupOf(dragItem) : null}
-                      onToggle={toggleGroup}
-                      render={(i) => (
-                        <ItemCard
-                          key={i === preview ? "ghost" : i.id}
-                          {...itemProps(i)}
-                          drag={dragProps(i)}
-                          dragging={dragId === i.id && i !== preview}
-                          collapsed={own && !!preview && dragId === i.id && i !== preview}
-                          ghost={i === preview}
-                          landed={landedId === i.id}
-                          onLanded={() => setLandedId((cur) => (cur === i.id ? null : cur))}
-                        />
+              <div key={round.key} className="space-y-2">
+                <RoundHeader {...round} items={band} />
+                {/* Sin `relative`: las posiciones del FLIP (`offsetLeft/Top`) siguen siendo relativas al tablero. */}
+                <div className="grid items-start gap-3 md:grid-cols-2 xl:grid-cols-5">
+                {COLUMNS.map((col) => {
+                  // Misma columna = reordenar; otra columna = cambiar la fecha (y quedar en la posición donde se suelta).
+                  // Cada franja recibe solo sus cards: la ronda sale del origen, no de la fecha.
+                  const colId = `${round.key}:${col.key}`;
+                  const inBand = !!dragItem && roundKey(dragItem) === round.key;
+                  const own = inBand && dragItem?.bucket === col.key;
+                  const target = inBand && dragItem && !own ? dropDue(col.key, now, workDays) : null;
+                  const accepts = inBand && (own || !!target);
+                  const isOver = accepts && overCol === colId;
+                  // Vista previa: mientras se arrastra encima, la card aparece (punteada) donde va a quedar.
+                  const preview = isOver && dragItem ? (own ? { ...dragItem } : movedItem(dragItem, col.key, target!, now, workDays)) : null;
+                  const base = band.filter((i) => i.bucket === col.key);
+                  const insert = preview && dropIndex !== null ? insertAt(base, preview, dropIndex, order) : null;
+                  const colOrder = insert ? { ...order, ...insert } : order;
+                  const list = preview ? base.concat([preview]) : base;
+                  return (
+                    <section
+                      key={col.key}
+                      onDragOver={(e) => {
+                        if (!accepts || !dragItem) return;
+                        e.preventDefault();
+                        e.dataTransfer.dropEffect = "move";
+                        if (overCol !== colId) setOverCol(colId);
+                        const idx = dropSlot(e.currentTarget, e.clientY, groupOf(dragItem), dragItem.id);
+                        if (idx !== dropIndex) setDropIndex(idx);
+                      }}
+                      onDragLeave={(e) => {
+                        if (!e.currentTarget.contains(e.relatedTarget as Node | null)) setOverCol((c) => (c === colId ? null : c));
+                      }}
+                      onDrop={(e) => {
+                        e.preventDefault();
+                        const item = dragItem;
+                        setOverCol(null);
+                        setDropIndex(null);
+                        setDragId(null);
+                        if (!item || !accepts) return;
+                        dropped.current = true;
+                        flyFromPointer(item.id, e.clientX, e.clientY);
+                        if (insert) saveOrder(insert);
+                        if (target) void moveTo(item, col.key, target);
+                      }}
+                      className={cn(
+                        "flex min-w-0 flex-col gap-2 rounded-xl border border-border bg-surface p-2 transition-colors",
+                        dragItem && !accepts && "opacity-60",
+                        isOver && target && "border-ring bg-accent/60",
                       )}
-                    />
-                  </ul>
-                )}
-              </section>
+                    >
+                      <ColumnHeader label={col.label} tone={col.tone} items={own ? base : list} />
+                      {isOver && target && (
+                        <p className="rounded-md border border-dashed border-ring px-2 py-1.5 text-center text-label-sm text-foreground">
+                          Soltar → entrega {fmtShortDate(`${target}T12:00:00`)}
+                        </p>
+                      )}
+                      {list.length === 0 ? (
+                        <p className="px-1 py-6 text-center text-xs text-subtle-foreground">Nada acá</p>
+                      ) : (
+                        <ul className="flex flex-col gap-1.5">
+                          <Grouped
+                            bucket={col.key}
+                            items={list}
+                            order={colOrder}
+                            collapsed={collapsed}
+                            openGroup={dragItem ? groupOf(dragItem) : null}
+                            onToggle={toggleGroup}
+                            render={(i) => (
+                              <ItemCard
+                                key={i === preview ? "ghost" : i.id}
+                                {...itemProps(i)}
+                                drag={dragProps(i)}
+                                dragging={dragId === i.id && i !== preview}
+                                collapsed={own && !!preview && dragId === i.id && i !== preview}
+                                ghost={i === preview}
+                                landed={landedId === i.id}
+                                onLanded={() => setLandedId((cur) => (cur === i.id ? null : cur))}
+                              />
+                            )}
+                          />
+                        </ul>
+                      )}
+                    </section>
+                  );
+                })}
+                </div>
+              </div>
             );
           })}
         </div>
       ) : (
-        <div className="space-y-4">
-          {COLUMNS.map((col) => {
-            const list = visible.filter((i) => i.bucket === col.key);
-            if (!list.length) return null;
+        <div className="space-y-6">
+          {ROUNDS.map((round) => {
+            const band = visible.filter((i) => roundKey(i) === round.key);
+            if (!band.length) return null;
             return (
-              <section key={col.key} className="space-y-1.5">
-                <ColumnHeader label={col.label} tone={col.tone} items={list} />
-                <ul className="divide-y divide-border overflow-hidden rounded-xl border border-border bg-card">
-                  <Grouped
-                    bucket={col.key}
-                    items={list}
-                    order={order}
-                    collapsed={collapsed}
-                    onToggle={toggleGroup}
-                    render={(i) => <ItemRow key={i.id} {...itemProps(i)} />}
-                  />
-                </ul>
-              </section>
+              <div key={round.key} className="space-y-3">
+                <RoundHeader {...round} items={band} />
+                {COLUMNS.map((col) => {
+                  const list = band.filter((i) => i.bucket === col.key);
+                  if (!list.length) return null;
+                  return (
+                    <section key={col.key} className="space-y-1.5">
+                      <ColumnHeader label={col.label} tone={col.tone} items={list} />
+                      <ul className="divide-y divide-border overflow-hidden rounded-xl border border-border bg-card">
+                        <Grouped
+                          bucket={col.key}
+                          items={list}
+                          order={order}
+                          collapsed={collapsed}
+                          onToggle={toggleGroup}
+                          render={(i) => <ItemRow key={i.id} {...itemProps(i)} />}
+                        />
+                      </ul>
+                    </section>
+                  );
+                })}
+              </div>
             );
           })}
         </div>
@@ -884,6 +911,29 @@ function Segmented<T extends string>({
         </button>
       ))}
     </div>
+  );
+}
+
+/**
+ * Franjas del tablero / lista: lo que salió de las reuniones y mails de esta ronda (`round`, últimos
+ * `ROUND_BUSINESS_DAYS` hábiles) arriba, y lo anterior que sigue abierto abajo, para terminar de cerrarlo.
+ */
+const roundKey = (i: PlannedItem): Round => (isOlder(i) ? "backlog" : "current");
+const ROUNDS: { key: Round; label: string; hint: string }[] = [
+  { key: "current", label: "De esta semana", hint: `Lo que salió de reuniones y mails de los últimos ${ROUND_BUSINESS_DAYS} días hábiles` },
+  { key: "backlog", label: "Para cerrar", hint: "Pendiente de antes que sigue abierto: hecho, reprogramar o no corresponde" },
+];
+
+function RoundHeader({ label, hint, items }: { label: string; hint: string; items: PlannedItem[] }) {
+  const minutes = ownMinutes(items);
+  return (
+    <header className="flex flex-wrap items-baseline gap-x-3 gap-y-0.5 border-b border-divider pb-1.5">
+      <h2 className="text-sm font-medium text-foreground-strong">
+        {label} <span className="tabular text-muted-foreground">{items.length}</span>
+      </h2>
+      <p className="text-xs text-subtle-foreground">{hint}</p>
+      {minutes > 0 && <span className="ml-auto tabular text-label-sm text-subtle-foreground">Tuyo {fmtMinutes(minutes)}</span>}
+    </header>
   );
 }
 
@@ -1063,11 +1113,11 @@ function SideLine({ item }: { item: PlannedItem }) {
 
 /** Chip violeta de los arrastrados: cuánto hace que vienen de la minuta/mail de origen. */
 function CarriedChip({ item, nowMs, iconOnly }: { item: PlannedItem; nowMs: number; iconOnly?: boolean }) {
-  if (!item.carried) return null;
+  if (!isOlder(item)) return null;
   const age = carriedAge(item.originDate, nowMs);
   return (
     <span
-      title={`Arrastrado desde ${fmtShortDate(item.originDate)} (${age})`}
+      title={`Viene desde ${fmtShortDate(item.originDate)} (${age})`}
       className="inline-flex shrink-0 items-center gap-1 rounded bg-carried/15 px-1.5 py-px text-label-sm font-medium text-carried"
     >
       <History className="size-3" />

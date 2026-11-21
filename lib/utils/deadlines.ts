@@ -8,6 +8,7 @@ import { isAutoTicket } from "@/lib/utils/auto-ticket";
 import { keywordSimilarity } from "@/lib/utils/mail-classify";
 import { addBusinessDays, parseStep, rollToWorkday, type StepDue } from "@/lib/utils/gemini-notes-parser";
 import { ACCOUNT_PRIORITY_RANK, accountPriority } from "@/lib/utils/account-priority";
+import { ROUND_BUSINESS_DAYS, type Round } from "@/lib/utils/round";
 import { DEFAULT_ESTIMATE_GUIDE, guidedMinutes, taskKind } from "@/lib/utils/task-kind";
 
 // Plazo de cada accionable pendiente (meta: cerrar todo dentro de la semana hábil con el cliente).
@@ -21,6 +22,14 @@ export type OweSide = "debo" | "me_deben";
 export type Bucket = "overdue" | "today" | "this_week" | "next_week" | "later";
 export type Priority = "alta" | "media" | "baja";
 export type ItemKind = "step" | "custom" | "followup" | "reply" | "request" | "commitment";
+
+export { ROUND_BUSINESS_DAYS, type Round };
+
+/** Ronda de un accionable según su fecha de origen (ver `PlannedItem.round`). */
+export function roundOf(originDate: string, carried: boolean, now: Date, workDays: number[]): Round {
+  if (carried) return "backlog";
+  return businessDaysBetween(now, new Date(originDate), workDays) > -ROUND_BUSINESS_DAYS ? "current" : "backlog";
+}
 
 export interface PlannedItem {
   id: string;
@@ -43,6 +52,11 @@ export interface PlannedItem {
   originTitle: string;
   originDate: string;
   carried: boolean;
+  /**
+   * Ronda: `current` = salió en los últimos `ROUND_BUSINESS_DAYS` días hábiles (reunión, mail o agregado a mano) y no
+   * viene de una minuta anterior; `backlog` = lo anterior que sigue abierto ("Para cerrar" en el tablero).
+   */
+  round: Round;
   /** Fin del día de entrega (ISO). */
   due: string;
   dueLabel: string;
@@ -228,6 +242,8 @@ interface RawItem {
   originTitle: string;
   originDate: string;
   carried: boolean;
+  /** Fecha que define la ronda si no es `originDate` (agregado a mano: cuándo lo agregué). */
+  roundDate?: string;
   /** Texto donde buscar la fecha dicha (sin el "[Dueño]"). */
   dueText: string | null;
   quick: boolean;
@@ -238,6 +254,7 @@ function rawItems(client: ClientRecord, settings: WorkSettings, now: Date): RawI
   const out: RawItem[] = [];
   const done = new Set(client.doneTicketIds ?? []);
   const aiCustom = new Map((client.customActionables ?? []).filter((c) => c.source === "ia").map((c) => [c.id, c]));
+  const manualCustom = new Map((client.customActionables ?? []).filter((c) => c.source !== "ia").map((c) => [c.id, c]));
   for (const a of accountActionables(client)) {
     if (a.done) continue;
     const parsed = parseStep(a.step, a.meeting.date, settings.workDays);
@@ -253,6 +270,7 @@ function rawItems(client: ClientRecord, settings: WorkSettings, now: Date): RawI
       // Lo de la IA cuenta desde que se detectó (la meta interna no arranca en la reunión vieja).
       originDate: ai ? ai.createdAt : a.meeting.date,
       carried: a.carried,
+      ...(manualCustom.has(a.id) && !a.carried && { roundDate: manualCustom.get(a.id)!.createdAt }),
       dueText: a.step,
       quick: false,
       ...(ai && { evidence: ai.evidence ?? "" }),
@@ -397,6 +415,7 @@ export function plannedItems(
       originTitle: r.originTitle,
       originDate: r.originDate,
       carried: r.carried,
+      round: roundOf(r.roundDate ?? r.originDate, r.carried, now, workDays),
       due: due.toISOString(),
       dueLabel: label(due),
       dueKind,
