@@ -136,6 +136,10 @@ sueltos, `data jsonb` = `ClientRecord`, `version` para control optimista) y `app
 `clients_unmatched`, `settings`, `sync_status`, `google_tokens`, `notion_tokens`). RLS sin políticas: solo service_role.
 `clients-store.ts` mantiene su API; los mutadores usan `mutateClient(s)` (lee la fila, aplica, `update … where version`;
 ante conflicto relee y reaplica; `SKIP` = sin cambios) y `mutateFileLevel` (altas, sin cliente, meta).
+**Egress (plan gratuito)**: caché en memoria del proceso (`globalThis.__clientRowCache`): `fetchRows` baja solo `id, version` y el `data` de
+las filas cuya versión cambió (las escrituras propias lo actualizan; se entregan copias con `structuredClone`); `getState` igual por
+`updated_at` para valores >4k caracteres (`__appStateCache`). `setClientActivity` no reescribe la fila si solo cambió `syncedAt` (lo
+refresca cada 1 h). Lectura completa en frío ≈2,8 MB; en caliente ≈3 KB. Escritura directa a la base fuera de la app = se detecta por `version`/`updated_at`.
 `settings-store`, `sync-status-store`, `google/notion-token-store` → `getState/setState`.
 Migrar datos locales: `pnpm migrate:supabase` (`scripts/migrate-to-supabase.mjs`, lee `.env.local`): carga inicial;
 `--merge [--dry-run]` combina el `.data/clients.json` de otra PC con la base (`scripts/merge-clients.mjs`: unión de reuniones,

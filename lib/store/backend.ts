@@ -37,12 +37,36 @@ const STATE_FILES: Partial<Record<StateKey, string>> = {
   scheduler_lock: "scheduler-lock.json",
 };
 
+// Caché en memoria por `updated_at` (egress de Supabase): las claves grandes (`clients_unmatched`, `ai_usage`…)
+// se leen muchas veces por sincronización; `value` solo se baja cuando cambió. Se entregan copias.
+type CachedState = { updatedAt: string; value: unknown };
+const stateCache: Map<StateKey, CachedState> = ((globalThis as { __appStateCache?: Map<StateKey, CachedState> })
+  .__appStateCache ??= new Map());
+/** Por debajo de esto no vale la pena el viaje extra para consultar `updated_at`. */
+const SMALL_STATE_CHARS = 4_000;
+
+function cacheState(key: StateKey, updatedAt: string, value: unknown): void {
+  if (JSON.stringify(value).length > SMALL_STATE_CHARS) stateCache.set(key, { updatedAt, value: structuredClone(value) });
+  else stateCache.delete(key);
+}
+
 /** Lee una clave de `app_state` (o su archivo). `null` si no existe. */
 export async function getState<T>(key: StateKey): Promise<T | null> {
   if (usingSupabase()) {
-    const { data, error } = await supabaseAdmin().from("app_state").select("value").eq("key", key).maybeSingle();
+    const table = () => supabaseAdmin().from("app_state");
+    const cached = stateCache.get(key);
+    if (cached) {
+      const { data, error } = await table().select("updated_at").eq("key", key).maybeSingle();
+      if (error) throw new Error(`app_state_read(${key}): ${error.message}`);
+      if (data?.updated_at === cached.updatedAt) return structuredClone(cached.value) as T;
+      stateCache.delete(key);
+      if (!data) return null;
+    }
+    const { data, error } = await table().select("value, updated_at").eq("key", key).maybeSingle();
     if (error) throw new Error(`app_state_read(${key}): ${error.message}`);
-    return (data?.value as T) ?? null;
+    if (!data) return null;
+    cacheState(key, data.updated_at as string, data.value);
+    return data.value as T;
   }
   const file = STATE_FILES[key];
   if (!file) throw new Error(`state_key_without_file: ${key}`);
@@ -57,8 +81,15 @@ export async function getState<T>(key: StateKey): Promise<T | null> {
 export async function setState(key: StateKey, value: unknown): Promise<void> {
   if (usingSupabase()) {
     const table = supabaseAdmin().from("app_state");
-    const { error } = value === null ? await table.delete().eq("key", key) : await table.upsert({ key, value });
+    stateCache.delete(key);
+    if (value === null) {
+      const { error } = await table.delete().eq("key", key);
+      if (error) throw new Error(`app_state_write(${key}): ${error.message}`);
+      return;
+    }
+    const { data, error } = await table.upsert({ key, value }).select("updated_at").single();
     if (error) throw new Error(`app_state_write(${key}): ${error.message}`);
+    if (data) cacheState(key, data.updated_at as string, value);
     return;
   }
   const file = STATE_FILES[key];
