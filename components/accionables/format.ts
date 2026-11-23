@@ -10,7 +10,7 @@ export const ROUND_COOKIE = "accionables_round";
 export const CLOSE_DELAY_MS = 5000;
 
 export const COLUMNS: { key: Bucket; label: string; tone: "critical" | "warning" | "neutral" }[] = [
-  { key: "overdue", label: "Vencido", tone: "critical" },
+  { key: "overdue", label: "Atrasados", tone: "critical" },
   { key: "today", label: "Hoy", tone: "warning" },
   { key: "this_week", label: "Esta semana", tone: "neutral" },
   { key: "next_week", label: "Próxima semana", tone: "neutral" },
@@ -67,10 +67,11 @@ export function addWorkdays(from: Date, n: number, workDays: number[]): Date {
   return d;
 }
 
-/** Antigüedad de un arrastrado contada desde su origen: "hace 4 d" / "hace 3 sem". */
-export function carriedAge(originDate: string, nowMs: number): string {
-  const days = Math.max(0, Math.floor((nowMs - Date.parse(originDate)) / 86_400_000));
-  return days < 7 ? `hace ${days} d` : `hace ${Math.floor(days / 7)} sem`;
+/** Lunes (dd/mm) de la semana de `iso`: "sem. 16/11" del chip de los atrasados. */
+export function weekStartLabel(iso: string): string {
+  const d = new Date(iso);
+  const monday = new Date(d.getFullYear(), d.getMonth(), d.getDate() - ((d.getDay() + 6) % 7));
+  return `${String(monday.getDate()).padStart(2, "0")}/${String(monday.getMonth() + 1).padStart(2, "0")}`;
 }
 
 /**
@@ -79,7 +80,9 @@ export function carriedAge(originDate: string, nowMs: number): string {
  */
 export type CardTone = "late" | "overdue" | "today" | null;
 export function cardTone(item: PlannedItem): CardTone {
-  if (item.bucket === "overdue") return -item.businessDaysLeft >= 2 ? "late" : "overdue";
+  if (item.bucket === "overdue") return item.lateSince || -item.businessDaysLeft >= 2 ? "late" : "overdue";
+  if (item.slipped) return "overdue";
+  if (item.plannedToday) return null;
   return item.bucket === "today" ? "today" : null;
 }
 
@@ -114,34 +117,45 @@ const byPriority = (a: PlannedItem, b: PlannedItem) =>
 
 /**
  * Grupos de cada columna / sección (solo visual): primero las cuentas de "Más atención", después las cuentas con
- * reunión próxima (`meetingSoonAt`, la más cercana arriba), los arrastrados (`isOlder`) y al final los nuevos; dentro de cada
- * grupo por prioridad y luego fecha. `order` = orden manual (arrastrar dentro de la columna): lo ordenado a mano va
- * según su posición y lo que nunca se ordenó (nuevo) queda arriba.
+ * reunión próxima (`meetingSoonAt`, la más cercana arriba) y el resto; dentro de cada grupo por prioridad y luego
+ * fecha (en Atrasados, lo más viejo primero). `order` = orden manual (arrastrar dentro de la columna): lo ordenado a
+ * mano va según su posición y lo que nunca se ordenó (nuevo) queda arriba.
  */
-export type BoardGroup = "attention" | "meeting" | "carried" | "fresh";
-export const BOARD_GROUPS: BoardGroup[] = ["attention", "meeting", "carried", "fresh"];
-export const groupOf = (i: PlannedItem): BoardGroup =>
-  i.attention ? "attention" : i.meetingSoonAt ? "meeting" : isOlder(i) ? "carried" : "fresh";
-/** Viene de antes de esta ronda (minuta anterior o de hace más de `ROUND_BUSINESS_DAYS` hábiles): "Para cerrar". */
-export const isOlder = (i: PlannedItem) => i.carried || i.round === "backlog";
+export type BoardGroup = "attention" | "meeting" | "rest";
+export const BOARD_GROUPS: BoardGroup[] = ["attention", "meeting", "rest"];
+export const groupOf = (i: PlannedItem): BoardGroup => (i.attention ? "attention" : i.meetingSoonAt ? "meeting" : "rest");
+/** Viene de antes de esta ronda (origen anterior a la semana pasada, sin fecha acordada en esta): "Semana pasada". */
+export const isOlder = (i: PlannedItem) => i.round === "backlog";
 /** Grupos plegados, por columna (`plazo:grupo`, p. ej. "today:fresh"): preferencia del navegador. */
 export const COLLAPSED_KEY = "accionables_collapsed_v2";
 export const collapseKey = (bucket: Bucket, group: BoardGroup) => `${bucket}:${group}`;
-const COLLAPSE_RE = /^(overdue|today|this_week|next_week|later):(attention|meeting|carried|fresh)$/;
+const COLLAPSE_RE = /^(overdue|today|this_week|next_week|later):(attention|meeting|rest)$/;
 export const isCollapseKey = (k: unknown): k is string => typeof k === "string" && COLLAPSE_RE.test(k);
 
 /** "Reunión jue 10:00" del chip de las cards. */
 export const meetingChip = (iso: string) =>
   `${new Date(iso).toLocaleDateString("es", { weekday: "short" }).replace(".", "")} ${new Date(iso).toLocaleTimeString("es", { hour: "2-digit", minute: "2-digit", hour12: false })}`;
 
+/**
+ * Clave del orden manual: columna + id. Si el accionable cambia de columna (al rodar los lunes o por fecha), su orden
+ * viejo deja de aplicar y cae arriba de la nueva como uno sin ordenar; la clave vieja se poda al guardar (`keep`).
+ */
+export const orderKey = (i: Pick<PlannedItem, "id" | "bucket">) => `${i.bucket}|${i.id}`;
+
+/** Atrasados: lo más viejo primero (desde cuándo existe, después la fecha que tenía), para ir limpiando desde el fondo. */
+const byAge = (a: PlannedItem, b: PlannedItem) =>
+  a.originDate.localeCompare(b.originDate) || a.due.localeCompare(b.due) || byPriority(a, b);
+
 export function boardGroups(items: PlannedItem[], order?: Record<string, number>): Record<BoardGroup, PlannedItem[]> {
+  const base = (a: PlannedItem, b: PlannedItem) =>
+    a.bucket === "overdue" && b.bucket === "overdue" ? byAge(a, b) : byPriority(a, b);
   const cmp = (a: PlannedItem, b: PlannedItem) => {
-    const ra = order?.[a.id];
-    const rb = order?.[b.id];
-    if (ra !== undefined && rb !== undefined) return ra - rb || byPriority(a, b);
+    const ra = order?.[orderKey(a)];
+    const rb = order?.[orderKey(b)];
+    if (ra !== undefined && rb !== undefined) return ra - rb || base(a, b);
     if (ra !== undefined) return 1;
     if (rb !== undefined) return -1;
-    return (a.meetingSoonAt ?? "~").localeCompare(b.meetingSoonAt ?? "~") || byPriority(a, b);
+    return (a.meetingSoonAt ?? "~").localeCompare(b.meetingSoonAt ?? "~") || base(a, b);
   };
   return Object.fromEntries(BOARD_GROUPS.map((g) => [g, items.filter((i) => groupOf(i) === g).sort(cmp)])) as Record<
     BoardGroup,
@@ -179,7 +193,7 @@ export function movedItem(item: PlannedItem, bucket: Bucket, day: string, now: D
 /**
  * Fecha (AAAA-MM-DD) que toma un accionable al soltarlo en una columna: Hoy = hoy, Esta semana = último hábil de
  * esta semana, Próxima semana = último hábil de la próxima, Más adelante = primer hábil de la siguiente. `null` =
- * no se puede soltar ahí (Vencido, o no queda hábil esta semana).
+ * no se puede soltar ahí (Atrasados, o no queda hábil esta semana).
  */
 export function dropDue(bucket: Bucket, now: Date, workDays: number[]): string | null {
   const today = new Date(now.getFullYear(), now.getMonth(), now.getDate());

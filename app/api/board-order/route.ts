@@ -4,7 +4,7 @@ export async function GET() {
   return Response.json(await getBoardOrder());
 }
 
-/** `{order: {ticketId: posición}, keep?: ticketIds vigentes}` → orden manual del tablero de /accionables. */
+/** `{order: {"columna|ticketId": posición}, keep?: claves vigentes}` → orden manual del tablero de /accionables. */
 export async function PUT(request: Request) {
   const body = (await request.json().catch(() => null)) as { order?: BoardOrder; keep?: string[] } | null;
   if (!body?.order || typeof body.order !== "object") return Response.json({ error: "order_required" }, { status: 400 });

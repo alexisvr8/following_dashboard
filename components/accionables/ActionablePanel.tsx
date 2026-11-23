@@ -283,7 +283,7 @@ function PanelBody({
               <RotateCcw className="inline size-3" /> auto
             </button>
           )}
-          {isOlder(item) && <Badge variant="outline">Para cerrar</Badge>}
+          {isOlder(item) && <Badge variant="outline">Semana pasada</Badge>}
           {item.atRisk && <Badge variant="critical">Sin espacio</Badge>}
         </div>
 

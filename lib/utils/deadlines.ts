@@ -8,7 +8,7 @@ import { isAutoTicket } from "@/lib/utils/auto-ticket";
 import { keywordSimilarity } from "@/lib/utils/mail-classify";
 import { addBusinessDays, lastWorkdayOfWeek, parseStep, rollToWorkday, type StepDue } from "@/lib/utils/gemini-notes-parser";
 import { ACCOUNT_PRIORITY_RANK, accountPriority } from "@/lib/utils/account-priority";
-import { ROUND_BUSINESS_DAYS, type Round } from "@/lib/utils/round";
+import { type Round } from "@/lib/utils/round";
 import { DEFAULT_ESTIMATE_GUIDE, guidedMinutes, taskKind } from "@/lib/utils/task-kind";
 import { isSilent } from "@/lib/utils/interaction";
 
@@ -24,12 +24,20 @@ export type Bucket = "overdue" | "today" | "this_week" | "next_week" | "later";
 export type Priority = "alta" | "media" | "baja";
 export type ItemKind = "step" | "custom" | "followup" | "reply" | "request" | "commitment";
 
-export { ROUND_BUSINESS_DAYS, type Round };
+export { type Round };
 
-/** Ronda de un accionable según su fecha de origen (ver `PlannedItem.round`). */
-export function roundOf(originDate: string, carried: boolean, now: Date, workDays: number[]): Round {
-  if (carried) return "backlog";
-  return businessDaysBetween(now, new Date(originDate), workDays) > -ROUND_BUSINESS_DAYS ? "current" : "backlog";
+/**
+ * Ronda de un accionable (ver `PlannedItem.round`), por semanas de calendario (lun–dom):
+ * `current` ("Esta semana") = salió esta semana o la anterior (lo que vi con el cliente la semana pasada se hace
+ * ésta), o tiene fecha ACORDADA dentro de esta semana; `backlog` ("Semana pasada") = lo de antes que sigue abierto.
+ */
+export function roundOf(originDate: string, agreedDue: Date | null, now: Date): Round {
+  const monday = new Date(now.getFullYear(), now.getMonth(), now.getDate() - ((now.getDay() + 6) % 7));
+  const prevMonday = new Date(monday.getFullYear(), monday.getMonth(), monday.getDate() - 7);
+  const nextMonday = new Date(monday.getFullYear(), monday.getMonth(), monday.getDate() + 7);
+  if (new Date(originDate) >= prevMonday) return "current";
+  if (agreedDue && agreedDue >= monday && agreedDue < nextMonday) return "current";
+  return "backlog";
 }
 
 export interface PlannedItem {
@@ -54,8 +62,8 @@ export interface PlannedItem {
   originDate: string;
   carried: boolean;
   /**
-   * Ronda: `current` = salió en los últimos `ROUND_BUSINESS_DAYS` días hábiles (reunión, mail o agregado a mano) y no
-   * viene de una minuta anterior; `backlog` = lo anterior que sigue abierto ("Para cerrar" en el tablero).
+   * Ronda (`roundOf`): `current` = salió esta semana o la anterior (reunión, mail o agregado a mano) o tiene fecha
+   * acordada en esta semana; `backlog` = lo de antes que sigue abierto ("Semana pasada" en el tablero).
    */
   round: Round;
   /** De una reunión sin fecha dicha: meta = último hábil de la semana siguiente (no la de N días). */
@@ -101,7 +109,22 @@ export interface PlannedItem {
   aiAdded?: boolean;
   /** De dónde lo sacó la IA. */
   evidence?: string;
+  /**
+   * Atrasado por haber quedado abierto de antes de la última reunión con la cuenta (ISO de esa reunión), aunque su
+   * fecha no haya pasado. No aplica con fecha manual ni con fecha acordada todavía por venir.
+   */
+  lateSince?: string;
+  /** Venció antes de hoy pero dentro de esta semana: va a "Hoy" para hacerlo en el día (no a Atrasados). */
+  slipped?: boolean;
+  /** Vence más adelante en la semana pero entra en los huecos libres de hoy (`computeWeekPlan`): va a "Hoy". */
+  plannedToday?: boolean;
 }
+
+/** Atrasado de verdad: en Atrasados o vencido esta semana y corrido a Hoy (`slipped`). Para alertas, resumen y foco. */
+export const isLate = (i: Pick<PlannedItem, "bucket" | "slipped">) => i.bucket === "overdue" || !!i.slipped;
+
+/** Fechas "acordadas" más allá de esto desde el origen son un dd/mm citado que corrió de año ("muestra 20/11"): se ignoran. */
+const MAX_AGREED_DAYS = 120;
 
 const DAY_FMT = new Intl.DateTimeFormat("es", { weekday: "short", day: "2-digit", month: "2-digit" });
 const label = (d: Date) => DAY_FMT.format(d).replace(".", "").replace(",", "");
@@ -181,8 +204,8 @@ export const PREP_URGENT_DAYS = 1;
  * 2 cuenta en silencio (sin interacción hace ≥N días hábiles, sin reunión cerca) → 3 "Más atención" → 4 el resto.
  * Así una cuenta con la que te reunís seguido no tapa a las que no tocaste en la semana.
  */
-export function focusTier(i: Pick<PlannedItem, "bucket" | "prepUrgent" | "silent" | "attention">): number {
-  return i.bucket === "overdue" ? 0 : i.prepUrgent ? 1 : i.silent ? 2 : i.attention ? 3 : 4;
+export function focusTier(i: Pick<PlannedItem, "bucket" | "slipped" | "prepUrgent" | "silent" | "attention">): number {
+  return isLate(i) ? 0 : i.prepUrgent ? 1 : i.silent ? 2 : i.attention ? 3 : 4;
 }
 
 /** Cuenta prioritaria: sus accionables suben un nivel (baja → media → alta). Nunca baja una prioridad. */
@@ -261,6 +284,8 @@ interface RawItem {
   quick: boolean;
   /** Salió de una reunión (minuta o detectado por la IA): sin fecha dicha, va a la semana siguiente. */
   nextWeekDefault?: boolean;
+  /** Detectado por el análisis IA (corre los lunes sobre lo de la semana anterior): sin fecha, vence esta semana. */
+  sameWeekDefault?: boolean;
   evidence?: string;
 }
 
@@ -287,7 +312,7 @@ function rawItems(client: ClientRecord, settings: WorkSettings, now: Date): RawI
       ...(manualCustom.has(a.id) && !a.carried && { roundDate: manualCustom.get(a.id)!.createdAt }),
       dueText: a.step,
       quick: false,
-      ...(!manualCustom.has(a.id) && { nextWeekDefault: true }),
+      ...(!manualCustom.has(a.id) && (ai ? { sameWeekDefault: true } : { nextWeekDefault: true })),
       ...(ai && { evidence: ai.evidence ?? "" }),
     });
   }
@@ -381,10 +406,17 @@ export function plannedItems(
   const silent = new Map(
     clients.filter((c) => c.status === "assigned").map((c) => [c.id, isSilent(c, settings, now, meetingsByClient.get(c.id))] as const),
   );
+  // Última reunión ya realizada de cada cuenta: lo abierto de antes queda atrasado.
+  const lastMeeting = new Map(
+    clients.map((c) => [c.id, c.meetings.map((m) => m.date).filter((d) => Date.parse(d) <= now.getTime()).sort().at(-1) ?? null] as const),
+  );
+  const today = endOfDay(now);
+  const monday = new Date(now.getFullYear(), now.getMonth(), now.getDate() - ((now.getDay() + 6) % 7));
   for (const { c, r } of raws) {
     const origin = new Date(r.originDate);
     const manual = c.actionableDue?.[r.id];
-    const agreed = !manual && r.dueText ? parseStep(r.dueText, r.originDate, workDays).due : null;
+    const parsed = !manual && r.dueText ? parseStep(r.dueText, r.originDate, workDays).due : null;
+    const agreed = parsed && parsed.until.getTime() - origin.getTime() <= MAX_AGREED_DAYS * 86_400_000 ? parsed : null;
     let due: Date;
     let limit: Date;
     let dueKind: DueKind;
@@ -402,6 +434,12 @@ export function plannedItems(
       due = limit = lastWorkdayOfWeek(monday, workDays);
       dueKind = "target";
       nextWeekTarget = true;
+    } else if (r.sameWeekDefault && !c.profile?.attention) {
+      // Del análisis IA: viene de lo conversado la semana anterior, así que es para esta semana.
+      // (Detectado en fin de semana: el último hábil ya pasó → el de la semana que sigue.)
+      const friday = endOfDay(lastWorkdayOfWeek(origin, workDays));
+      due = limit = friday >= origin ? friday : endOfDay(lastWorkdayOfWeek(addBusinessDays(origin, 1, workDays), workDays));
+      dueKind = "target";
     } else {
       // Más atención: meta interna corta (1 día hábil) y vencido al día siguiente.
       const t = c.profile?.attention ? Math.min(target, settings.attentionTargetDays ?? 1) : target;
@@ -421,8 +459,19 @@ export function plannedItems(
     const meetingAt = meetingsByClient.get(c.id) ?? null;
     const meetingIn = meetingAt != null ? businessDaysBetween(now, new Date(meetingAt), workDays) : null;
     const meetingSoon = meetingIn != null && meetingIn <= PREP_BUSINESS_DAYS;
+    // Atrasado si quedó de antes de la última reunión (salvo fecha manual o acordada por venir); si venció dentro de
+    // esta semana va a "Hoy" para hacerlo en el día; lo de semanas anteriores, a Atrasados.
+    const last = lastMeeting.get(c.id);
+    const created = r.roundDate ?? r.originDate;
+    const lateSince =
+      last && r.kind !== "followup" && dueKind !== "manual" && !(dueKind === "agreed" && due >= today) && Date.parse(created) < Date.parse(last)
+        ? last
+        : null;
+    let bucket = lateSince ? "overdue" : bucketOf(due, limit, dueKind, now);
+    const slipped = !lateSince && bucket === "overdue" && (dueKind === "target" ? limit : due) >= monday;
+    if (slipped) bucket = "today";
     const base = {
-      bucket: bucketOf(due, limit, dueKind, now),
+      bucket,
       kind: r.kind,
       side: sideOverride ?? r.side,
       businessDaysLeft: businessDaysBetween(now, dueKind === "target" && due < endOfDay(now) ? limit : due, workDays),
@@ -443,7 +492,7 @@ export function plannedItems(
       originTitle: r.originTitle,
       originDate: r.originDate,
       carried: r.carried,
-      round: roundOf(r.roundDate ?? r.originDate, r.carried, now, workDays),
+      round: roundOf(r.roundDate ?? r.originDate, dueKind === "agreed" ? due : null, now),
       due: due.toISOString(),
       dueLabel: label(due),
       dueKind,
@@ -460,6 +509,8 @@ export function plannedItems(
         ...(base.side === "debo" && { prep: true, ...(meetingIn! <= PREP_URGENT_DAYS && { prepUrgent: true }) }),
       }),
       ...(silent.get(c.id) && { silent: true }),
+      ...(lateSince && { lateSince }),
+      ...(slipped && { slipped: true }),
       accountPriority: accountLevel.get(c.id) ?? "media",
       ...(r.evidence !== undefined && { aiAdded: true, evidence: r.evidence }),
       ...(nextWeekTarget && { nextWeekTarget: true }),

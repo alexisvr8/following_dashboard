@@ -18,16 +18,15 @@ const item = (id: string, p: Partial<PlannedItem>): PlannedItem =>
   }) as PlannedItem;
 
 describe("boardGroups", () => {
-  it("atención → arrastrados → nuevos, y dentro de cada grupo prioridad antes que fecha", () => {
+  it("atención → resto, y dentro de cada grupo prioridad antes que fecha", () => {
     const g = boardGroups([
       item("nuevo-baja-pronto", { priority: "baja", due: "2026-11-16T23:59:59.000Z" }),
       item("nuevo-alta-tarde", { priority: "alta", due: "2026-11-20T23:59:59.000Z" }),
-      item("arrastrado", { carried: true }),
+      item("arrastrado", { carried: true, round: "backlog" }),
       item("atencion-arrastrado", { attention: true, carried: true }),
     ]);
     expect(g.attention.map((i) => i.id)).toEqual(["atencion-arrastrado"]);
-    expect(g.carried.map((i) => i.id)).toEqual(["arrastrado"]);
-    expect(g.fresh.map((i) => i.id)).toEqual(["nuevo-alta-tarde", "nuevo-baja-pronto"]);
+    expect(g.rest.map((i) => i.id)).toEqual(["nuevo-alta-tarde", "arrastrado", "nuevo-baja-pronto"]);
   });
 });
 

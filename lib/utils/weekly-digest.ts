@@ -1,6 +1,6 @@
 import type { ClientRecord } from "@/lib/store/clients-store";
 import type { WorkSettings } from "@/lib/store/settings-store";
-import { plannedItems, type PlannedItem } from "@/lib/utils/deadlines";
+import { isLate, plannedItems, type PlannedItem } from "@/lib/utils/deadlines";
 import { analysisView, type AnalysisView } from "@/lib/utils/account-analysis";
 
 // Resumen del lunes a mí mismo (nunca al cliente): por cuenta asignada, estado y resumen del análisis IA, lo que
@@ -61,11 +61,11 @@ export function buildWeeklyDigest(
   const isFocus = (r: Row) =>
     Boolean(r.c.profile?.attention) ||
     ["en_riesgo", "bloqueada", "esperando_xtract"].includes(r.view?.state ?? "") ||
-    r.items.some((i) => i.side === "debo" && i.bucket === "overdue");
+    r.items.some((i) => i.side === "debo" && isLate(i));
   const focus = rows.filter(isFocus);
   const rest = rows.filter((r) => !isFocus(r));
 
-  const overdue = items.filter((i) => i.bucket === "overdue" && i.side === "debo").length;
+  const overdue = items.filter((i) => isLate(i) && i.side === "debo").length;
   const mine = items.filter((i) => i.side === "debo" && i.due <= endOfWeek).length;
   const theirs = items.filter((i) => i.side === "me_deben").length;
   const risky = rows.filter((r) => r.view && (r.view.state === "en_riesgo" || r.view.state === "bloqueada")).map((r) => r.c.name);

@@ -10,6 +10,7 @@ import { computeWeekPlan, hasWorkLeftThisWeek, planWeekBounds } from "@/lib/util
 import { pendingSuggestions } from "@/lib/utils/deadlines";
 import { pendingRewrites } from "@/lib/utils/account-analysis";
 import { getBoardOrder } from "@/lib/store/board-order-store";
+import { getTodayAdjust } from "@/lib/store/not-today-store";
 import { pendingWeeklyReview } from "@/lib/utils/weekly-learning";
 
 // Tablero de accionables por plazo: cada pendiente de las cuentas asignadas con su fecha de entrega
@@ -23,11 +24,12 @@ export default async function AccionablesPage({
   searchParams: Promise<{ item?: string; cuentas?: string }>;
 }) {
   const sp = await searchParams;
-  const [{ clients, ownerEmail }, settings, jar, boardOrder] = await Promise.all([
+  const [{ clients, ownerEmail }, settings, jar, boardOrder, todayAdjust] = await Promise.all([
     getClientsFileCached(),
     getSettingsCached(),
     cookies(),
     getBoardOrder().catch(() => ({})),
+    getTodayAdjust().catch(() => ({ skip: new Set<string>(), force: new Set<string>() })),
   ]);
   const initialView = jar.get(VIEW_COOKIE)?.value === "list" ? "list" : "board";
   const initialDensity = jar.get(DENSITY_COOKIE)?.value === "compact" ? "compact" : "comfy";
@@ -38,7 +40,7 @@ export default async function AccionablesPage({
   const { start, end } = planWeekBounds(now, offset);
   // Una semana más de eventos: solo para la próxima reunión de cada cuenta (grupo "Reunión próxima").
   const events = await listEventsBetween(start, new Date(end.getTime() + 7 * 86_400_000)).catch(() => null);
-  const plan = computeWeekPlan(clients, settings, events, offset, now);
+  const plan = computeWeekPlan(clients, settings, events, offset, now, todayAdjust);
 
   // Panel de mail de la card (mismo que Seguimiento del Dashboard): el mail único de la cuenta, solo donde hace falta.
   // Los de Seguimiento (me deben) suman "Pedir status": recordatorio corto de ese punto solo (`itemReminders`).

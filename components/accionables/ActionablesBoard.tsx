@@ -39,7 +39,7 @@ import { Checkbox } from "@/components/ui/checkbox";
 import { inputClass } from "@/components/ui/input";
 import { cn } from "@/lib/utils";
 import type { Bucket, DueKind, PlannedItem, SuggestedItem } from "@/lib/utils/deadlines";
-import { ROUND_BUSINESS_DAYS, type Round } from "@/lib/utils/round";
+import { type Round } from "@/lib/utils/round";
 import { ActionablePanel, type PanelAction } from "@/components/accionables/ActionablePanel";
 import { SuggestionsDialog } from "@/components/accionables/SuggestionsSection";
 import { RewritesDialog } from "@/components/accionables/RewritesDialog";
@@ -51,7 +51,8 @@ import { CorrectionsDialog } from "@/components/accionables/CorrectionsDialog";
 import { FollowupPanel, type FollowupPanelData } from "@/components/dashboard/FollowupPanel";
 import {
   addWorkdays,
-  carriedAge,
+  orderKey,
+  weekStartLabel,
   boardGroups,
   BOARD_GROUPS,
   COLLAPSED_KEY,
@@ -305,9 +306,12 @@ export function ActionablesBoard({
   }
   const [landedId, setLandedId] = useState<string | null>(null);
   const [moveError, setMoveError] = useState<string | null>(null);
+  // Sacadas de Hoy a mano (al instante, mientras el servidor recalcula y llena el hueco con otra).
+  const [outOfToday, setOutOfToday] = useState<Set<string>>(new Set());
   const open = items
     .filter((i) => !hidden.has(i.id))
-    .map((i) => (moved[i.id] ? movedItem(i, moved[i.id].bucket, moved[i.id].day, now, workDays) : i));
+    .map((i) => (moved[i.id] ? movedItem(i, moved[i.id].bucket, moved[i.id].day, now, workDays) : i))
+    .map((i) => (i.plannedToday && outOfToday.has(i.id) ? { ...i, bucket: "this_week" as const, plannedToday: false } : i));
   // Todos los filtros salvo la franja: de acá salen los números del toggle De esta semana / Para cerrar.
   const filtered = open.filter((i) => {
     if (side !== "todo" && i.side !== side) return false;
@@ -317,14 +321,13 @@ export function ActionablesBoard({
     return !q || `${i.title} ${i.detail ?? ""} ${i.clientName} ${i.owners.join(" ")}`.toLowerCase().includes(q);
   });
   const visible = round === "all" ? filtered : filtered.filter((i) => roundKey(i) === round);
-  const showRounds = round === "all";
   const roundCount = (r: Round) => filtered.filter((i) => roundKey(i) === r).length;
   const backlogOverdue = filtered.filter((i) => roundKey(i) === "backlog" && i.bucket === "overdue").length;
   const selected = items.find((i) => i.id === selectedId) ?? null;
 
   // Chips de la barra: click = filtro rápido (otro click lo saca). "En seguimiento" usa el filtro de lado.
   const counters = [
-    { key: "overdue", label: "vencidos", hint: "Ver solo lo vencido", value: open.filter((i) => i.bucket === "overdue").length, tone: "critical" as const },
+    { key: "overdue", label: "atrasados", hint: "Ver solo lo atrasado", value: open.filter((i) => i.bucket === "overdue").length, tone: "critical" as const },
     { key: "today", label: "para hoy", hint: "Ver solo lo que vence hoy", value: open.filter((i) => i.bucket === "today").length, tone: "warning" as const },
     { key: "follow", label: "en seguimiento", hint: `Ver solo ${SIDE_LABEL.me_deben}`, value: open.filter((i) => i.side === "me_deben").length, tone: "neutral" as const },
     {
@@ -533,12 +536,39 @@ export function ActionablesBoard({
     void fetch("/api/board-order", {
       method: "PUT",
       headers: { "content-type": "application/json" },
-      body: JSON.stringify({ order: patch, keep: items.map((i) => i.id) }),
+      // Claves vigentes (columna|id, también las de cards recién movidas): lo demás se poda.
+      body: JSON.stringify({ order: patch, keep: [...new Set([...items, ...open].map(orderKey))] }),
     })
       .then((r) => {
         if (!r.ok) throw new Error(String(r.status));
       })
       .catch(() => setMoveError("No se pudo guardar el orden del tablero (queda solo en esta pantalla)."));
+  }
+
+  /**
+   * Card de Hoy por agenda → Esta semana: no cambia su fecha, solo no entra hoy (`PUT /api/not-today`). Con "+1 día"
+   * (`tomorrow`) y reunión próxima con la cuenta, además queda fija en Hoy el próximo día hábil (no amanece atrasada).
+   */
+  async function skipToday(item: PlannedItem, tomorrow = false) {
+    const forceOn = tomorrow && item.meetingSoonAt ? isoDay(addWorkdays(now, 1, workDays)) : null;
+    setOutOfToday((s) => new Set(s).add(item.id));
+    setLandedId(item.id);
+    setMoveError(null);
+    const r = await fetch("/api/not-today", {
+      method: "PUT",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ id: item.id, skip: true, forceOn }),
+    }).catch(() => null);
+    if (!r?.ok) {
+      setOutOfToday((s) => {
+        const next = new Set(s);
+        next.delete(item.id);
+        return next;
+      });
+      setMoveError(`No se pudo sacar “${item.title}” de Hoy: volvió a su columna.`);
+      return;
+    }
+    router.refresh();
   }
 
   async function moveTo(item: PlannedItem, bucket: Bucket, day: string) {
@@ -571,6 +601,7 @@ export function ActionablesBoard({
     closing: closing[i.id],
     onUndo: undoClose,
     onMail: mailAction(i),
+    ...(i.plannedToday && { onLater: () => void skipToday(i, true) }),
     flash: flashId === i.id,
   });
   const dragProps = (i: PlannedItem) => ({
@@ -673,7 +704,7 @@ export function ActionablesBoard({
                       {r.label}
                       <span className="tabular text-subtle-foreground">{roundCount(r.key)}</span>
                       {r.key === "backlog" && backlogOverdue > 0 && (
-                        <span title={`${backlogOverdue} vencido${backlogOverdue === 1 ? "" : "s"} de antes de esta semana`} className="flex">
+                        <span title={`${backlogOverdue} atrasado${backlogOverdue === 1 ? "" : "s"} de semanas anteriores`} className="flex">
                           <StatusDot tone="critical" />
                         </span>
                       )}
@@ -803,26 +834,19 @@ export function ActionablesBoard({
               />
             </ul>
           )}
-          {ROUNDS.map((round) => {
-            const band = visible.filter((i) => roundKey(i) === round.key);
-            if (!band.length) return null;
-            return (
-              <div key={round.key} className="space-y-2">
-                {showRounds && <RoundHeader label={round.label} hint={round.hint} items={band} />}
-                {/* Sin `relative`: las posiciones del FLIP (`offsetLeft/Top`) siguen siendo relativas al tablero. */}
-                <div className="grid items-start gap-3 md:grid-cols-2 xl:grid-cols-5">
+          {/* Sin `relative`: las posiciones del FLIP (`offsetLeft/Top`) siguen siendo relativas al tablero. */}
+          <div className="grid items-start gap-3 md:grid-cols-2 xl:grid-cols-5">
                 {COLUMNS.map((col) => {
                   // Misma columna = reordenar; otra columna = cambiar la fecha (y quedar en la posición donde se suelta).
-                  // Cada franja recibe solo sus cards: la ronda sale del origen, no de la fecha.
-                  const colId = `${round.key}:${col.key}`;
-                  const inBand = !!dragItem && roundKey(dragItem) === round.key;
-                  const own = inBand && dragItem?.bucket === col.key;
-                  const target = inBand && dragItem && !own ? dropDue(col.key, now, workDays) : null;
-                  const accepts = inBand && (own || !!target);
+                  // La ronda sale del origen, no de la fecha: mover de columna no la cambia.
+                  const colId = col.key;
+                  const own = !!dragItem && dragItem.bucket === col.key;
+                  const target = dragItem && !own ? dropDue(col.key, now, workDays) : null;
+                  const accepts = !!dragItem && (own || !!target);
                   const isOver = accepts && overCol === colId;
                   // Vista previa: mientras se arrastra encima, la card aparece (punteada) donde va a quedar.
                   const preview = isOver && dragItem ? (own ? { ...dragItem } : movedItem(dragItem, col.key, target!, now, workDays)) : null;
-                  const base = band.filter((i) => i.bucket === col.key);
+                  const base = visible.filter((i) => i.bucket === col.key);
                   const insert = preview && dropIndex !== null ? insertAt(base, preview, dropIndex, order) : null;
                   const colOrder = insert ? { ...order, ...insert } : order;
                   const list = preview ? base.concat([preview]) : base;
@@ -834,7 +858,7 @@ export function ActionablesBoard({
                         e.preventDefault();
                         e.dataTransfer.dropEffect = "move";
                         if (overCol !== colId) setOverCol(colId);
-                        const idx = dropSlot(e.currentTarget, e.clientY, groupOf(dragItem), dragItem.id);
+                        const idx = dropSlot(e.currentTarget, e.clientY, dragItem);
                         if (idx !== dropIndex) setDropIndex(idx);
                       }}
                       onDragLeave={(e) => {
@@ -850,7 +874,8 @@ export function ActionablesBoard({
                         dropped.current = true;
                         flyFromPointer(item.id, e.clientX, e.clientY);
                         if (insert) saveOrder(insert);
-                        if (target) void moveTo(item, col.key, target);
+                        if (item.plannedToday && col.key === "this_week") void skipToday(item);
+                        else if (target) void moveTo(item, col.key, target);
                       }}
                       className={cn(
                         "flex min-w-0 flex-col gap-2 rounded-xl border border-border bg-surface p-2 transition-colors",
@@ -893,21 +918,12 @@ export function ActionablesBoard({
                     </section>
                   );
                 })}
-                </div>
-              </div>
-            );
-          })}
+          </div>
         </div>
       ) : (
         <div className="space-y-6">
-          {ROUNDS.map((round) => {
-            const band = visible.filter((i) => roundKey(i) === round.key);
-            if (!band.length) return null;
-            return (
-              <div key={round.key} className="space-y-3">
-                {showRounds && <RoundHeader label={round.label} hint={round.hint} items={band} />}
                 {COLUMNS.map((col) => {
-                  const list = band.filter((i) => i.bucket === col.key);
+                  const list = visible.filter((i) => i.bucket === col.key);
                   if (!list.length) return null;
                   return (
                     <section key={col.key} className="space-y-1.5">
@@ -925,9 +941,6 @@ export function ActionablesBoard({
                     </section>
                   );
                 })}
-              </div>
-            );
-          })}
         </div>
       )}
 
@@ -1099,7 +1112,7 @@ function Legend({ view, targetDays, limitDays }: { view: View; targetDays: numbe
             <span className="size-2.5 shrink-0 rounded-sm border border-critical/50 bg-critical/10" /> Muy atrasado (≥2 días háb.)
           </p>
           <p className="flex items-center gap-2">
-            <span className="size-2.5 shrink-0 rounded-sm border border-overdue/50 bg-overdue/10" /> Vencido (1 día)
+            <span className="size-2.5 shrink-0 rounded-sm border border-overdue/50 bg-overdue/10" /> Atrasado (1 día)
           </p>
           <p className="flex items-center gap-2">
             <span className="size-2.5 shrink-0 rounded-sm border border-due-today/50 bg-due-today/10" /> Vence hoy
@@ -1114,27 +1127,14 @@ function Legend({ view, targetDays, limitDays }: { view: View; targetDays: numbe
 }
 
 /**
- * Franjas del tablero / lista: lo que salió de las reuniones y mails de esta ronda (`round`, últimos
- * `ROUND_BUSINESS_DAYS` hábiles) arriba, y lo anterior que sigue abierto abajo, para terminar de cerrarlo.
+ * Franjas (`round`, `roundOf`): "Esta semana" = lo que salió esta semana o la anterior (o con fecha acordada en ésta);
+ * "Semana pasada" = lo de antes que quedó abierto. Es solo un filtro: las columnas salen de la fecha.
  */
 const roundKey = (i: PlannedItem): Round => (isOlder(i) ? "backlog" : "current");
 const ROUNDS: { key: Round; label: string; hint: string }[] = [
-  { key: "current", label: "De esta semana", hint: `Lo que salió de reuniones y mails de los últimos ${ROUND_BUSINESS_DAYS} días hábiles` },
-  { key: "backlog", label: "Para cerrar", hint: "Pendiente de antes que sigue abierto: hecho, reprogramar o no corresponde" },
+  { key: "current", label: "Esta semana", hint: "Lo que salió de reuniones y mails de esta semana y la anterior, o con fecha acordada para esta semana" },
+  { key: "backlog", label: "Semana pasada", hint: "Lo de semanas anteriores que quedó abierto: hecho, reprogramar o no corresponde" },
 ];
-
-function RoundHeader({ label, hint, items }: { label: string; hint: string; items: PlannedItem[] }) {
-  const minutes = ownMinutes(items);
-  return (
-    <header className="flex flex-wrap items-baseline gap-x-3 gap-y-0.5 border-b border-divider pb-1.5">
-      <h2 className="text-sm font-medium text-foreground-strong">
-        {label} <span className="tabular text-muted-foreground">{items.length}</span>
-      </h2>
-      <p className="text-xs text-subtle-foreground">{hint}</p>
-      {minutes > 0 && <span className="ml-auto tabular text-label-sm text-subtle-foreground">Tuyo {fmtMinutes(minutes)}</span>}
-    </header>
-  );
-}
 
 function ColumnHeader({ label, tone, items }: { label: string; tone: "critical" | "warning" | "neutral"; items: PlannedItem[] }) {
   const minutes = ownMinutes(items);
@@ -1165,6 +1165,8 @@ type ItemProps = {
   onUndo: (id: string) => void;
   /** Abre el panel de mail (hilo + borrador) si el accionable se resuelve con un mail. */
   onMail?: () => void;
+  /** Card de Hoy por agenda: "+1 día" la saca de Hoy sin tocar su fecha (y mañana vuelve si hay reunión próxima). */
+  onLater?: () => void;
   /** Resaltado del acceso directo (`?item=`). */
   flash?: boolean;
 };
@@ -1177,11 +1179,11 @@ type DragProps = {
 const noop = () => {};
 
 /** Posición (dentro de su grupo) donde caería la card según el cursor: cuántas cards del grupo quedan arriba. */
-function dropSlot(section: HTMLElement, clientY: number, group: BoardGroup, dragId: string): number {
+function dropSlot(section: HTMLElement, clientY: number, item: PlannedItem): number {
   let n = 0;
-  section.querySelectorAll<HTMLElement>(`[data-card-id][data-group="${group}"]`).forEach((el) => {
+  section.querySelectorAll<HTMLElement>(`[data-card-id][data-group="${groupOf(item)}"]`).forEach((el) => {
     const id = el.dataset.cardId!;
-    if (id === dragId || id.startsWith("ghost:")) return;
+    if (id === item.id || id.startsWith("ghost:")) return;
     const r = el.getBoundingClientRect();
     if (r.height > 0 && clientY > r.top + r.height / 2) n++;
   });
@@ -1192,19 +1194,21 @@ function dropSlot(section: HTMLElement, clientY: number, group: BoardGroup, drag
 function insertAt(base: PlannedItem[], item: PlannedItem, index: number, order: Record<string, number>): Record<string, number> {
   const seq = boardGroups(base.filter((i) => i.id !== item.id), order)[groupOf(item)];
   seq.splice(Math.min(index, seq.length), 0, item);
-  return Object.fromEntries(seq.map((i, k) => [i.id, k]));
+  return Object.fromEntries(seq.map((i, k) => [orderKey(i), k]));
 }
 const NO_DRAG: DragProps = { draggable: false, onDragStart: noop, onDragEnd: noop };
+
+/** Columnas con subtítulos de grupo (Atención / Reunión próxima / Resto): las del día a día. */
+const GROUPED_BUCKETS = new Set<Bucket>(["today", "this_week"]);
 
 const GROUP_LABEL: Record<BoardGroup, { text: string; tone: string }> = {
   attention: { text: "Atención", tone: "text-warning" },
   meeting: { text: "Reunión próxima", tone: "text-foreground" },
-  carried: { text: "Arrastrados", tone: "text-carried" },
-  fresh: { text: "Nuevos", tone: "text-subtle-foreground" },
+  rest: { text: "Resto", tone: "text-subtle-foreground" },
 };
 
 /**
- * Atención → Reunión próxima → Arrastrados → Nuevos (`boardGroups`). Click en el subtítulo pliega / despliega ese
+ * Atención → Reunión próxima → Resto (`boardGroups`). Click en el subtítulo pliega / despliega ese
  * grupo solo en esta columna (`plazo:grupo`); `openGroup` = el de la card que se está arrastrando (se despliega
  * para poder soltarla).
  */
@@ -1226,6 +1230,8 @@ function Grouped({
   render: (i: PlannedItem) => React.ReactNode;
 }) {
   const groups = boardGroups(items, order);
+  // Solo Hoy y Esta semana se segmentan; el resto es una lista (Atención → Prox. reu → resto, cada una con su chip).
+  if (!GROUPED_BUCKETS.has(bucket)) return <>{BOARD_GROUPS.flatMap((g) => groups[g]).map(render)}</>;
   return (
     <>
       {BOARD_GROUPS.map((g) => {
@@ -1327,17 +1333,43 @@ function SideTag({ item }: { item: PlannedItem }) {
   );
 }
 
-/** Chip violeta de los arrastrados: cuánto hace que vienen de la minuta/mail de origen. */
-function CarriedChip({ item, nowMs, iconOnly }: { item: PlannedItem; nowMs: number; iconOnly?: boolean }) {
-  if (!isOlder(item)) return null;
-  const age = carriedAge(item.originDate, nowMs);
+/**
+ * Chip de lo atrasado: en Atrasados, desde cuándo ("reu 19/11" = quedó de antes de esa reunión; "sem. 16/11" = semana
+ * para la que era); en Hoy, lo que venció esta semana y se corrió al día ("venció lun") o lo de esta semana que entra
+ * en los huecos de hoy ("agenda hoy", `plannedToday`).
+ */
+function LateChip({ item, iconOnly }: { item: PlannedItem; iconOnly?: boolean }) {
+  let text: string;
+  let title: string;
+  let tone: string;
+  if (item.bucket === "overdue") {
+    tone = "bg-critical/10 text-critical";
+    if (item.lateSince) {
+      text = `reu ${fmtShortDate(item.lateSince)}`;
+      title = `Atrasado: quedó abierto de antes de la reunión del ${fmtShortDate(item.lateSince)} (salió el ${fmtShortDate(item.originDate)})`;
+    } else {
+      text = `sem. ${weekStartLabel(item.due)}`;
+      title = `Atrasado: era para la semana del ${weekStartLabel(item.due)} (salió el ${fmtShortDate(item.originDate)})`;
+    }
+  } else if (item.slipped) {
+    tone = "bg-overdue/10 text-overdue";
+    text = `venció ${new Date(item.due).toLocaleDateString("es", { weekday: "short" }).replace(".", "")}`;
+    title = `Venció el ${fmtShortDate(item.due)}: corrido a hoy para hacerlo en el día`;
+  } else if (item.plannedToday) {
+    return (
+      <span
+        title={`Entra en tus huecos libres de hoy (vence ${item.dueLabel})`}
+        className="inline-flex shrink-0 items-center gap-1 rounded border border-border bg-surface px-1.5 py-px text-label-sm font-medium text-muted-foreground"
+      >
+        <CalendarDays className="size-3" />
+        {!iconOnly && "agenda hoy"}
+      </span>
+    );
+  } else return null;
   return (
-    <span
-      title={`Viene desde ${fmtShortDate(item.originDate)} (${age})`}
-      className="inline-flex shrink-0 items-center gap-1 rounded bg-carried/15 px-1.5 py-px text-label-sm font-medium text-carried"
-    >
+    <span title={title} className={cn("inline-flex shrink-0 items-center gap-1 rounded px-1.5 py-px text-label-sm font-medium", tone)}>
       <History className="size-3" />
-      {!iconOnly && age}
+      {!iconOnly && text}
     </span>
   );
 }
@@ -1351,9 +1383,11 @@ const toggleKeys = (onToggle: () => void) => (e: React.KeyboardEvent) => {
 };
 
 /** Lo que aparece al desplegar: texto completo, origen, responsables, plazo y acciones rápidas. */
-function Expanded({ item, busy, workDays, onAct, onEdit, closing, onMail }: ItemProps) {
-  // Posponer desde la fecha actual o desde hoy, lo que sea más tarde (igual que el modal).
+function Expanded({ item, busy, workDays, onAct, onEdit, closing, onMail, onLater }: ItemProps) {
+  // Posponer desde la fecha actual o desde hoy, lo que sea más tarde (igual que el modal). En Hoy por agenda no hay
+  // fecha que correr: vuelve a Esta semana (`onLater`).
   const postpone = () => {
+    if (onLater) return onLater();
     const base = new Date(Math.max(Date.now(), Date.parse(item.due)));
     onAct(item, { type: "due", due: isoDay(addWorkdays(base, 1, workDays)) });
   };
@@ -1383,7 +1417,19 @@ function Expanded({ item, busy, workDays, onAct, onEdit, closing, onMail }: Item
         <Button size="xs" disabled={busy || !!closing} onClick={() => onAct(item, { type: "done" })}>
           <Check /> Hecho
         </Button>
-        <Button size="xs" variant="outline" disabled={busy} onClick={postpone}>
+        <Button
+          size="xs"
+          variant="outline"
+          disabled={busy}
+          onClick={postpone}
+          title={
+            onLater
+              ? item.meetingSoonAt
+                ? "Hoy no llego: vuelve a Esta semana y mañana entra en Hoy (hay reunión próxima). La fecha no cambia"
+                : "Hoy no llego: vuelve a Esta semana y se reacomoda según tu agenda. La fecha no cambia"
+              : "Corre la entrega 1 día hábil"
+          }
+        >
           <CalendarClock /> +1 día
         </Button>
         {item.side === "me_deben" && onMail && isReminderItem(item) && (
@@ -1457,7 +1503,7 @@ function ItemCard(
     onLanded?: () => void;
   },
 ) {
-  const { item, busy, expanded, compact, nowMs, onToggle, drag, dragging, ghost, floating, collapsed, landed } = props;
+  const { item, busy, expanded, compact, onToggle, drag, dragging, ghost, floating, collapsed, landed } = props;
   const OriginIcon = item.originKind === "mail" ? Mail : Users;
   const toggle = () => onToggle(item.id);
   const tone = cardTone(item) ?? "none";
@@ -1507,7 +1553,7 @@ function ItemCard(
           {item.attention && <AttentionBadge size="sm" />}
           <MeetingChip item={item} iconOnly={compact} />
           {item.aiAdded && <AiChip evidence={item.evidence} />}
-          <CarriedChip item={item} nowMs={nowMs} iconOnly={compact} />
+          <LateChip item={item} iconOnly={compact} />
           <DoneBox item={item} busy={busy} onAct={props.onAct} closing={props.closing} onUndo={props.onUndo} />
         </div>
         {/* Hito + tarea */}
@@ -1546,7 +1592,7 @@ function ItemCard(
 }
 
 function ItemRow(props: ItemProps) {
-  const { item, busy, expanded, compact, nowMs, onToggle } = props;
+  const { item, busy, expanded, compact, onToggle } = props;
   const toggle = () => onToggle(item.id);
   const tone = cardTone(item) ?? "none";
   return (
@@ -1579,7 +1625,7 @@ function ItemRow(props: ItemProps) {
             {item.attention && <AttentionBadge size="sm" />}
             <MeetingChip item={item} iconOnly={compact} />
             {item.aiAdded && <AiChip evidence={item.evidence} />}
-            <CarriedChip item={item} nowMs={nowMs} iconOnly={compact} />
+            <LateChip item={item} iconOnly={compact} />
           </span>
           <span className={cn("block text-[13px] font-medium text-foreground-strong 2xl:text-sm", !expanded && "truncate")}>{item.title}</span>
           {item.detail && (
@@ -1680,7 +1726,7 @@ function MeetingChip({ item, iconOnly }: { item: PlannedItem; iconOnly?: boolean
       )}
     >
       <CalendarDays className="size-3" />
-      {!iconOnly && when}
+      {!iconOnly && `Prox. reu ${when}`}
     </span>
   );
 }

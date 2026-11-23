@@ -166,6 +166,8 @@ export function computeWeekPlan(
   events: CalendarEventLite[] | null,
   offset: number,
   now: Date = new Date(),
+  /** Ajustes a mano de "Hoy" (`not-today-store`): `skip` no entran hoy; `force` entran sí o sí ("+1 día" con reunión). */
+  today: { skip?: Set<string>; force?: Set<string> } = {},
 ): WeekPlan {
   const { start } = planWeekBounds(now, offset);
   const nowMs = now.getTime();
@@ -188,6 +190,8 @@ export function computeWeekPlan(
   let otherMs = 0;
   let busyMeetingMs = 0;
   let capacityMs = 0;
+  /** Horario normal libre de hoy en todo el día (desde el inicio de la jornada, no desde ahora): cupo de "Hoy". */
+  let todayCoreMs = 0;
 
   for (let i = 0; i < 7; i++) {
     const d = new Date(start);
@@ -248,6 +252,8 @@ export function computeWeekPlan(
     capacityMs += span - total(lunchU);
 
     const busy = union([...meetings, ...lunches]);
+    if (d.toDateString() === now.toDateString())
+      todayCoreMs = total(subtract([ws, we], busy).flatMap(([a, b]) => (Math.min(b, ce) > Math.max(a, cs) ? [[Math.max(a, cs), Math.min(b, ce)] as Interval] : [])));
     const free = subtract([Math.max(ws, nowMs), we], busy);
     // partir cada hueco en tramos de horario normal vs flexible
     const slots: Slot[] = [];
@@ -361,6 +367,32 @@ export function computeWeekPlan(
     const meeting = t.item.prep && t.item.meetingSoonAt ? Date.parse(t.item.meetingSoonAt) : Infinity;
     t.item.atRisk = t.finishAt != null ? t.finishAt > Math.min(limit, meeting) : Math.min(limit, meeting) < weekEnd;
     if (meeting !== Infinity) t.item.prepLate = t.finishAt != null ? t.finishAt > meeting : meeting < weekEnd;
+  }
+  // "Hoy" del tablero: en el orden de foco (atrasado → preparar reunión de hoy/mañana → cuenta en silencio → Más atención
+  // → resto por fecha), lo que entra en el horario normal libre de hoy. Lo atrasado y lo que vence hoy ocupan el cupo
+  // primero; lo de "Esta semana" que entra pasa a Hoy (`plannedToday`), también lo que moviste a mano a Esta semana.
+  // Lo que sacaste de Hoy a mano (`skipToday`) no entra y deja el lugar a la siguiente. El cupo es el del día completo
+  // para que la columna no se vacíe a medida que pasan las horas.
+  if (offset === 0) {
+    let budget = todayCoreMs;
+    const toToday = (i: PlannedItem) => {
+      i.bucket = "today";
+      i.plannedToday = true;
+    };
+    // Las fijadas para hoy ("+1 día" con reunión próxima) entran primero, aunque no alcance el cupo.
+    for (const t of allTasks) {
+      if (t.item.bucket !== "this_week" || !today.force?.has(t.item.id)) continue;
+      toToday(t.item);
+      budget -= Math.max(MIN, t.item.estimateMinutes * MIN);
+    }
+    for (const t of allTasks) {
+      const cost = Math.max(MIN, t.item.estimateMinutes * MIN);
+      if (t.item.plannedToday) continue;
+      if (t.item.bucket === "this_week" && today.skip?.has(t.item.id)) continue;
+      if (cost > budget) break;
+      budget -= cost;
+      if (t.item.bucket === "this_week") toToday(t.item);
+    }
   }
   const atRiskCount = allTasks.filter((t) => t.item.atRisk).length;
   const prepCount = allTasks.filter((t) => t.item.prep).length;

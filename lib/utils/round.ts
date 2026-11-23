@@ -1,3 +1,6 @@
-/** Días hábiles (incluido hoy) que lo que sale de una reunión o mail cuenta como "De esta semana" (sin dependencias: lo usa el tablero). */
-export const ROUND_BUSINESS_DAYS = 5;
+/**
+ * Ronda de un accionable (sin dependencias: lo usa el tablero). Por semanas de calendario: `current` = "Esta semana"
+ * (salió esta semana o la anterior, o tiene fecha acordada en esta semana); `backlog` = "Semana pasada" (lo de antes
+ * que sigue abierto). Ver `roundOf` en deadlines.ts.
+ */
 export type Round = "current" | "backlog";
