@@ -15,6 +15,7 @@
     "test": "vitest run",
     "preview:postmeeting": "node --env-file=.env.local --import tsx scripts/preview-postmeeting.ts",
     "preview:analysis": "node --env-file=.env.local --import tsx scripts/preview-analysis.ts",
+    "preview:weekly": "node --env-file=.env.local --import tsx scripts/preview-weekly.ts",
     "backfill:meeting-ai": "node --env-file=.env.local --import tsx scripts/backfill-meeting-ai.ts",
     "analyze:accounts": "node --env-file=.env.local --import tsx scripts/analyze-accounts.ts",
     "digest:send": "node --env-file=.env.local --import tsx scripts/send-digest.ts"

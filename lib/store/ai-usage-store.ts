@@ -5,7 +5,7 @@ import { getState, setState } from "@/lib/store/backend";
 // `KEEP_DAYS` días (tope `MAX_ENTRIES`). Las escrituras se encadenan en el proceso para no pisarse cuando
 // corren llamadas en paralelo (análisis semanal: 2 a la vez); `app_state` no tiene control de versión.
 
-export type AIUsageKind = "postmeeting" | "status" | "analysis" | "reply" | "reminder";
+export type AIUsageKind = "postmeeting" | "status" | "analysis" | "reply" | "reminder" | "weekly";
 
 export interface AIUsageEntry {
   at: string;

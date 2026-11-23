@@ -294,6 +294,8 @@ export interface FollowupDraft {
   replyTicketIds?: string[];
   /** Respuesta (`reply`): el cuerpo lo redactó la IA (`client.replyAI` vigente). */
   ai?: boolean;
+  /** Mail de los lunes redactado con IA: huella de la entrada (`weeklyKey`); igual = el borrador ya está al día. */
+  aiKey?: string;
 }
 
 /** meeting = minuta; status = avances + pendientes; reminder = recordatorio corto pidiendo status de lo que me deben. */

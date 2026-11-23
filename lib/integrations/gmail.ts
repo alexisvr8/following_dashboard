@@ -95,13 +95,26 @@ const LI_STYLE = "margin:0 0 6px 0;";
 
 /** Viñetas del borrador: "• " (pendiente / lista) y "✓ " (ya hecho) van igual, como lista. */
 const BULLET_RE = /^\s*[•✓]\s+(.*)$/;
-/** Título de sección: línea corta que termina en ":" ("Decisiones acordadas:"). */
-const isHeading = (line: string) => line.length <= 90 && /:\s*$/.test(line) && !BULLET_RE.test(line);
+/** Lista numerada ("1. texto"): va como <ol>. */
+const NUMBERED_RE = /^\s*\d{1,2}[.)]\s+(.*)$/;
+/**
+ * Título de sección: línea corta que termina en ":" ("Decisiones acordadas:"). Una frase con coma seguida de
+ * minúscula ("Para mantener ese cronograma, necesitamos…:") es texto que presenta una lista, no un título.
+ */
+const isHeading = (line: string) =>
+  line.length <= 90 && /:\s*$/.test(line) && !BULLET_RE.test(line) && !NUMBERED_RE.test(line) && !/,\s+\p{Ll}/u.test(line);
+const OL_STYLE = "margin:0 0 12px 0;padding-left:22px;";
+
+/** Texto escapado con "**negrita**" → <strong> y "*cursiva*" → <em>. */
+const inline = (s: string) =>
+  escapeHtml(s)
+    .replace(/\*\*(.+?)\*\*/g, "<strong>$1</strong>")
+    .replace(/(^|[^*])\*([^*\s][^*]*?)\*(?!\*)/g, "$1<em>$2</em>");
 
 function formatLine(line: string): string {
   const m = line.match(STATUS_RE);
-  if (!m) return escapeHtml(line);
-  const head = escapeHtml(line.slice(0, m.index));
+  if (!m) return inline(line);
+  const head = inline(line.slice(0, m.index));
   const key = m[1].toLowerCase();
   const emoji = m[2] ? ` ${m[2].trim()}` : "";
   const date = m[3] ? ` ${escapeHtml(m[3].trim())}` : "";
@@ -113,16 +126,26 @@ const PLAIN_HEADING = /^(Puntos importantes|Lo que charlamos)$/i;
 
 /**
  * Texto del borrador → HTML compacto con estilos inline: cada línea un <p>, títulos en negrita y subrayados + ":", viñetas
- * (• y ✓) en <ul>. Las líneas en blanco solo separan bloques: no generan <br> ni párrafos vacíos.
+ * (• y ✓) en <ul>, "1. " en <ol>, "**texto**" en negrita. Las líneas en blanco solo separan bloques: no generan <br> ni párrafos vacíos.
  */
 export function bodyToHtml(body: string): string {
   const out: string[] = [];
   let list: string[] = [];
+  let listTag: "ul" | "ol" = "ul";
   let prevHeading = false;
   let blanks = 0;
   const flush = () => {
-    if (list.length) out.push(`<ul style="${UL_STYLE}">${list.map((l) => `<li style="${LI_STYLE}">${l}</li>`).join("")}</ul>`);
+    if (list.length) {
+      const style = listTag === "ol" ? OL_STYLE : UL_STYLE;
+      out.push(`<${listTag} style="${style}">${list.map((l) => `<li style="${LI_STYLE}">${l}</li>`).join("")}</${listTag}>`);
+    }
     list = [];
+  };
+  const push = (tag: "ul" | "ol", text: string) => {
+    if (listTag !== tag) flush();
+    listTag = tag;
+    if (text) list.push(formatLine(text));
+    prevHeading = false;
   };
   for (const raw of body.replace(/\r/g, "").split("\n")) {
     const line = raw.replace(/\s+$/, "");
@@ -134,8 +157,12 @@ export function bodyToHtml(body: string): string {
     blanks = 0;
     const bullet = line.match(BULLET_RE);
     if (bullet) {
-      if (bullet[1].trim()) list.push(formatLine(bullet[1].trim()));
-      prevHeading = false;
+      push("ul", bullet[1].trim());
+      continue;
+    }
+    const numbered = line.match(NUMBERED_RE);
+    if (numbered) {
+      push("ol", numbered[1].trim());
       continue;
     }
     flush();
@@ -167,7 +194,7 @@ export function bodyToPlain(body: string): string {
   return body
     .replace(/\r/g, "")
     .split("\n")
-    .map((l) => l.replace(/^\s*[•✓]\s+/, "- ").replace(/\s+$/, ""))
+    .map((l) => l.replace(/^\s*[•✓]\s+/, "- ").replace(/\*\*(.+?)\*\*/g, "$1").replace(/(^|[^*])\*([^*\s][^*]*?)\*(?!\*)/g, "$1$2").replace(/\s+$/, ""))
     .join("\n")
     .replace(/\n{4,}/g, "\n\n\n")
     .trim();
