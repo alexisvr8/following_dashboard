@@ -1,6 +1,6 @@
 import { cookies } from "next/headers";
 import { ActionablesBoard } from "@/components/accionables/ActionablesBoard";
-import { DENSITY_COOKIE, isMailItem, isReminderItem, VIEW_COOKIE } from "@/components/accionables/format";
+import { DENSITY_COOKIE, isMailItem, isReminderItem, ROUND_COOKIE, VIEW_COOKIE } from "@/components/accionables/format";
 import type { FollowupPanelData } from "@/components/dashboard/FollowupPanel";
 import { getFollowupDraft, getReminderDraft } from "@/lib/utils/followup";
 import { composerThreads } from "@/lib/utils/followup-thread";
@@ -31,6 +31,8 @@ export default async function AccionablesPage({
   ]);
   const initialView = jar.get(VIEW_COOKIE)?.value === "list" ? "list" : "board";
   const initialDensity = jar.get(DENSITY_COOKIE)?.value === "compact" ? "compact" : "comfy";
+  const roundCookie = jar.get(ROUND_COOKIE)?.value;
+  const initialRound = roundCookie === "backlog" || roundCookie === "all" ? roundCookie : "current";
   const now = new Date();
   const offset = hasWorkLeftThisWeek(now, settings) ? 0 : 1;
   const { start, end } = planWeekBounds(now, offset);
@@ -60,14 +62,7 @@ export default async function AccionablesPage({
   }
 
   return (
-    <div className="space-y-5 px-4 py-6 sm:px-6">
-      <div>
-        <h1 className="text-lg font-semibold">Accionables</h1>
-        <p className="text-sm text-muted-foreground">
-          Lo pendiente de tus cuentas asignadas por plazo; en cada columna primero las cuentas de más atención y las
-          que tienen reunión próxima.
-        </p>
-      </div>
+    <div className="px-4 py-4 sm:px-6">
       <ActionablesBoard
         items={plan.items}
         weekLabel={plan.weekLabel}
@@ -75,6 +70,7 @@ export default async function AccionablesPage({
         freeHours={plan.totals.freeCoreHours + plan.totals.freeFlexHours}
         initialView={initialView}
         initialDensity={initialDensity}
+        initialRound={initialRound}
         mailPanels={mailPanels}
         itemReminders={itemReminders}
         nowIso={now.toISOString()}

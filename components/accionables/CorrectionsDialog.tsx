@@ -2,7 +2,7 @@
 
 import { useState } from "react";
 import { useRouter } from "next/navigation";
-import { ArrowRight, Plus, SpellCheck, Trash2 } from "lucide-react";
+import { ArrowRight, Plus, Trash2 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { inputClass } from "@/components/ui/input";
@@ -11,9 +11,16 @@ import { addCorrection } from "@/components/accionables/format";
 
 // Correcciones aprendidas: se aplican a todo lo guardado y a cada minuta / transcripción nueva.
 
-export function CorrectionsDialog({ corrections }: { corrections: { from: string; to: string }[] }) {
+export function CorrectionsDialog({
+  corrections,
+  open,
+  onOpenChange,
+}: {
+  corrections: { from: string; to: string }[];
+  open: boolean;
+  onOpenChange: (open: boolean) => void;
+}) {
   const router = useRouter();
-  const [open, setOpen] = useState(false);
   const [from, setFrom] = useState("");
   const [to, setTo] = useState("");
   const [busy, setBusy] = useState(false);
@@ -38,15 +45,7 @@ export function CorrectionsDialog({ corrections }: { corrections: { from: string
 
   return (
     <>
-      <button
-        type="button"
-        onClick={() => setOpen(true)}
-        className="flex h-8 items-center gap-1.5 rounded-md border border-input bg-surface px-2.5 text-xs text-muted-foreground transition-colors hover:text-foreground"
-      >
-        <SpellCheck className="size-3.5" /> Correcciones
-        {corrections.length > 0 && <span className="tabular text-subtle-foreground">{corrections.length}</span>}
-      </button>
-      <Dialog open={open} onOpenChange={setOpen}>
+      <Dialog open={open} onOpenChange={onOpenChange}>
         <DialogContent className="sm:max-w-md">
           <DialogHeader>
             <DialogTitle>Correcciones aprendidas</DialogTitle>

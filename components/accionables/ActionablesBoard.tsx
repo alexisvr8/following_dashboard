@@ -15,6 +15,9 @@ import {
   Columns3,
   Handshake,
   History,
+  Info,
+  ListChecks,
+  MessageSquareQuote,
   List,
   Mail,
   Pencil,
@@ -23,6 +26,7 @@ import {
   Rows4,
   Search,
   Send,
+  SpellCheck,
   Sparkles,
   Target,
   Trash2,
@@ -67,6 +71,7 @@ import {
   type CardTone,
   COLUMNS,
   DENSITY_COOKIE,
+  ROUND_COOKIE,
   dropDue,
   DUE_KIND,
   fmtMinutes,
@@ -92,6 +97,10 @@ import {
 type Side = "todo" | "debo" | "me_deben";
 type View = "board" | "list";
 type Density = "comfy" | "compact";
+/** Franja visible: la de esta ronda (default), la de cierre o ambas apiladas. */
+export type RoundView = Round | "all";
+/** Filtro rápido de los contadores de la barra (click en el chip). */
+type Quick = "overdue" | "today" | "atRisk" | null;
 // "warning" de `relativeDue` = vence hoy: azul (`due-today`), igual que el color de la card.
 const TONE_TEXT = { critical: "text-critical", warning: "text-due-today", muted: "text-muted-foreground" } as const;
 const DUE_ICON: Record<DueKind, typeof Target> = { agreed: Handshake, target: Target, manual: PencilLine };
@@ -111,6 +120,7 @@ export function ActionablesBoard({
   limitDays,
   initialView,
   initialDensity,
+  initialRound = "current",
   nowIso,
   suggestions,
   rewrites = [],
@@ -136,6 +146,7 @@ export function ActionablesBoard({
   itemReminders?: Record<string, FollowupPanelData["draft"]>;
   initialView: View;
   initialDensity: Density;
+  initialRound?: RoundView;
   nowIso: string;
   suggestions: SuggestedItem[];
   people: Record<string, Role>;
@@ -163,7 +174,9 @@ export function ActionablesBoard({
   const [flashId, setFlashId] = useState<string | null>(null);
   const [focusMissing, setFocusMissing] = useState(false);
   const [query, setQuery] = useState("");
-  const [onlyCarried, setOnlyCarried] = useState(false);
+  const [round, setRound] = useState<RoundView>(initialRound);
+  const [quick, setQuick] = useState<Quick>(null);
+  const [review, setReview] = useState<"suggestions" | "rewrites" | "weekly" | "corrections" | null>(null);
   const [hidden, setHidden] = useState<Set<string>>(new Set());
   const [busy, setBusy] = useState<string | null>(null);
   const [selectedId, setSelectedId] = useState<string | null>(null);
@@ -183,6 +196,10 @@ export function ActionablesBoard({
   const changeDensity = (d: Density) => {
     setDensity(d);
     document.cookie = `${DENSITY_COOKIE}=${d}; path=/; max-age=31536000; samesite=lax`;
+  };
+  const changeRound = (r: RoundView) => {
+    setRound(r);
+    document.cookie = `${ROUND_COOKIE}=${r}; path=/; max-age=31536000; samesite=lax`;
   };
 
   const accounts = useMemo(() => {
@@ -246,7 +263,8 @@ export function ActionablesBoard({
     setFocusMissing(false);
     setSide((s) => (s === "todo" || s === it.side ? s : "todo"));
     setAccountSel((sel) => (sel.size && !sel.has(it.clientId) ? new Set() : sel));
-    setOnlyCarried((v) => (v && !isOlder(it) ? false : v));
+    setRound((r) => (r === "all" || r === roundKey(it) ? r : roundKey(it)));
+    setQuick(null);
     setQuery("");
     // "!clave" = desplegado a la fuerza (gana sobre la preferencia guardada que se lee al montar).
     const key = collapseKey(it.bucket, groupOf(it));
@@ -290,26 +308,38 @@ export function ActionablesBoard({
   const open = items
     .filter((i) => !hidden.has(i.id))
     .map((i) => (moved[i.id] ? movedItem(i, moved[i.id].bucket, moved[i.id].day, now, workDays) : i));
-  const visible = open.filter((i) => {
+  // Todos los filtros salvo la franja: de acá salen los números del toggle De esta semana / Para cerrar.
+  const filtered = open.filter((i) => {
     if (side !== "todo" && i.side !== side) return false;
     if (!inAccounts(i.clientId)) return false;
-    if (onlyCarried && !isOlder(i)) return false;
+    if (quick === "atRisk" ? !i.atRisk : quick && i.bucket !== quick) return false;
     const q = query.trim().toLowerCase();
     return !q || `${i.title} ${i.detail ?? ""} ${i.clientName} ${i.owners.join(" ")}`.toLowerCase().includes(q);
   });
+  const visible = round === "all" ? filtered : filtered.filter((i) => roundKey(i) === round);
+  const showRounds = round === "all";
+  const roundCount = (r: Round) => filtered.filter((i) => roundKey(i) === r).length;
+  const backlogOverdue = filtered.filter((i) => roundKey(i) === "backlog" && i.bucket === "overdue").length;
   const selected = items.find((i) => i.id === selectedId) ?? null;
-  const carriedOverdue = open.filter((i) => isOlder(i) && i.bucket === "overdue" && (side === "todo" || i.side === side)).length;
 
+  // Chips de la barra: click = filtro rápido (otro click lo saca). "En seguimiento" usa el filtro de lado.
   const counters = [
-    { label: "Vencidos", value: open.filter((i) => i.bucket === "overdue").length, tone: "critical" as const },
-    { label: "Para hoy", value: open.filter((i) => i.bucket === "today").length, tone: "warning" as const },
-    { label: "En seguimiento", value: open.filter((i) => i.side === "me_deben").length, tone: "neutral" as const },
+    { key: "overdue", label: "vencidos", hint: "Ver solo lo vencido", value: open.filter((i) => i.bucket === "overdue").length, tone: "critical" as const },
+    { key: "today", label: "para hoy", hint: "Ver solo lo que vence hoy", value: open.filter((i) => i.bucket === "today").length, tone: "warning" as const },
+    { key: "follow", label: "en seguimiento", hint: `Ver solo ${SIDE_LABEL.me_deben}`, value: open.filter((i) => i.side === "me_deben").length, tone: "neutral" as const },
     {
-      label: calendarConnected ? `Sin hueco en la agenda (${weekLabel})` : "Sin hueco (Calendar no conectado)",
+      key: "atRisk",
+      label: "sin hueco",
+      hint: calendarConnected ? `No entran en la agenda (${weekLabel}). Ver solo esos` : "Calendar no conectado",
       value: open.filter((i) => i.atRisk).length,
       tone: "critical" as const,
     },
-  ];
+  ] as const;
+  const counterOn = (k: (typeof counters)[number]["key"]) => (k === "follow" ? side === "me_deben" : quick === k);
+  const toggleCounter = (k: (typeof counters)[number]["key"]) => {
+    if (k === "follow") setSide((s) => (s === "me_deben" ? "todo" : "me_deben"));
+    else setQuick((q) => (q === k ? null : k));
+  };
 
   function bodyFor(item: PlannedItem, action: PanelAction): unknown {
     switch (action.type) {
@@ -569,6 +599,8 @@ export function ActionablesBoard({
   const [resolved, setResolved] = useState<Set<string>>(new Set());
   // En el modal se ven todas (no dependen del filtro Accionar / Seguimiento del tablero), salvo el filtro de cuenta.
   const pendingSuggestionsList = suggestions.filter((s) => !resolved.has(s.id) && inAccounts(s.clientId));
+  const rewritesShown = rewrites.filter((r) => inAccounts(r.clientId));
+  const weeklyShown = weeklyReview.filter((e) => inAccounts(e.clientId));
   async function resolveSuggestion(s: SuggestedItem, action: "accept" | "dismiss", text?: string) {
     setBusy(s.id);
     setResolved((r) => new Set(r).add(s.id));
@@ -587,58 +619,37 @@ export function ActionablesBoard({
 
   return (
     <div className="space-y-4">
-      {/* Contadores */}
-      <div className="grid gap-2 sm:grid-cols-2 lg:grid-cols-4">
-        {counters.map((c) => (
-          <div key={c.label} className="flex items-center justify-between gap-2 rounded-lg border border-border bg-card px-3 py-2.5">
-            <span className="flex min-w-0 items-center gap-2 text-xs text-muted-foreground">
-              <StatusDot tone={c.value ? c.tone : "neutral"} />
-              <span className="truncate">{c.label}</span>
-            </span>
-            <span className="tabular text-lg font-medium text-foreground-strong">{c.value}</span>
+      {/* Barra de control: título + contadores (filtro rápido) + franja, filtros, revisar, leyenda y vista. */}
+      <div className="space-y-2 rounded-xl border border-border bg-card px-3 py-2.5">
+        <div className="flex flex-wrap items-center gap-x-4 gap-y-1.5">
+          <h1
+            className="text-base font-semibold text-foreground-strong"
+            title="Lo pendiente de tus cuentas asignadas por plazo; en cada columna primero las cuentas de más atención y las que tienen reunión próxima."
+          >
+            Accionables
+          </h1>
+          <div className="flex flex-wrap items-center gap-1" role="group" aria-label="Filtros rápidos">
+            {counters.map((c) => (
+              <button
+                key={c.key}
+                type="button"
+                title={c.hint}
+                aria-pressed={counterOn(c.key)}
+                onClick={() => toggleCounter(c.key)}
+                className={cn(
+                  "flex h-7 items-center gap-1.5 rounded-md border px-2 text-xs transition-colors",
+                  counterOn(c.key)
+                    ? "border-border-strong bg-accent text-foreground"
+                    : "border-transparent text-muted-foreground hover:bg-accent/60 hover:text-foreground",
+                )}
+              >
+                <StatusDot tone={c.value ? c.tone : "neutral"} />
+                <span className="tabular font-medium text-foreground-strong">{c.value}</span>
+                {c.label}
+              </button>
+            ))}
           </div>
-        ))}
-      </div>
-
-      {/* Filtros + vista */}
-      <div className="flex flex-wrap items-center gap-2">
-        <Segmented
-          label="Filtrar por lado"
-          value={side}
-          onChange={setSide}
-          options={[
-            ["todo", "Todo"],
-            ["debo", SIDE_LABEL.debo],
-            ["me_deben", SIDE_LABEL.me_deben],
-          ]}
-        />
-        <AccountPicker accounts={accounts} selected={accountSel} onChange={changeAccounts} />
-        <label className="relative min-w-0 flex-1 sm:max-w-64">
-          <Search className="pointer-events-none absolute top-1/2 left-2.5 size-3.5 -translate-y-1/2 text-subtle-foreground" />
-          <input
-            value={query}
-            onChange={(e) => setQuery(e.target.value)}
-            placeholder="Buscar accionable o responsable"
-            className={cn(inputClass, "h-8 pl-8 text-xs")}
-          />
-        </label>
-        <button
-          type="button"
-          aria-pressed={onlyCarried}
-          onClick={() => setOnlyCarried((v) => !v)}
-          className={cn(
-            "flex h-8 items-center gap-1.5 rounded-md border px-2.5 text-xs transition-colors",
-            onlyCarried ? "border-border-strong bg-accent text-foreground" : "border-input bg-surface text-muted-foreground hover:text-foreground",
-          )}
-        >
-          <History className="size-3.5" /> Solo arrastrados
-        </button>
-        <SuggestionsDialog suggestions={pendingSuggestionsList} busy={busy} onResolve={resolveSuggestion} />
-        <RewritesDialog rewrites={rewrites.filter((r) => inAccounts(r.clientId))} />
-        <WeeklyReviewDialog entries={weeklyReview.filter((e) => inAccounts(e.clientId))} />
-        <CorrectionsDialog corrections={corrections} />
-        <div className="ml-auto flex items-center gap-3">
-          <span className="hidden text-xs text-muted-foreground lg:inline">
+          <span className="ml-auto hidden text-xs text-muted-foreground sm:inline">
             Tuyo: <b className="tabular font-medium text-foreground">{fmtMinutes(ownMinutes(open))}</b>
             {calendarConnected && (
               <>
@@ -646,61 +657,106 @@ export function ActionablesBoard({
               </>
             )}
           </span>
+        </div>
+
+        <div className="flex flex-wrap items-center gap-2">
           <Segmented
-            label="Densidad"
-            value={density}
-            onChange={changeDensity}
+            label="Franja"
+            value={round}
+            onChange={changeRound}
             options={[
-              ["comfy", <span key="c" title="Cómoda" className="flex"><Rows2 className="size-3.5" /></span>],
-              ["compact", <span key="k" title="Compacta" className="flex"><Rows4 className="size-3.5" /></span>],
+              ...ROUNDS.map(
+                (r) =>
+                  [
+                    r.key,
+                    <span key={r.key} title={r.hint} className="flex items-center gap-1.5">
+                      {r.label}
+                      <span className="tabular text-subtle-foreground">{roundCount(r.key)}</span>
+                      {r.key === "backlog" && backlogOverdue > 0 && (
+                        <span title={`${backlogOverdue} vencido${backlogOverdue === 1 ? "" : "s"} de antes de esta semana`} className="flex">
+                          <StatusDot tone="critical" />
+                        </span>
+                      )}
+                    </span>,
+                  ] as [RoundView, React.ReactNode],
+              ),
+              ["all", "Ambas"],
             ]}
           />
           <Segmented
-            label="Vista"
-            value={view}
-            onChange={changeView}
+            label="Filtrar por lado"
+            value={side}
+            onChange={setSide}
             options={[
-              ["board", <><Columns3 className="size-3.5" /> Tablero</>],
-              ["list", <><List className="size-3.5" /> Lista</>],
+              ["todo", "Todo"],
+              ["debo", SIDE_LABEL.debo],
+              ["me_deben", SIDE_LABEL.me_deben],
             ]}
           />
+          <AccountPicker accounts={accounts} selected={accountSel} onChange={changeAccounts} />
+          <label className="relative min-w-0 flex-1 sm:max-w-64">
+            <Search className="pointer-events-none absolute top-1/2 left-2.5 size-3.5 -translate-y-1/2 text-subtle-foreground" />
+            <input
+              value={query}
+              onChange={(e) => setQuery(e.target.value)}
+              placeholder="Buscar accionable o responsable"
+              className={cn(inputClass, "h-8 pl-8 text-xs")}
+            />
+          </label>
+          <ReviewMenu
+            onPick={setReview}
+            entries={[
+              { key: "suggestions", label: "De la reunión", hint: "Compromisos dichos en la reunión que Gemini no puso en Próximos pasos", icon: MessageSquareQuote, count: pendingSuggestionsList.length },
+              { key: "rewrites", label: "Mejoras IA", hint: "Redacción mejorada por el análisis semanal para accionables con texto pobre", icon: Sparkles, count: rewritesShown.length },
+              { key: "corrections", label: "Correcciones", hint: "Palabras o nombres que Gemini transcribe mal", icon: SpellCheck, count: corrections.length, passive: true },
+            ]}
+          />
+          <button
+            type="button"
+            onClick={() => setReview("weekly")}
+            title="Diferencias entre el mail semanal que generó la app y el que enviaste"
+            className={cn(
+              "flex h-8 items-center gap-1.5 rounded-md border px-2.5 text-xs transition-colors",
+              weeklyShown.length ? "border-border-strong bg-surface text-foreground" : "border-input bg-surface text-muted-foreground hover:text-foreground",
+            )}
+          >
+            <Mail className="size-3.5" /> Del mail semanal
+            {weeklyShown.length > 0 && <span className="tabular rounded bg-accent px-1 font-medium">{weeklyShown.length}</span>}
+          </button>
+          <div className="ml-auto flex items-center gap-2">
+            <Legend view={view} targetDays={targetDays} limitDays={limitDays} />
+            <Segmented
+              label="Densidad"
+              value={density}
+              onChange={changeDensity}
+              options={[
+                ["comfy", <span key="c" title="Cómoda" className="flex"><Rows2 className="size-3.5" /></span>],
+                ["compact", <span key="k" title="Compacta" className="flex"><Rows4 className="size-3.5" /></span>],
+              ]}
+            />
+            <Segmented
+              label="Vista"
+              value={view}
+              onChange={changeView}
+              options={[
+                ["board", <><Columns3 className="size-3.5" /> Tablero</>],
+                ["list", <><List className="size-3.5" /> Lista</>],
+              ]}
+            />
+          </div>
         </div>
       </div>
 
-      {/* Leyenda */}
-      <p className="flex flex-wrap items-center gap-x-4 gap-y-1 text-xs text-subtle-foreground">
-        {(["agreed", "target", "manual"] as const).map((k) => {
-          const Icon = DUE_ICON[k];
-          return (
-            <span key={k} className="flex items-center gap-1">
-              <Icon className="size-3.5" />
-              {k === "agreed" ? "Acordada: se dijo en la reunión o el mail" : k === "target" ? `Meta interna si no se dijo fecha: de reuniones, la semana siguiente; mails y agregados a mano, ${targetDays} días hábiles (vence a los ${limitDays})` : "Manual: la pusiste vos"}
-            </span>
-          );
-        })}
-        <span className="flex items-center gap-1">
-          <span className="size-2.5 rounded-sm border border-critical/50 bg-critical/10" /> Muy atrasado (≥2 días háb.)
-        </span>
-        <span className="flex items-center gap-1">
-          <span className="size-2.5 rounded-sm border border-overdue/50 bg-overdue/10" /> Vencido (1 día)
-        </span>
-        <span className="flex items-center gap-1">
-          <span className="size-2.5 rounded-sm border border-due-today/50 bg-due-today/10" /> Vence hoy
-        </span>
-        <span>· Click para desplegar{view === "board" ? "; arrastrá la card a otra columna para cambiarle la fecha" : ""}.</span>
-      </p>
-
-      {carriedOverdue > 0 && !onlyCarried && (
-        <div className="flex flex-wrap items-center justify-between gap-2 rounded-lg border border-warning/25 bg-warning-muted px-3 py-2 text-xs text-foreground">
-          <span>
-            <b className="tabular font-medium">{carriedOverdue}</b> vencido{carriedOverdue === 1 ? "" : "s"} vienen de antes de esta semana.
-            Revisalos: marcá hecho, quitá lo que no corresponde o reprogramá.
-          </span>
-          <button type="button" onClick={() => setOnlyCarried(true)} className="font-medium text-warning hover:underline">
-            Revisar arrastrados
-          </button>
-        </div>
-      )}
+      <SuggestionsDialog
+        open={review === "suggestions"}
+        onOpenChange={(o) => setReview(o ? "suggestions" : null)}
+        suggestions={pendingSuggestionsList}
+        busy={busy}
+        onResolve={resolveSuggestion}
+      />
+      <RewritesDialog open={review === "rewrites"} onOpenChange={(o) => setReview(o ? "rewrites" : null)} rewrites={rewritesShown} />
+      <WeeklyReviewDialog open={review === "weekly"} onOpenChange={(o) => setReview(o ? "weekly" : null)} entries={weeklyShown} />
+      <CorrectionsDialog open={review === "corrections"} onOpenChange={(o) => setReview(o ? "corrections" : null)} corrections={corrections} />
 
       {focusMissing && (
         <p className="flex items-center justify-between gap-2 rounded-md border border-border bg-surface px-3 py-1.5 text-xs text-muted-foreground">
@@ -752,7 +808,7 @@ export function ActionablesBoard({
             if (!band.length) return null;
             return (
               <div key={round.key} className="space-y-2">
-                <RoundHeader label={round.label} hint={round.hint} items={band} />
+                {showRounds && <RoundHeader label={round.label} hint={round.hint} items={band} />}
                 {/* Sin `relative`: las posiciones del FLIP (`offsetLeft/Top`) siguen siendo relativas al tablero. */}
                 <div className="grid items-start gap-3 md:grid-cols-2 xl:grid-cols-5">
                 {COLUMNS.map((col) => {
@@ -849,7 +905,7 @@ export function ActionablesBoard({
             if (!band.length) return null;
             return (
               <div key={round.key} className="space-y-3">
-                <RoundHeader label={round.label} hint={round.hint} items={band} />
+                {showRounds && <RoundHeader label={round.label} hint={round.hint} items={band} />}
                 {COLUMNS.map((col) => {
                   const list = band.filter((i) => i.bucket === col.key);
                   if (!list.length) return null;
@@ -927,6 +983,132 @@ function Segmented<T extends string>({
           {content}
         </button>
       ))}
+    </div>
+  );
+}
+
+/** Desplegable simple (click afuera o Esc lo cierra), como el de cuentas. */
+function usePopover() {
+  const [open, setOpen] = useState(false);
+  const ref = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    if (!open) return;
+    const onDown = (e: MouseEvent) => {
+      if (!ref.current?.contains(e.target as Node)) setOpen(false);
+    };
+    const onKey = (e: KeyboardEvent) => e.key === "Escape" && setOpen(false);
+    document.addEventListener("mousedown", onDown);
+    document.addEventListener("keydown", onKey);
+    return () => {
+      document.removeEventListener("mousedown", onDown);
+      document.removeEventListener("keydown", onKey);
+    };
+  }, [open]);
+  return { open, setOpen, ref };
+}
+const POPOVER = "absolute top-full z-30 mt-1 rounded-lg border border-border-strong bg-popover p-2 text-popover-foreground shadow-popover";
+
+type ReviewKey = "suggestions" | "rewrites" | "weekly" | "corrections";
+/** "Revisar (N)": un solo menú para los modales de revisión; N = lo pendiente (las correcciones no cuentan). */
+function ReviewMenu({
+  entries,
+  onPick,
+}: {
+  entries: { key: ReviewKey; label: string; hint: string; icon: typeof Mail; count: number; passive?: boolean }[];
+  onPick: (k: ReviewKey) => void;
+}) {
+  const { open, setOpen, ref } = usePopover();
+  const total = entries.reduce((n, e) => n + (e.passive ? 0 : e.count), 0);
+  return (
+    <div ref={ref} className="relative">
+      <button
+        type="button"
+        aria-haspopup="menu"
+        aria-expanded={open}
+        onClick={() => setOpen((o) => !o)}
+        className={cn(
+          "flex h-8 items-center gap-1.5 rounded-md border px-2.5 text-xs transition-colors",
+          total ? "border-border-strong bg-surface text-foreground" : "border-input bg-surface text-muted-foreground hover:text-foreground",
+        )}
+      >
+        <ListChecks className="size-3.5" /> Revisar
+        {total > 0 && <span className="tabular rounded bg-accent px-1 font-medium">{total}</span>}
+        <ChevronDown className="size-3.5 text-subtle-foreground" />
+      </button>
+      {open && (
+        <ul role="menu" className={cn(POPOVER, "left-0 w-64 p-1")}>
+          {entries.map((e) => (
+            <li key={e.key}>
+              <button
+                type="button"
+                role="menuitem"
+                title={e.hint}
+                onClick={() => {
+                  setOpen(false);
+                  onPick(e.key);
+                }}
+                className="flex w-full items-center gap-2 rounded px-2 py-1.5 text-left text-xs text-foreground hover:bg-accent/60"
+              >
+                <e.icon className="size-3.5 shrink-0 text-subtle-foreground" />
+                <span className="flex-1">{e.label}</span>
+                <span className={cn("tabular", e.count && !e.passive ? "font-medium text-foreground-strong" : "text-subtle-foreground")}>{e.count}</span>
+              </button>
+            </li>
+          ))}
+        </ul>
+      )}
+    </div>
+  );
+}
+
+/** Leyenda de tipos de fecha y colores, en un ⓘ para no ocupar alto sobre el tablero. */
+function Legend({ view, targetDays, limitDays }: { view: View; targetDays: number; limitDays: number }) {
+  const { open, setOpen, ref } = usePopover();
+  const text: Record<DueKind, string> = {
+    agreed: "Acordada: se dijo en la reunión o el mail",
+    target: `Meta interna si no se dijo fecha: de reuniones, la semana siguiente; mails y agregados a mano, ${targetDays} días hábiles (vence a los ${limitDays})`,
+    manual: "Manual: la pusiste vos",
+  };
+  return (
+    <div ref={ref} className="relative">
+      <button
+        type="button"
+        aria-label="Leyenda"
+        aria-expanded={open}
+        title="Leyenda"
+        onClick={() => setOpen((o) => !o)}
+        className={cn(
+          "flex size-8 items-center justify-center rounded-md border transition-colors",
+          open ? "border-border-strong bg-accent text-foreground" : "border-input bg-surface text-muted-foreground hover:text-foreground",
+        )}
+      >
+        <Info className="size-3.5" />
+      </button>
+      {open && (
+        <div className={cn(POPOVER, "right-0 w-80 space-y-1.5 p-3 text-xs text-muted-foreground")}>
+          {(["agreed", "target", "manual"] as const).map((k) => {
+            const Icon = DUE_ICON[k];
+            return (
+              <p key={k} className="flex gap-2">
+                <Icon className="mt-0.5 size-3.5 shrink-0" />
+                {text[k]}
+              </p>
+            );
+          })}
+          <p className="flex items-center gap-2 pt-1">
+            <span className="size-2.5 shrink-0 rounded-sm border border-critical/50 bg-critical/10" /> Muy atrasado (≥2 días háb.)
+          </p>
+          <p className="flex items-center gap-2">
+            <span className="size-2.5 shrink-0 rounded-sm border border-overdue/50 bg-overdue/10" /> Vencido (1 día)
+          </p>
+          <p className="flex items-center gap-2">
+            <span className="size-2.5 shrink-0 rounded-sm border border-due-today/50 bg-due-today/10" /> Vence hoy
+          </p>
+          <p className="border-t border-divider pt-1.5 text-subtle-foreground">
+            Click para desplegar{view === "board" ? "; arrastrá la card a otra columna para cambiarle la fecha" : ""}.
+          </p>
+        </div>
+      )}
     </div>
   );
 }

@@ -2,7 +2,7 @@
 
 import { useState } from "react";
 import { useRouter } from "next/navigation";
-import { Check, Sparkles, X } from "lucide-react";
+import { Check, X } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from "@/components/ui/dialog";
@@ -15,9 +15,8 @@ import { fmtShortDate } from "@/components/accionables/format";
 // Aceptar guarda el texto como edición del accionable (no cambia ids, estado ni fecha); descartar la oculta.
 // Nada se aplica solo. `PATCH /api/clients/[id] {rewrite: {ref, action, title?}}` (`resolveRewrite`).
 
-export function RewritesDialog({ rewrites }: { rewrites: RewriteItem[] }) {
+export function RewritesDialog({ rewrites, open, onOpenChange }: { rewrites: RewriteItem[]; open: boolean; onOpenChange: (open: boolean) => void }) {
   const router = useRouter();
-  const [open, setOpen] = useState(false);
   const [resolved, setResolved] = useState<Set<string>>(new Set());
   const [busy, setBusy] = useState<string | null>(null);
   const [drafts, setDrafts] = useState<Record<string, string>>({});
@@ -49,16 +48,7 @@ export function RewritesDialog({ rewrites }: { rewrites: RewriteItem[] }) {
 
   return (
     <>
-      <button
-        type="button"
-        onClick={() => setOpen(true)}
-        title="Redacción mejorada por el análisis semanal con IA para accionables con texto pobre"
-        className="flex h-8 items-center gap-1.5 rounded-md border border-input bg-surface px-2.5 text-xs text-muted-foreground transition-colors hover:text-foreground"
-      >
-        <Sparkles className="size-3.5" /> Mejoras IA
-        {pending.length > 0 && <span className="tabular text-subtle-foreground">{pending.length}</span>}
-      </button>
-      <Dialog open={open} onOpenChange={setOpen}>
+      <Dialog open={open} onOpenChange={onOpenChange}>
         <DialogContent className="flex max-h-[calc(100dvh-2rem)] flex-col sm:max-w-3xl">
           <DialogHeader>
             <DialogTitle>Mejoras de redacción (IA)</DialogTitle>

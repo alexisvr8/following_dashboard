@@ -1,7 +1,7 @@
 "use client";
 
 import { useState } from "react";
-import { Check, MessageSquareQuote, X } from "lucide-react";
+import { Check, X } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from "@/components/ui/dialog";
@@ -18,26 +18,20 @@ export function SuggestionsDialog({
   suggestions,
   busy,
   onResolve,
+  open,
+  onOpenChange,
 }: {
+  open: boolean;
+  onOpenChange: (open: boolean) => void;
   suggestions: SuggestedItem[];
   busy: string | null;
   onResolve: (s: SuggestedItem, action: "accept" | "dismiss", title?: string) => void;
 }) {
-  const [open, setOpen] = useState(false);
   const [editing, setEditing] = useState<string | null>(null);
   const [draft, setDraft] = useState("");
   return (
     <>
-      <button
-        type="button"
-        onClick={() => setOpen(true)}
-        title="Compromisos dichos en la reunión que Gemini no puso en Próximos pasos"
-        className="flex h-8 items-center gap-1.5 rounded-md border border-input bg-surface px-2.5 text-xs text-muted-foreground transition-colors hover:text-foreground"
-      >
-        <MessageSquareQuote className="size-3.5" /> De la reunión
-        {suggestions.length > 0 && <span className="tabular text-subtle-foreground">{suggestions.length}</span>}
-      </button>
-      <Dialog open={open} onOpenChange={setOpen}>
+      <Dialog open={open} onOpenChange={onOpenChange}>
         <DialogContent className="flex max-h-[calc(100dvh-2rem)] flex-col sm:max-w-2xl">
           <DialogHeader>
             <DialogTitle>Dicho en la reunión</DialogTitle>

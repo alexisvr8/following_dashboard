@@ -2,7 +2,7 @@
 
 import { useState } from "react";
 import { useRouter } from "next/navigation";
-import { Check, CircleSlash, Mail, Plus, Undo2, X } from "lucide-react";
+import { Check, CircleSlash, Plus, Undo2, X } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from "@/components/ui/dialog";
@@ -23,9 +23,16 @@ const KIND_LABEL = { removed: "Lo sacaste", added: "Lo agregaste", skipped: "Sin
 
 const weekLabel = (w: string) => `semana del ${w.slice(8, 10)}/${w.slice(5, 7)}`;
 
-export function WeeklyReviewDialog({ entries }: { entries: WeeklyReviewEntry[] }) {
+export function WeeklyReviewDialog({
+  entries,
+  open,
+  onOpenChange,
+}: {
+  entries: WeeklyReviewEntry[];
+  open: boolean;
+  onOpenChange: (open: boolean) => void;
+}) {
   const router = useRouter();
-  const [open, setOpen] = useState(false);
   const [resolved, setResolved] = useState<Set<string>>(new Set());
   const [busy, setBusy] = useState<string | null>(null);
   const [texts, setTexts] = useState<Record<string, string>>({});
@@ -67,16 +74,7 @@ export function WeeklyReviewDialog({ entries }: { entries: WeeklyReviewEntry[] }
 
   return (
     <>
-      <button
-        type="button"
-        onClick={() => setOpen(true)}
-        title="Diferencias entre el mail semanal que generó la app y el que enviaste"
-        className="flex h-8 items-center gap-1.5 rounded-md border border-input bg-surface px-2.5 text-xs text-muted-foreground transition-colors hover:text-foreground"
-      >
-        <Mail className="size-3.5" /> Del mail semanal
-        {pending.length > 0 && <span className="tabular text-subtle-foreground">{pending.length}</span>}
-      </button>
-      <Dialog open={open} onOpenChange={setOpen}>
+      <Dialog open={open} onOpenChange={onOpenChange}>
         <DialogContent className="flex max-h-[calc(100dvh-2rem)] flex-col sm:max-w-3xl">
           <DialogHeader>
             <DialogTitle>Revisión del mail semanal</DialogTitle>
