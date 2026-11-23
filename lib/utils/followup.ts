@@ -29,6 +29,7 @@ import type { Actionable } from "@/lib/utils/actionables";
 import type { AISide } from "@/lib/llm/postmeeting-schema";
 import { statusKey, type StatusMailInput } from "@/lib/llm/status-mail";
 import { clientMailKey, type ClientMailInput, type ClientMailMode } from "@/lib/llm/reply-mail";
+import { weeklyKey, type WeeklyMailInput, type WeeklyMailOutput } from "@/lib/llm/weekly-mail";
 
 // Borradores recalculados con cada mail, reunión o accionable tildado. El de la minuta (`buildFollowup`) usa el
 // contenido generado por Claude cuando la reunión lo tiene (`meeting.ai`) y, si no, el armado por reglas; en ambos
@@ -1093,10 +1094,170 @@ export function getDraft(
   return { draft: saved, generated, regenerated: false, lastSentAt };
 }
 
+const norm = (s: string) => s.normalize("NFD").replace(/[\u0300-\u036f]/g, "").toLowerCase().trim();
+/** Responsables que son un área o buzón, no una persona. */
+const GENERIC_OWNER = /^(operaciones|administraci[oó]n|compras|cuentas|contabilidad|finanzas|soporte|sistemas|tesorer[ií]a|proveedores|pagos|facturaci[oó]n|la empresa|el cliente|equipo)$/i;
+
+/** Lunes (AAAA-MM-DD, hora local) de la semana de `d`: misma clave que `weekKey` del job. */
+function mondayKey(d: Date): string {
+  const m = new Date(d.getFullYear(), d.getMonth(), d.getDate() - ((d.getDay() + 6) % 7));
+  return `${m.getFullYear()}-${String(m.getMonth() + 1).padStart(2, "0")}-${String(m.getDate()).padStart(2, "0")}`;
+}
+/** Número de semana estable (desde 1970) + huella del cliente: rota saludo y tono por semana y no todos a la vez. */
+function weekSeed(clientId: string, d: Date): number {
+  let h = 0;
+  for (const ch of clientId) h = (h * 31 + ch.charCodeAt(0)) | 0;
+  return Math.floor(Date.parse(`${mondayKey(d)}T12:00:00Z`) / (7 * 86_400_000)) + Math.abs(h);
+}
+/** Saludos del lunes: `{n}` = nombre o "equipo"; [ustedes, vos]. */
+const WEEKLY_GREETINGS: [string, string][] = [
+  ["Buen día {n}, excelente inicio de semana.", "Buen día {n}, excelente inicio de semana."],
+  ["Hola {n}, ¿cómo arrancan la semana?", "Hola {n}, ¿cómo arrancás la semana?"],
+  ["Buen día {n}, espero que hayan tenido un lindo fin de semana.", "Buen día {n}, espero que hayas tenido un lindo fin de semana."],
+  ["Hola {n}, buen comienzo de semana.", "Hola {n}, buen comienzo de semana."],
+  ["Buen día {n}, ¿todo bien? Arrancamos una semana nueva.", "Buen día {n}, ¿todo bien? Arrancamos una semana nueva."],
+  ["Hola {n}, espero que estén muy bien. Que tengan una buena semana.", "Hola {n}, espero que estés muy bien. Que tengas una buena semana."],
+];
+const WEEKLY_TONES = [
+  "breve y directo, al grano",
+  "cálido y cercano, como con alguien con quien ya hay confianza",
+  "práctico y ordenado, con foco en cerrar los temas esta semana",
+  "relajado y de equipo, sin sonar formal",
+  "positivo, transmitiendo que vamos bien encaminados",
+];
+const WEEKLY_OPENINGS = [
+  "arrancá por lo que necesito de ellos esta semana y mencioná al pasar que lo mío sigue en curso",
+  "contá que sigo con lo que quedó de mi lado (sin decir que está terminado) y que les paso novedades en estos días",
+  "planteá que esta semana me gustaría cerrar estos temas y que de mi lado ya estoy avanzando",
+  "decí que para seguir avanzando (o no frenar) necesito una mano con algunos puntos de su lado",
+  "abrí con un repaso rápido: lo mío está en marcha y quedan algunos puntos de su lado",
+];
+const WEEKLY_CLOSINGS = [
+  "invitá a que confirmen cuando lo tengan, sin presión",
+  "ofrecé ayuda si algo se traba o necesitan una mano",
+  "proponé que si algo no se puede esta semana me avisen y lo reordenamos",
+  "agradecé la mano de su lado y pedí que me avisen cualquier duda",
+  "ofrecé una llamada corta si es más fácil verlo juntos",
+];
+/** Saludo de esta semana; no repite el de la semana anterior. */
+function weeklyGreeting(clientId: string, now: Date, name: string | null, plural: boolean): string {
+  const seed = weekSeed(clientId, now);
+  const pick = (k: number) => WEEKLY_GREETINGS[k % WEEKLY_GREETINGS.length][plural ? 0 : 1];
+  return pick(seed).replace("{n}", name ?? "equipo");
+}
+
+/** Lunes 00:00 (hora local) de la semana anterior a `now`: inicio de "la semana pasada" del mail de los lunes. */
+function previousMonday(now: Date): Date {
+  return new Date(now.getFullYear(), now.getMonth(), now.getDate() - ((now.getDay() + 6) % 7) - 7);
+}
+
+/** Datos del mail de los lunes: lo mismo alimenta la plantilla por reglas y la entrada de la IA. */
+function weeklyParts(client: ClientRecord, meeting: DiscoveredMeeting, ownerEmail: string | null, settings: WorkSettings, now: Date) {
+  const base = buildStatusUpdate(client, meeting, ownerEmail, settings);
+  const since = previousMonday(now).getTime();
+  const all = accountActionables(client);
+  const dueAt = (a: (typeof all)[number]) => {
+    const due = agreedDue(client, a.id, a.step, a.meeting.date, settings.workDays);
+    return due && due.until >= now ? due : null;
+  };
+  const dueOf = (a: (typeof all)[number]) => dueAt(a)?.label ?? null;
+  const sideOf = (a: (typeof all)[number]) => overrideSide(client, a.id, stepSide(a.step, client, ownerEmail, settings));
+  const open = all.filter((a) => !a.done);
+  const done = new Set(client.doneTicketIds ?? []);
+  const doneAt = client.doneTicketAt ?? {};
+  const mailAll = mailTickets(client).filter((t) => t.kind === "request" || t.kind === "commitment");
+  const mailOpen = mailAll.filter((t) => !done.has(t.id));
+  const recent = (at: string | null | undefined) => Boolean(at && Date.parse(at) >= since);
+  const recipients = base.to.map((email) => ({ email, name: null as string | null }));
+  const hello = greet(recipients, client);
+  const names = hello.startsWith("Hola equipo") ? [] : hello.replace(/^Hola\s+/, "").replace(/,$/, "").split(/,\s*|\s+y\s+/);
+  return {
+    base,
+    hello,
+    names,
+    // Tuteo solo con una persona identificada; buzón genérico o varios destinatarios = "ustedes".
+    plural: base.to.length !== 1 || names.length !== 1,
+    dueOf,
+    dueAt,
+    ours: open.filter((a) => ["me", "team"].includes(sideOf(a))),
+    theirs: open.filter((a) => sideOf(a) === "client"),
+    shared: open.filter((a) => sideOf(a) === "shared"),
+    other: open.filter((a) => sideOf(a) === "unknown"),
+    requests: mailOpen.filter((t) => t.kind === "request"),
+    commitments: mailOpen.filter((t) => t.kind === "commitment"),
+    finished: [
+      ...all.filter((a) => a.done && recent(a.doneAt)).map((a) => ({ text: `${formatStep(a.step)}${ownerTag(a.step)}`, at: a.doneAt! })),
+      ...mailAll.filter((t) => done.has(t.id) && recent(doneAt[t.id])).map((t) => ({ text: t.title, at: doneAt[t.id] })),
+    ].sort((a, b) => a.at.localeCompare(b.at)),
+  };
+}
+
+/** Cuerpos de los últimos 3 mails semanales de semanas anteriores (enviados o en borrador), el más reciente primero. */
+function previousWeeklyBodies(client: ClientRecord, now: Date): string[] {
+  const current = `week:${mondayKey(now)}`;
+  return Object.keys(client.followups ?? {})
+    .filter((k) => k.startsWith("week:") && k < current)
+    .sort()
+    .reverse()
+    .slice(0, 3)
+    .map((k) => (client.followups![k].gmailBody ?? client.followups![k].body ?? "").trim().slice(0, 1500))
+    .filter(Boolean);
+}
+
+/** Entrada de la IA para el mail de los lunes y su huella; `null` si no queda nada pendiente con la cuenta. */
+export function weeklyAIRequest(
+  client: ClientRecord,
+  meeting: DiscoveredMeeting,
+  ownerEmail: string | null,
+  settings: WorkSettings,
+  now = new Date(),
+): { input: WeeklyMailInput; key: string } | null {
+  const p = weeklyParts(client, meeting, ownerEmail, settings, now);
+  if (!p.ours.length && !p.theirs.length && !p.shared.length && !p.other.length && !p.requests.length && !p.commitments.length) return null;
+  const items = [...p.theirs, ...p.shared];
+  // Responsables del lado del cliente: yo y el equipo Xtract no figuran ("Kazaro y Alexis" → "Kazaro").
+  const clientOwners = (step: string) => {
+    const owners = step.match(/^\s*\[([^\]]+)\]/)?.[1].split(",").map((o) => o.trim()).filter(Boolean) ?? [];
+    const keep = owners.filter((o) => !isGroupOwner(o) && !isOwnActionable(`[${o}] x`, settings) && learnedRole(o, settings) !== "team");
+    // El nombre de la empresa o de un buzón genérico ("Gaviglio", "Operaciones") no aporta como responsable.
+    const company = norm(companyName(client));
+    const named = keep.filter((o) => norm(o) !== company && norm(o) !== norm(client.name) && !GENERIC_OWNER.test(o.trim()));
+    return ownerTag(named.length ? `[${named.join(", ")}] x` : "x").replace(/^ \((.*)\)$/, "$1") || null;
+  };
+  const anchor = items
+    .map((a) => p.dueAt(a))
+    .filter((d): d is NonNullable<typeof d> => Boolean(d))
+    .sort((a, b) => a.until.getTime() - b.until.getTime())[0];
+  const input: WeeklyMailInput = {
+    clientName: companyName(client),
+    ownerName: settings.ownerAliases[0] ?? "PM",
+    today: fmtDate(now.toISOString()),
+    recipients: p.names,
+    plural: p.plural,
+    erp: client.profile?.erp || null,
+    anchorDate: anchor?.label ?? null,
+    clientItems: items.map((a, i) => ({
+      ref: `P${i + 1}`,
+      text: formatStep(a.step),
+      owner: clientOwners(a.step),
+      due: p.dueOf(a),
+    })),
+    attention: Boolean(client.profile?.attention),
+    tone: WEEKLY_TONES[weekSeed(client.id, now) % WEEKLY_TONES.length],
+    angle: {
+      opening: WEEKLY_OPENINGS[weekSeed(client.id, now) % WEEKLY_OPENINGS.length],
+      closing: WEEKLY_CLOSINGS[(weekSeed(client.id, now) + 2) % WEEKLY_CLOSINGS.length],
+    },
+    previousMails: previousWeeklyBodies(client, now),
+  };
+  return { input, key: weeklyKey(input) };
+}
+
 /**
- * Mail de los lunes: los pendientes de la cuenta como objetivos de la semana (lo que debo y lo que me deben)
- * y lo que se completó en los últimos 7 días. Las fechas solo si se acordaron (nunca la meta interna).
- * `null` si no queda nada pendiente con la cuenta.
+ * Mail de los lunes. Con `ai` (redacción de `generateWeeklyMail` para la entrada de `weeklyAIRequest`): saludo de
+ * inicio de semana → avance general nuestro → conector → lista numerada de lo que necesitamos de su lado → cierre.
+ * Sin IA, por reglas: lo completado la semana pasada (calendario, lunes a hoy) + objetivos de cada lado. Las fechas
+ * solo si se acordaron (nunca la meta interna). `null` si no queda nada pendiente con la cuenta.
  */
 export function buildWeeklyPlan(
   client: ClientRecord,
@@ -1104,55 +1265,71 @@ export function buildWeeklyPlan(
   ownerEmail: string | null,
   settings: WorkSettings,
   now = new Date(),
+  ai?: { output: WeeklyMailOutput; key: string } | null,
 ): FollowupDraft | null {
-  const base = buildStatusUpdate(client, meeting, ownerEmail, settings);
-  const weekAgo = now.getTime() - 7 * 86_400_000;
-  const all = accountActionables(client);
-  const line = (a: (typeof all)[number]) => {
-    const due = agreedDue(client, a.id, a.step, a.meeting.date, settings.workDays);
-    const dueTxt = due && due.until >= now ? ` – para ${due.label.startsWith("semana") ? "la" : "el"} ${due.label}` : "";
-    return `${formatStep(a.step)}${dueTxt}${ownerTag(a.step)}`;
-  };
-  const sideOf = (a: (typeof all)[number]) => overrideSide(client, a.id, stepSide(a.step, client, ownerEmail, settings));
-  const open = all.filter((a) => !a.done);
-  const ours = open.filter((a) => ["me", "team"].includes(sideOf(a)));
-  const theirs = open.filter((a) => sideOf(a) === "client");
-  const shared = open.filter((a) => sideOf(a) === "shared");
-  const other = open.filter((a) => sideOf(a) === "unknown");
-  const done = new Set(client.doneTicketIds ?? []);
-  const mail = mailTickets(client).filter((t) => (t.kind === "request" || t.kind === "commitment") && !done.has(t.id));
-  const finished = all.filter((a) => a.done && a.doneAt && Date.parse(a.doneAt) >= weekAgo);
-  if (!open.length && !mail.length) return null;
+  const req = weeklyAIRequest(client, meeting, ownerEmail, settings, now);
+  if (!req) return null;
+  const p = weeklyParts(client, meeting, ownerEmail, settings, now);
+  const subject = p.base.threadId ? p.base.subject : `Objetivos de la semana – ${companyName(client)}`;
 
+  if (ai && ai.key === req.key) {
+    const out = ai.output;
+    const { input } = req;
+    const byRef = new Map(out.items.map((i) => [i.ref, i]));
+    // Una sola persona dueña de todo: no se repite su nombre en cada punto.
+    const solo = !input.plural && input.clientItems.every((i) => !i.owner || i.owner === input.recipients[0]);
+    const rows = input.clientItems.map((item, i) => {
+      const w = byRef.get(item.ref);
+      const action = (w?.titulo.trim() || item.text).replace(/[.:]+$/, "");
+      const who = !solo && item.owner ? ` (${item.owner})` : "";
+      const desc = (w?.descripcion.trim() || "").replace(/\.?$/, ".");
+      const due = item.due ? ` *(acordado para ${item.due.startsWith("semana") ? "la" : "el"} ${item.due})*` : "";
+      return `${i + 1}. **${action}${who}:** ${desc === "." ? "" : desc}${due}`.trimEnd();
+    });
+    const opening =
+      out.apertura.trim() ||
+      `Estoy avanzando con los puntos pendientes que quedaron de mi lado, de todas formas, necesito que avancemos con los puntos pendientes del lado de ${input.plural ? "ustedes" : "vos"}:`;
+    const lines = [
+      weeklyGreeting(client.id, now, input.plural ? null : (input.recipients[0] ?? null), input.plural),
+      "",
+      opening,
+      ...(rows.length ? ["", ...rows] : []),
+      "",
+      out.cierre.trim(),
+      "Saludos",
+    ];
+    return { ...p.base, subject, body: lines.join("\n"), reviewNotes: ["Redactado con IA", ...out.revision], ai: true, aiKey: req.key };
+  }
+
+  const line = (a: (typeof p.ours)[number]) => {
+    const due = p.dueOf(a);
+    return `${formatStep(a.step)}${due ? ` – para ${due.startsWith("semana") ? "la" : "el"} ${due}` : ""}${ownerTag(a.step)}`;
+  };
   const pend = (text: string) => `• ${text}${STATUS_PENDING}`;
   const section = (title: string, rows: string[]) => (rows.length ? ["", title, ...rows] : []);
-  const recipients = base.to.map((email) => ({ email, name: null as string | null }));
+  const your = p.plural ? "su" : "tu";
   const lines = [
-    greet(recipients, client),
+    p.hello,
     "",
-    "Les comparto los objetivos de esta semana para seguir avanzando con la integración.",
+    `${p.plural ? "Les" : "Te"} comparto los objetivos de esta semana para seguir avanzando con la integración.`,
     ...section(
       "Lo que completamos la semana pasada:",
-      finished.map((a) => `✓ ${formatStep(a.step)}${ownerTag(a.step)}${doneStatus(a.doneAt)}`),
+      p.finished.map((f) => `✓ ${f.text}${doneStatus(f.at)}`),
     ),
-    ...section("Objetivos de nuestro lado:", [
-      ...ours.map((a) => pend(line(a))),
-      ...mail.map((t) => pend(`${t.title} (${t.kind === "request" ? "consulta por mail" : "lo que quedé en enviar"})`)),
-    ]),
-    ...section("Objetivos de su lado (para poder avanzar):", theirs.map((a) => pend(line(a)))),
-    ...section("Para resolver en conjunto:", shared.map((a) => pend(line(a)))),
-    ...section("Otros pendientes acordados:", other.map((a) => pend(line(a)))),
+    ...section("Objetivos de nuestro lado:", [...p.ours.map((a) => pend(line(a))), ...p.commitments.map((t) => pend(t.title))]),
+    ...section(
+      `Lo que ${p.plural ? "nos consultaron" : "nos consultaste"} por mail (ya lo estamos viendo):`,
+      p.requests.map((t) => pend(t.title)),
+    ),
+    ...section(`Objetivos de ${your} lado (para poder avanzar):`, p.theirs.map((a) => pend(line(a)))),
+    ...section("Para resolver en conjunto:", p.shared.map((a) => pend(line(a)))),
+    ...section("Otros pendientes acordados:", p.other.map((a) => pend(line(a)))),
     "",
-    "La idea es cerrar estos puntos en el transcurso de la semana. Cualquier duda o si hay algo para priorizar, me avisan.",
+    `La idea es cerrar estos puntos en el transcurso de la semana. Cualquier duda o si hay algo para priorizar, ${p.plural ? "me avisan" : "me avisas"}.`,
     "",
     "Saludos",
   ];
-  return {
-    ...base,
-    subject: base.threadId ? base.subject : `Objetivos de la semana – ${companyName(client)}`,
-    body: lines.join("\n"),
-    reviewNotes: [],
-  };
+  return { ...p.base, subject, body: lines.join("\n"), reviewNotes: [] };
 }
 
 /** Entrada de la IA para el mail de seguimiento vigente (la misma que arma `buildStatusUpdate`) y su huella. */

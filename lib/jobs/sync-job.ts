@@ -20,7 +20,9 @@ import {
 import { getSettings, type WorkSettings } from "@/lib/store/settings-store";
 import { saveSyncStatus, type SyncStatus } from "@/lib/store/sync-status-store";
 import { computeAlerts, type AccountAlert } from "@/lib/utils/followup-alerts";
-import { buildFollowup, buildWeeklyPlan } from "@/lib/utils/followup";
+import { buildFollowup, buildWeeklyPlan, weeklyAIRequest } from "@/lib/utils/followup";
+import { aiEnabled } from "@/lib/llm/postmeeting";
+import { generateWeeklyMail, type WeeklyMailOutput } from "@/lib/llm/weekly-mail";
 import { getSyncStatus } from "@/lib/store/sync-status-store";
 import { followupTicketId, meetingEnd } from "@/lib/store/clients-store";
 import { createHash } from "node:crypto";
@@ -165,8 +167,9 @@ export function weekKey(d: Date): string {
 }
 
 /**
- * Lunes: por cada cuenta asignada con pendientes, UN borrador con los objetivos de la semana (lo que debo y lo
- * que me deben + lo completado la semana pasada), en el hilo más reciente. Clave `week:<lunes>`: una vez por
+ * Lunes: por cada cuenta asignada con pendientes, UN borrador con los objetivos de la semana, redactado con IA
+ * (`generateWeeklyMail`, Haiku: avance general + lo que necesitamos de su lado) o, sin IA, por reglas (lo que debo,
+ * lo que me deben y lo completado la semana pasada), en el hilo de seguimiento. Clave `week:<lunes>`: una vez por
  * semana; si se corre de nuevo, actualiza ese mismo borrador (no lo duplica) mientras no se haya enviado.
  */
 async function createWeeklyDrafts(file: ClientsFile, settings: WorkSettings) {
@@ -190,7 +193,20 @@ async function createWeeklyDrafts(file: ClientsFile, settings: WorkSettings) {
         continue;
       }
     }
-    const draft = buildWeeklyPlan(client, meeting, file.ownerEmail ?? null, settings);
+    const req = weeklyAIRequest(client, meeting, file.ownerEmail ?? null, settings);
+    if (!req) continue;
+    // Ya redactado con IA para esta misma entrada (se corrió de nuevo el lunes): el borrador está al día.
+    if (previous?.gmailDraftId && previous.aiKey === req.key) continue;
+    // Redacción con IA (Haiku); si falla o no hay clave, va la plantilla por reglas.
+    let ai: { output: WeeklyMailOutput; key: string } | null = null;
+    if (aiEnabled()) {
+      try {
+        ai = { key: req.key, output: await generateWeeklyMail(req.input, { clientId: client.id, clientName: client.name, trigger: "semanal" }) };
+      } catch {
+        ai = null;
+      }
+    }
+    const draft = buildWeeklyPlan(client, meeting, file.ownerEmail ?? null, settings, new Date(), ai);
     if (!draft || !draft.to.length) continue;
     const threadId = draft.threadId ?? null;
     try {

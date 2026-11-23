@@ -342,7 +342,7 @@ correcciones, ERP y abiertos previos. `setMeetingAI` guarda `meeting.ai` (status
 Template único `lib/utils/postmeeting-mail.ts` (`renderPostMeetingMail`, `actionableLine` =
 `• Título: Descripción. (Responsable) - Status: X ⏳|✅ (dd/mm)`), usado por `buildFollowup` con IA o por reglas.
 Tests: `pnpm test` (vitest, `tests/`); `RUN_LLM=1 LLM_DOC=<minuta.txt>` corre la prueba real contra la API.
-**Registro de consumo**: las 4 llamadas (`postmeeting`, `status`, `analysis`, `reply`) registran `response.usage` con `recordResponse`
+**Registro de consumo**: las llamadas (`postmeeting`, `status`, `analysis`, `reply`, `reminder`, `weekly`) registran `response.usage` con `recordResponse`
 (`lib/store/ai-usage-store.ts`, `app_state.ai_usage` / `.data/ai-usage.json`, 120 días, escrituras encadenadas en el proceso; cuenta + `trigger`
 sync/actualizar/semanal/reanalizar/preview; `ok: false` = cobrada pero inútil). `GET /api/ai-usage?days=30` = totales, por tipo/día/cuenta y
 últimas 50, con costo **estimado** (`lib/llm/pricing.ts`, precios de lista por modelo; actualizar si cambian).
@@ -390,8 +390,17 @@ chip `AttentionBadge` en cards de `/accionables`, directorio y Seguimiento): acc
 **minuta automática** (`createMeetingDrafts`, si `settings.autoMeetingDrafts` [default true]: última reunión ≤48 h de cada
 asignado, sin borrador/envío previo, sin follow-up tildado ni mail mío posterior al fin de la reunión [`meetingEnd` = inicio + duración, 30 min si falta; también para el auto-tildado y `currentFollowupKind`] → borrador `meeting` en el hilo de `pickFollowupThread`,
 `autoFor` = id de reunión, en cada corrida) → `computeAlerts` → si `drafts` (lunes), **mail semanal de objetivos**
-(`createWeeklyDrafts` + `buildWeeklyPlan`: por cuenta asignada con pendientes, completado en los últimos 7 días + objetivos de
-nuestro lado [incl. consultas/compromisos por mail] / de su lado / en conjunto / otros, fechas solo acordadas; clave
+(`createWeeklyDrafts` + `buildWeeklyPlan`: por cuenta asignada con pendientes. **Con IA** (`lib/llm/weekly-mail.ts`, `generateWeeklyMail`,
+`ANTHROPIC_MODEL_WEEKLY` default `claude-haiku-5-5`, uso `weekly`; entrada `weeklyAIRequest`, huella `weeklyKey` → `FollowupDraft.aiKey`, igual = no se
+regenera; vista previa `pnpm preview:weekly [-- --n 3 --id --skip a,b]`, sin borradores): primera persona, rioplatense (vos/ustedes); la app arma
+saludo rotativo `WEEKLY_GREETINGS` (por semana + cliente, nunca el de la semana anterior) → apertura genérica de la IA (sigo con lo mío, sin detallar; presenta los puntos) → lista
+`1. **Hito (Responsable):** qué hacer *(acordado para el …)*` solo con lo del cliente + en conjunto (sin mí/equipo Xtract, empresa ni buzones como
+responsable; sin nombre si va a una sola persona dueña de todo) → cierre → "Saludos". Para que no suene a plantilla: la IA recibe tono
+(`WEEKLY_TONES`) y enfoque de apertura/cierre (`WEEKLY_OPENINGS`/`WEEKLY_CLOSINGS`) que rotan por semana, y los últimos 3 mails semanales de la
+cuenta (`previousWeeklyBodies`) para no repetir frases (`--weeks N` en la vista previa simula lunes seguidos). **Sin IA / si falla**, por reglas: tú/ustedes según
+destinatarios, completado desde el lunes de la semana pasada (incl. pedidos/compromisos por mail cerrados), objetivos de nuestro lado [+ compromisos
+por mail] / "Lo que nos consultaron por mail" / de su lado / en conjunto / otros, fechas solo acordadas. `bodyToHtml` arma `<ol>` con "1. ", `**negrita**` y `*cursiva*`;
+una línea con ", minúscula" que termina en ":" no es título; clave
 `followups["week:<lunes>"]` (`weekKey`), actualiza el mismo borrador si se corre de nuevo; `syncStatus.lastWeeklyDraftsAt`).
 Los borradores en Gmail se actualizan en vez de duplicarse (`createThreadDraft(input, replaceDraftId)` → `drafts.update`;
 `FollowupDraft.gmailBody` = texto que quedó en Gmail: el composer avisa "no tiene los últimos cambios" y ofrece actualizarlo). Candado en `globalThis.__syncRunning` (corrida simultánea ⇒ `skipped`).
