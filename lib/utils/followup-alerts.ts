@@ -3,7 +3,7 @@ import type { WorkSettings } from "@/lib/store/settings-store";
 import { isOwnActionable } from "@/lib/utils/capacity";
 import { actionableMailTickets, mailTickets, openMailRequests } from "@/lib/utils/mail-tickets";
 import { accountActionables } from "@/lib/utils/actionables";
-import { plannedItems } from "@/lib/utils/deadlines";
+import { isLate, plannedItems } from "@/lib/utils/deadlines";
 import { businessDaysSince, interactionTrail, interactions, isSilent, type Interaction } from "@/lib/utils/interaction";
 
 export { businessDaysSince } from "@/lib/utils/interaction";
@@ -142,7 +142,7 @@ export function computeAlerts(
   const assigned = clients.filter((c) => c.status === "assigned");
   const overdue = new Map<string, number>();
   for (const i of plannedItems(assigned, settings, now, meetings)) {
-    if (i.side === "debo" && i.bucket === "overdue") overdue.set(i.clientId, (overdue.get(i.clientId) ?? 0) + 1);
+    if (i.side === "debo" && isLate(i)) overdue.set(i.clientId, (overdue.get(i.clientId) ?? 0) + 1);
   }
   const { workDays } = settings;
   const alerts: AccountAlert[] = [];

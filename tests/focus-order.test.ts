@@ -40,17 +40,16 @@ describe("compareItems (orden de Capacidad)", () => {
 });
 
 describe("boardGroups con reunión próxima", () => {
-  it("atención → reunión próxima (la más cercana primero) → arrastrados → nuevos", () => {
+  it("atención → reunión próxima (la más cercana primero) → resto", () => {
     const g = boardGroups([
       item("nuevo", {}),
-      item("arrastrado", { carried: true }),
+      item("arrastrado", { carried: true, round: "backlog" }),
       item("reunion-jue", { meetingSoonAt: "2026-11-19T13:00:00.000Z", carried: true }),
       item("reunion-mar", { meetingSoonAt: "2026-11-17T13:00:00.000Z", side: "me_deben" }),
       item("atencion", { attention: true, meetingSoonAt: "2026-11-17T13:00:00.000Z" }),
     ]);
     expect(g.attention.map((i) => i.id)).toEqual(["atencion"]);
     expect(g.meeting.map((i) => i.id)).toEqual(["reunion-mar", "reunion-jue"]);
-    expect(g.carried.map((i) => i.id)).toEqual(["arrastrado"]);
-    expect(g.fresh.map((i) => i.id)).toEqual(["nuevo"]);
+    expect(g.rest.map((i) => i.id).sort()).toEqual(["arrastrado", "nuevo"]);
   });
 });
