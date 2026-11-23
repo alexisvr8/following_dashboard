@@ -152,6 +152,13 @@ Migrar datos locales: `pnpm migrate:supabase` (`scripts/migrate-to-supabase.mjs`
 `--merge [--dry-run]` combina el `.data/clients.json` de otra PC con la base (`scripts/merge-clients.mjs`: unión de reuniones,
 tildados [fecha = primer cierre], accionables propios/ediciones/quitados, cards y borradores por fecha más nueva, perfil;
 conflictos de estado/nombre se dejan como en la base y se informan; respaldo en `.data/supabase-backup-*.json`); `--force` pisa.
+**Rescate si Supabase restringe el proyecto** (p. ej. `exceed_egress_quota`: la API responde 402 hasta el próximo ciclo; pasó el 23/11/2026):
+el Session pooler sigue aceptando conexiones. `pnpm export:supabase [-- --test | --local]` (`scripts/export-supabase-pg.mjs`, lib `postgres`, env
+`SUPABASE_DATABASE_URL` = URI del Session pooler `postgres.<ref>:<contraseña de la base>@…:5432/postgres`) copia todo a `.data/rescate-<fecha>/`;
+`--local` además lo deja en `.data/` con los nombres del modo archivo (lo anterior a `.data/antes-<fecha-hora>/`) → `STORE_BACKEND=file` y reiniciar.
+Mientras dure, **un solo equipo activo**: para cambiar de equipo se lleva la carpeta `.data` (zip sin `rescate-*`/`antes-*`) y el otro también usa
+`STORE_BACKEND=file`. Al volver: `pnpm migrate:supabase -- --merge --dry-run` → sin `--dry-run` (solo combina clientes; `settings`/`board_order`/
+`ai_usage` se suben aparte) y quitar `STORE_BACKEND=file`.
 Local (opción vigente): `pnpm autostart:install|uninstall|restart|logs` (`scripts/autostart.sh`) instala un LaunchAgent
 `com.xtract.method` que corre `scripts/start-local.sh` al iniciar sesión (recompila si cambió el commit o
 `FORCE_BUILD=1`, luego `next start`; logs en `~/Library/Logs/xtract-method.log`). **No instalado**: macOS (TCC) no deja
