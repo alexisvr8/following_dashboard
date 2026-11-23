@@ -39,18 +39,20 @@ export function WeeklyReviewDialog({
   const [dues, setDues] = useState<Record<string, string>>({});
   const [reasons, setReasons] = useState<Record<string, string>>({});
   const [error, setError] = useState<string | null>(null);
-  const pending = entries.filter((e) => !resolved.has(e.item.id));
+  // El id del ítem es único solo dentro de la cuenta (p. ej. `<semana>:skipped`): el estado del modal va por cuenta + id.
+  const keyOf = (e: WeeklyReviewEntry) => `${e.clientId}|${e.item.id}`;
+  const pending = entries.filter((e) => !resolved.has(keyOf(e)));
 
   const fullText = (e: WeeklyReviewEntry) =>
     `${e.item.owner ? `[${e.item.owner}] ` : ""}${e.item.title}${e.item.detail ? `: ${e.item.detail}` : ""}`;
 
   async function resolve(e: WeeklyReviewEntry, action: Action) {
-    const key = e.item.id;
+    const key = keyOf(e);
     setBusy(key);
     setError(null);
     setResolved((s) => new Set(s).add(key));
     const payload = {
-      id: key,
+      id: e.item.id,
       action,
       ...(action === "create" && { title: (texts[key] ?? fullText(e)).trim(), due: dues[key] || null }),
       ...(action === "ok" && reasons[key] && { reason: reasons[key] }),
@@ -90,9 +92,10 @@ export function WeeklyReviewDialog({
             <ul className="-mx-4 min-h-0 divide-y divide-border overflow-y-auto border-t border-border [scrollbar-width:thin]">
               {pending.map((e) => {
                 const { item } = e;
-                const isBusy = busy === item.id;
+                const k = keyOf(e);
+                const isBusy = busy === k;
                 return (
-                  <li key={item.id} className={cn("space-y-2 px-3 py-3", isBusy && "opacity-60")}>
+                  <li key={k} className={cn("space-y-2 px-3 py-3", isBusy && "opacity-60")}>
                     <div className="flex flex-wrap items-center gap-x-2 gap-y-1 text-label-sm text-subtle-foreground">
                       <span className="font-medium text-foreground">{e.clientName}</span>
                       <span>· {weekLabel(item.week)}</span>
@@ -106,8 +109,8 @@ export function WeeklyReviewDialog({
                         <p className="text-[13px] leading-snug">{item.title}</p>
                         <div className="flex flex-wrap items-center gap-2">
                           <select
-                            value={reasons[item.id] ?? ""}
-                            onChange={(ev) => setReasons((r) => ({ ...r, [item.id]: ev.target.value }))}
+                            value={reasons[k] ?? ""}
+                            onChange={(ev) => setReasons((r) => ({ ...r, [k]: ev.target.value }))}
                             aria-label="Motivo"
                             className={cn(inputClass, "h-7 w-auto min-w-56 text-xs")}
                           >
@@ -147,8 +150,8 @@ export function WeeklyReviewDialog({
                     ) : (
                       <>
                         <textarea
-                          value={texts[item.id] ?? fullText(e)}
-                          onChange={(ev) => setTexts((t) => ({ ...t, [item.id]: ev.target.value }))}
+                          value={texts[k] ?? fullText(e)}
+                          onChange={(ev) => setTexts((t) => ({ ...t, [k]: ev.target.value }))}
                           rows={3}
                           aria-label="Texto del accionable"
                           className={cn(inputClass, "h-auto min-h-16 w-full resize-y py-1.5 text-[13px] leading-snug")}
@@ -158,8 +161,8 @@ export function WeeklyReviewDialog({
                             Fecha
                             <input
                               type="date"
-                              value={dues[item.id] ?? ""}
-                              onChange={(ev) => setDues((d) => ({ ...d, [item.id]: ev.target.value }))}
+                              value={dues[k] ?? ""}
+                              onChange={(ev) => setDues((d) => ({ ...d, [k]: ev.target.value }))}
                               className={cn(inputClass, "h-7 w-auto text-xs")}
                             />
                           </label>
