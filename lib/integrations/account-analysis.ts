@@ -4,8 +4,8 @@ import { listEventsBetween } from "@/lib/integrations/calendar";
 import { collectAccountThreads } from "@/lib/integrations/account-mails";
 import { sharedExternals } from "@/lib/integrations/client-activity";
 import { mapLimit } from "@/lib/integrations/gemini-mail";
-import { generateAccountAnalysis } from "@/lib/llm/account-analysis";
-import { aiEnabled, postMeetingModel } from "@/lib/llm/postmeeting";
+import { analysisModel, generateAccountAnalysis } from "@/lib/llm/account-analysis";
+import { aiEnabled } from "@/lib/llm/postmeeting";
 import { getClientsFile, markAnalysisFailed, setAccountAnalysis, type ClientRecord } from "@/lib/store/clients-store";
 import { getSettings } from "@/lib/store/settings-store";
 import { analysisWindow, buildAnalysisInput, estimatesFromAnalysis, mondayKey, newItemsFromAnalysis, sanitizeRefs } from "@/lib/utils/account-analysis";
@@ -61,6 +61,8 @@ async function run({ ids, force = false, now = new Date() }: { ids?: string[]; f
   const accounts = await mapLimit(targets, CONCURRENCY, async (client: ClientRecord): Promise<AnalyzeResult["accounts"][number]> => {
     const base = { id: client.id, name: client.name };
     if (!force && client.analysis?.week === week) return { ...base, ok: true, skipped: true };
+    // Sin novedades (mail o reunión) desde el último análisis: no se gasta en reanalizar.
+    if (!force && client.analysis && !hasNewsSince(client, client.analysis.generatedAt)) return { ...base, ok: true, skipped: true };
     try {
       const { since, basis } = analysisWindow(client, now);
       const mails = await collectAccountThreads(gmail, client, ownerEmail, shared, since.getTime());
@@ -72,7 +74,7 @@ async function run({ ids, force = false, now = new Date() }: { ids?: string[]; f
         {
           week,
           generatedAt: new Date().toISOString(),
-          model: postMeetingModel(),
+          model: analysisModel(),
           basis,
           since: since.toISOString(),
           threadsRead: mails.threads.length,
@@ -103,4 +105,16 @@ async function run({ ids, force = false, now = new Date() }: { ids?: string[]; f
     added: accounts.reduce((n, a) => n + (a.added ?? 0), 0),
     accounts,
   };
+}
+
+/** Hubo algo nuevo en la cuenta desde `at`: reunión o mail (de cualquier lado). Tildar/editar no cuenta. */
+export function hasNewsSince(client: ClientRecord, at: string): boolean {
+  const t = Date.parse(at);
+  if (!Number.isFinite(t)) return true;
+  const after = (d: string | null | undefined) => Boolean(d && Date.parse(d) > t);
+  return (
+    client.meetings.some((m) => after(m.date)) ||
+    (client.activity?.recentMails ?? []).some((m) => after(m.date)) ||
+    after(client.activity?.lastMail?.date)
+  );
 }

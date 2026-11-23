@@ -12,7 +12,7 @@ import { collectAccountThreads } from "@/lib/integrations/account-mails";
 import { sharedExternals } from "@/lib/integrations/client-activity";
 import { buildAnalysisMessage, generateAccountAnalysis, type AnalysisUsage } from "@/lib/llm/account-analysis";
 import { AccountAnalysisSchema, type AccountAnalysisOutput } from "@/lib/llm/account-analysis-schema";
-import { postMeetingModel } from "@/lib/llm/postmeeting";
+import { analysisModel } from "@/lib/llm/account-analysis";
 import { getClientsFile, setAccountAnalysis } from "@/lib/store/clients-store";
 import { getSettings } from "@/lib/store/settings-store";
 import { analysisWindow, buildAnalysisInput, estimatesFromAnalysis, mondayKey, newItemsFromAnalysis, sanitizeRefs } from "@/lib/utils/account-analysis";
@@ -69,8 +69,8 @@ async function main() {
     const res = await generateAccountAnalysis(pre.input, { clientId: client.id, clientName: client.name, trigger: "preview" });
     output = res.output;
     usage = res.usage;
-    console.log(`Claude (${postMeetingModel()}): ${Date.now() - t1} ms · ${JSON.stringify(usage)}`);
-    source = `Generado ahora con ${postMeetingModel()}`;
+    console.log(`Claude (${analysisModel()}): ${Date.now() - t1} ms · ${JSON.stringify(usage)}`);
+    source = `Generado ahora con ${analysisModel()}`;
   }
 
   const { input, refs, refTexts, rewritable, existing } = buildAnalysisInput(client, settings, threads, now, nextAt);
@@ -157,7 +157,7 @@ ${output.accionables_semana
       {
         week: mondayKey(now),
         generatedAt: now.toISOString(),
-        model: postMeetingModel(),
+        model: analysisModel(),
         basis,
         since: since.toISOString(),
         threadsRead: threads.length,

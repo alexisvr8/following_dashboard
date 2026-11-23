@@ -1,0 +1,188 @@
+"use client";
+
+import { useState } from "react";
+import { useRouter } from "next/navigation";
+import { Check, CircleSlash, Mail, Plus, Undo2, X } from "lucide-react";
+import { Badge } from "@/components/ui/badge";
+import { Button } from "@/components/ui/button";
+import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from "@/components/ui/dialog";
+import { inputClass } from "@/components/ui/input";
+import { cn } from "@/lib/utils";
+import type { WeeklyReviewEntry } from "@/lib/utils/weekly-learning";
+
+// "Del mail semanal": diferencias entre el borrador de los lunes y lo que enviaste (`captureWeeklyOutcomes`).
+// Punto que sacaste → Hecho / No corresponde / Sigue abierto; punto que agregaste → Crear card (texto editable +
+// fecha) / Ignorar; cuenta sin mail → Confirmar (con motivo). Nada se aplica solo.
+// `PATCH /api/clients/[id] {weeklyReview: {id, action, title?, due?, reason?}}` (`resolveWeeklyReview`).
+
+type Action = "done" | "not_applicable" | "keep" | "create" | "ignore" | "ok";
+
+const REASONS = ["Hubo reunión esta semana", "Esperando al cliente (ya está pedido)", "Proyecto en pausa", "Se habló por otro canal", "Nada para pedir"];
+
+const KIND_LABEL = { removed: "Lo sacaste", added: "Lo agregaste", skipped: "Sin mail" } as const;
+
+const weekLabel = (w: string) => `semana del ${w.slice(8, 10)}/${w.slice(5, 7)}`;
+
+export function WeeklyReviewDialog({ entries }: { entries: WeeklyReviewEntry[] }) {
+  const router = useRouter();
+  const [open, setOpen] = useState(false);
+  const [resolved, setResolved] = useState<Set<string>>(new Set());
+  const [busy, setBusy] = useState<string | null>(null);
+  const [texts, setTexts] = useState<Record<string, string>>({});
+  const [dues, setDues] = useState<Record<string, string>>({});
+  const [reasons, setReasons] = useState<Record<string, string>>({});
+  const [error, setError] = useState<string | null>(null);
+  const pending = entries.filter((e) => !resolved.has(e.item.id));
+
+  const fullText = (e: WeeklyReviewEntry) =>
+    `${e.item.owner ? `[${e.item.owner}] ` : ""}${e.item.title}${e.item.detail ? `: ${e.item.detail}` : ""}`;
+
+  async function resolve(e: WeeklyReviewEntry, action: Action) {
+    const key = e.item.id;
+    setBusy(key);
+    setError(null);
+    setResolved((s) => new Set(s).add(key));
+    const payload = {
+      id: key,
+      action,
+      ...(action === "create" && { title: (texts[key] ?? fullText(e)).trim(), due: dues[key] || null }),
+      ...(action === "ok" && reasons[key] && { reason: reasons[key] }),
+    };
+    const res = await fetch(`/api/clients/${encodeURIComponent(e.clientId)}`, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ weeklyReview: payload }),
+    }).catch(() => null);
+    if (!res?.ok) {
+      setResolved((s) => {
+        const next = new Set(s);
+        next.delete(key);
+        return next;
+      });
+      setError("No se pudo guardar. Probá de nuevo.");
+    }
+    setBusy(null);
+    router.refresh();
+  }
+
+  return (
+    <>
+      <button
+        type="button"
+        onClick={() => setOpen(true)}
+        title="Diferencias entre el mail semanal que generó la app y el que enviaste"
+        className="flex h-8 items-center gap-1.5 rounded-md border border-input bg-surface px-2.5 text-xs text-muted-foreground transition-colors hover:text-foreground"
+      >
+        <Mail className="size-3.5" /> Del mail semanal
+        {pending.length > 0 && <span className="tabular text-subtle-foreground">{pending.length}</span>}
+      </button>
+      <Dialog open={open} onOpenChange={setOpen}>
+        <DialogContent className="flex max-h-[calc(100dvh-2rem)] flex-col sm:max-w-3xl">
+          <DialogHeader>
+            <DialogTitle>Revisión del mail semanal</DialogTitle>
+            <DialogDescription>
+              Lo que cambiaste respecto del borrador de los lunes. Decidí cada punto para que no se acumulen: lo que
+              sacaste puede estar hecho o no corresponder, y lo que agregaste puede pasar al tablero como card.
+            </DialogDescription>
+          </DialogHeader>
+          {error && <p className="text-xs text-critical">{error}</p>}
+          {!pending.length ? (
+            <p className="py-6 text-center text-sm text-subtle-foreground">No hay nada pendiente de revisar.</p>
+          ) : (
+            <ul className="-mx-4 min-h-0 divide-y divide-border overflow-y-auto border-t border-border [scrollbar-width:thin]">
+              {pending.map((e) => {
+                const { item } = e;
+                const isBusy = busy === item.id;
+                return (
+                  <li key={item.id} className={cn("space-y-2 px-3 py-3", isBusy && "opacity-60")}>
+                    <div className="flex flex-wrap items-center gap-x-2 gap-y-1 text-label-sm text-subtle-foreground">
+                      <span className="font-medium text-foreground">{e.clientName}</span>
+                      <span>· {weekLabel(item.week)}</span>
+                      <Badge variant={item.kind === "added" ? "success" : item.kind === "removed" ? "warning" : "outline"}>
+                        {KIND_LABEL[item.kind]}
+                      </Badge>
+                    </div>
+
+                    {item.kind === "skipped" ? (
+                      <>
+                        <p className="text-[13px] leading-snug">{item.title}</p>
+                        <div className="flex flex-wrap items-center gap-2">
+                          <select
+                            value={reasons[item.id] ?? ""}
+                            onChange={(ev) => setReasons((r) => ({ ...r, [item.id]: ev.target.value }))}
+                            aria-label="Motivo"
+                            className={cn(inputClass, "h-7 w-auto min-w-56 text-xs")}
+                          >
+                            <option value="">Motivo (opcional)</option>
+                            {REASONS.map((r) => (
+                              <option key={r} value={r}>
+                                {r}
+                              </option>
+                            ))}
+                          </select>
+                          <div className="ml-auto flex shrink-0 gap-1.5">
+                            <Button size="xs" disabled={isBusy} onClick={() => resolve(e, "ok")}>
+                              <Check /> No correspondía
+                            </Button>
+                          </div>
+                        </div>
+                      </>
+                    ) : item.kind === "removed" ? (
+                      <>
+                        <p className="text-[13px] leading-snug">
+                          <b className="font-medium">{item.title}</b>
+                          {item.owner && <span className="text-muted-foreground"> ({item.owner})</span>}
+                          {item.detail && <span className="text-muted-foreground">: {item.detail}</span>}
+                        </p>
+                        <div className="flex flex-wrap justify-end gap-1.5">
+                          <Button size="xs" disabled={isBusy} onClick={() => resolve(e, "done")}>
+                            <Check /> Hecho
+                          </Button>
+                          <Button size="xs" variant="outline" disabled={isBusy} onClick={() => resolve(e, "not_applicable")}>
+                            <CircleSlash /> No corresponde
+                          </Button>
+                          <Button size="xs" variant="ghost" disabled={isBusy} onClick={() => resolve(e, "keep")}>
+                            <Undo2 /> Sigue abierto
+                          </Button>
+                        </div>
+                      </>
+                    ) : (
+                      <>
+                        <textarea
+                          value={texts[item.id] ?? fullText(e)}
+                          onChange={(ev) => setTexts((t) => ({ ...t, [item.id]: ev.target.value }))}
+                          rows={3}
+                          aria-label="Texto del accionable"
+                          className={cn(inputClass, "h-auto min-h-16 w-full resize-y py-1.5 text-[13px] leading-snug")}
+                        />
+                        <div className="flex flex-wrap items-center gap-2">
+                          <label className="flex items-center gap-1.5 text-label-sm text-muted-foreground">
+                            Fecha
+                            <input
+                              type="date"
+                              value={dues[item.id] ?? ""}
+                              onChange={(ev) => setDues((d) => ({ ...d, [item.id]: ev.target.value }))}
+                              className={cn(inputClass, "h-7 w-auto text-xs")}
+                            />
+                          </label>
+                          <div className="ml-auto flex shrink-0 gap-1.5">
+                            <Button size="xs" disabled={isBusy} onClick={() => resolve(e, "create")}>
+                              <Plus /> Crear card
+                            </Button>
+                            <Button size="xs" variant="outline" disabled={isBusy} onClick={() => resolve(e, "ignore")}>
+                              <X /> Ignorar
+                            </Button>
+                          </div>
+                        </div>
+                      </>
+                    )}
+                  </li>
+                );
+              })}
+            </ul>
+          )}
+        </DialogContent>
+      </Dialog>
+    </>
+  );
+}

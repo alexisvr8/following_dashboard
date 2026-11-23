@@ -187,6 +187,8 @@ export interface ClientRecord {
   followups?: Record<string, FollowupDraft>;
   /** Último análisis semanal con IA. */
   analysis?: AccountAnalysis;
+  /** Diferencias entre el mail semanal generado y el enviado, para revisar una por una (id → ítem). */
+  weeklyReview?: Record<string, WeeklyReviewItem>;
   /** Último error del análisis (se reintenta en la próxima corrida). */
   analysisError?: { at: string; message: string };
   /** Textos que la IA ya agregó alguna vez (aunque después se quitaron): no se vuelven a agregar. */
@@ -300,6 +302,46 @@ export interface FollowupDraft {
   ai?: boolean;
   /** Mail de los lunes redactado con IA: huella de la entrada (`weeklyKey`); igual = el borrador ya está al día. */
   aiKey?: string;
+  /** Mail de los lunes: ticket de cada punto numerado, en orden (para comparar con lo que se envió). */
+  weeklyItems?: string[];
+  /** Mail de los lunes: qué hice con el borrador en Gmail (`captureWeeklyOutcomes`). */
+  outcome?: WeeklyOutcome;
+}
+
+/**
+ * Qué pasó con el borrador semanal: enviado o programado (con el texto real, que pasa a ser la referencia de estilo),
+ * reemplazado por otro mail mío en el hilo sin la lista de puntos, o borrado sin enviar nada.
+ */
+export interface WeeklyOutcome {
+  state: "sent" | "scheduled" | "replaced" | "deleted";
+  /** Cuándo se envió / para cuándo se programó / cuándo se detectó el borrado. */
+  at: string;
+  /** Texto propio del mail enviado (sin citas ni firma). */
+  body?: string;
+  checkedAt: string;
+}
+
+/**
+ * Revisión del mail semanal (modal "Del mail semanal" en /accionables): diferencias entre el borrador y lo que envié.
+ * removed = punto que saqué (¿hecho / no corresponde / sigue?); added = punto nuevo que escribí (¿crear card?);
+ * skipped = cuenta sin mail esa semana (¿confirmás que no correspondía?).
+ */
+export interface WeeklyReviewItem {
+  id: string;
+  /** Lunes de la semana (AAAA-MM-DD). */
+  week: string;
+  kind: "removed" | "added" | "skipped";
+  ticketId?: string;
+  title: string;
+  detail?: string;
+  owner?: string | null;
+  /** skipped: "deleted" (borraste el borrador) o "replaced" (mandaste otro mail en el hilo). */
+  how?: "deleted" | "replaced";
+  createdAt: string;
+  state?: "done" | "not_applicable" | "keep" | "created" | "ignored" | "ok";
+  reason?: string;
+  resolvedAt?: string;
+  createdTicketId?: string;
 }
 
 /** meeting = minuta; status = avances + pendientes; reminder = recordatorio corto pidiendo status de lo que me deben. */
@@ -1310,4 +1352,94 @@ export async function markStatusAIFailed(clientId: string, key: string, error: s
     client.statusAIError = { key, attempts: prev + 1, at: new Date().toISOString(), message: error.slice(0, 200) };
     return true;
   });
+}
+
+/**
+ * Guarda qué pasó con el borrador semanal y suma los ítems de revisión nuevos (los ya existentes no se pisan).
+ * Enviado = `sentAt`; así la sync no lo vuelve a crear.
+ */
+export async function setWeeklyOutcome(
+  clientId: string,
+  key: string,
+  outcome: WeeklyOutcome,
+  review: WeeklyReviewItem[],
+): Promise<ClientRecord | null> {
+  const m = await mutateClient(clientId, (client) => {
+    const f = client.followups?.[key];
+    if (!f || f.outcome) return SKIP;
+    client.followups = {
+      ...client.followups,
+      [key]: { ...f, outcome, ...(outcome.state === "sent" || outcome.state === "scheduled" ? { sentAt: f.sentAt ?? outcome.at } : {}) },
+    };
+    const current = { ...client.weeklyReview };
+    for (const item of review) current[item.id] ??= item;
+    client.weeklyReview = current;
+  });
+  return m?.client ?? null;
+}
+
+export type WeeklyReviewAction = "done" | "not_applicable" | "keep" | "create" | "ignore" | "ok";
+
+/**
+ * Resuelve un ítem de la revisión semanal: punto quitado → Hecho (tilda) / No corresponde (lo quita) / Sigue (nada);
+ * punto agregado → Crear card (accionable propio con el texto, y fecha si se eligió) / Ignorar; cuenta sin mail →
+ * Confirmar (con motivo opcional).
+ */
+export async function resolveWeeklyReview(
+  clientId: string,
+  input: { id: string; action: WeeklyReviewAction; title?: string; due?: string | null; reason?: string },
+): Promise<{ client: ClientRecord; ticketId: string | null } | null> {
+  const m = await mutateClient(clientId, (client): string | null | typeof SKIP => {
+    const item = client.weeklyReview?.[input.id];
+    if (!item || item.state) return SKIP;
+    const now = new Date().toISOString();
+    const valid =
+      item.kind === "removed"
+        ? ["done", "not_applicable", "keep"].includes(input.action)
+        : item.kind === "added"
+          ? ["create", "ignore"].includes(input.action)
+          : input.action === "ok";
+    if (!valid) return SKIP;
+    let created: string | null = null;
+    const t = item.ticketId;
+    if (item.kind === "removed" && t && input.action === "done") {
+      client.doneTicketIds = [...new Set([...(client.doneTicketIds ?? []), t])];
+      client.doneTicketAt = { ...client.doneTicketAt, [t]: client.doneTicketAt?.[t] ?? now };
+      client.ticketsUpdatedAt = now;
+    }
+    if (item.kind === "removed" && t && input.action === "not_applicable") {
+      if (client.customActionables?.some((c) => c.id === t)) {
+        client.customActionables = client.customActionables.filter((c) => c.id !== t);
+      } else {
+        client.removedTicketIds = [...new Set([...(client.removedTicketIds ?? []), t])];
+      }
+      client.ticketsUpdatedAt = now;
+    }
+    if (item.kind === "added" && input.action === "create") {
+      const latest = client.meetings.reduce<DiscoveredMeeting | null>((max, x) => (!max || x.date > max.date ? x : max), null);
+      if (!latest) return SKIP;
+      const fallback = `${item.owner ? `[${item.owner}] ` : ""}${item.title}${item.detail ? `: ${item.detail}` : ""}`;
+      created = `${client.id}:custom-${randomUUID().slice(0, 8)}`;
+      client.customActionables = [
+        ...(client.customActionables ?? []),
+        { id: created, title: (input.title?.trim() || fallback).slice(0, 500), meetingId: latest.id, createdAt: now },
+      ];
+      if (input.due) client.actionableDue = { ...client.actionableDue, [created]: input.due };
+      client.ticketsUpdatedAt = now;
+    }
+    const state: WeeklyReviewItem["state"] =
+      input.action === "create" ? "created" : input.action === "ignore" ? "ignored" : input.action;
+    client.weeklyReview = {
+      ...client.weeklyReview,
+      [item.id]: {
+        ...item,
+        state,
+        resolvedAt: now,
+        ...(input.reason?.trim() && { reason: input.reason.trim().slice(0, 200) }),
+        ...(created && { createdTicketId: created }),
+      },
+    };
+    return created;
+  });
+  return m ? { client: m.client, ticketId: m.result } : null;
 }

@@ -39,6 +39,8 @@ import { ROUND_BUSINESS_DAYS, type Round } from "@/lib/utils/round";
 import { ActionablePanel, type PanelAction } from "@/components/accionables/ActionablePanel";
 import { SuggestionsDialog } from "@/components/accionables/SuggestionsSection";
 import { RewritesDialog } from "@/components/accionables/RewritesDialog";
+import { WeeklyReviewDialog } from "@/components/accionables/WeeklyReviewDialog";
+import type { WeeklyReviewEntry } from "@/lib/utils/weekly-learning";
 import { AttentionBadge } from "@/components/cuentas/AttentionToggle";
 import type { RewriteItem } from "@/lib/utils/account-analysis";
 import { CorrectionsDialog } from "@/components/accionables/CorrectionsDialog";
@@ -112,6 +114,7 @@ export function ActionablesBoard({
   nowIso,
   suggestions,
   rewrites = [],
+  weeklyReview = [],
   people,
   corrections,
   mailPanels,
@@ -126,6 +129,8 @@ export function ActionablesBoard({
   initialAccounts?: string[];
   boardOrder?: Record<string, number>;
   rewrites?: RewriteItem[];
+  /** Revisión del mail semanal (borrador vs. enviado) sin resolver. */
+  weeklyReview?: WeeklyReviewEntry[];
   mailPanels: Record<string, FollowupPanelData>;
   /** Recordatorio de un solo punto ("Pedir status") por id de accionable en Seguimiento. */
   itemReminders?: Record<string, FollowupPanelData["draft"]>;
@@ -630,6 +635,7 @@ export function ActionablesBoard({
         </button>
         <SuggestionsDialog suggestions={pendingSuggestionsList} busy={busy} onResolve={resolveSuggestion} />
         <RewritesDialog rewrites={rewrites.filter((r) => inAccounts(r.clientId))} />
+        <WeeklyReviewDialog entries={weeklyReview.filter((e) => inAccounts(e.clientId))} />
         <CorrectionsDialog corrections={corrections} />
         <div className="ml-auto flex items-center gap-3">
           <span className="hidden text-xs text-muted-foreground lg:inline">
