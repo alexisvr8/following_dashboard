@@ -38,6 +38,8 @@ const Avance = z.object({
 
 export const PostMeetingSchema = z.object({
   dia_reunion: z.string().describe('Día de la semana de la reunión en minúsculas ("miércoles")'),
+  intro_mail: z.string().describe("Saludo + agradecimiento breve y apertura al resumen, 2 líneas máximo"),
+  cierre_mail: z.string().describe("1 o 2 líneas cortas y humanas para cerrar antes de la firma"),
   objetivo: z.string().describe("Una línea con el objetivo de la reunión"),
   puntos_importantes: z.array(z.string()),
   lo_que_charlamos: z.array(z.string()),

@@ -298,8 +298,8 @@ tiempo/dificultad → quick_win/major_project/fill_in/thankless_task), no se per
   hilo elegido con Re:/In-Reply-To, o mail nuevo)
   (al leer mails, el text/plain cortado a ~76 caracteres por Gmail se une con `unwrapPlain`, `gemini-mail.ts`). Con `send: true` envía de verdad (`sendThreadMail`, solo desde el
   botón Enviar con confirmación; descarta el draft previo y refresca la actividad). El cron nunca envía. MIME
-  (`buildMimeMessage`): multipart/alternative + HTML estilo Gmail + firma de la cuenta (`sendAs`, sin clase `gmail_signature` y con marcador oculto único `uniqueMark`
-  para que Gmail no la esconda tras "…"). Arranque relativo (`meetingWhen`: "del día de hoy" / "de ayer" / "del lunes" hasta 3 días, después la fecha); cierre
+  (`buildMimeMessage`): multipart/alternative + HTML estilo Gmail + firma de la cuenta (`sendAs`, sin clase `gmail_signature`, con marcador oculto único `uniqueMark`
+  y al final `tailMark` (texto único de 1px color fondo, que Gmail sí compara) para que no la esconda tras "…"). Arranque relativo (`meetingWhen`: "del día de hoy" / "de ayer" / "del lunes" hasta 3 días, después la fecha); cierre
   "Saludos". Cada punto termina en "(Nombre) - Status: Hecho (dd/mm)" (✓) o "(Nombre) - Status: Pendiente": responsables
   por nombre de pila (`ownerTag`; "La empresa"/"El grupo" enteros), un solo guion (`STATUS_DONE`/`STATUS_PENDING`); `bodyToHtml` (`gmail.ts`, solo estilos inline para Gmail/Outlook) arma `<p>` por línea, títulos de sección en negrita y subrayados seguidos de ":", 2+ líneas en blanco = un espacio más (`margin-top` 24px, antes del cierre y de "Saludos"), viñetas `•`/`✓` en `<ul>`, sin `<br>`/párrafos vacíos (`normalizeHtml`), y "Status:" en negrita con valor coloreado (Pendiente rojo / En curso naranja / Hecho verde, fecha sin color); el texto plano del MIME (`bodyToPlain`) usa "- " y una línea en blanco entre secciones (dos antes del cierre). UI: tabs en `/cuentas/[id]`
   (`?borrador=status#borradores`), `FollowupComposer` (hilo, Para, editar, Copiar, Actualizar, Enviar; barra de progreso al enviar / crear borrador y
@@ -339,8 +339,16 @@ vía `ai.steps[i].mail`, salvo que el accionable se haya editado). Vista previa 
 correcciones, ERP y abiertos previos. `setMeetingAI` guarda `meeting.ai` (status/empresa por índice en `steps`) y **reemplaza
 `nextSteps`** por `[Responsable] Título: descripción` (accionables + ya avanzado, éste tildado con su fecha; originales en
 `ai.geminiNextSteps`; fecha acordada → `actionableDue`): mail y módulo de accionables comparten la lista.
-Template único `lib/utils/postmeeting-mail.ts` (`renderPostMeetingMail`, `actionableLine` =
-`• Título: Descripción. (Responsable) - Status: X ⏳|✅ (dd/mm)`), usado por `buildFollowup` con IA o por reglas.
+Template único `lib/utils/postmeeting-mail.ts` (`renderPostMeetingMail`: saludo → `intro_mail` de la IA sin su saludo (`stripGreeting`; el
+saludo lo pone la app según destinatarios) → 📌 Puntos importantes → 💬 Lo que charlamos (`**Tema:** …`; sin IA encabeza el resumen de Gemini) →
+🚀 Accionables (De parte de {cliente} / De nuestro lado (Xtract); en el HTML `bodyToHtml` la dibuja como tabla segmentada
+Accionable · Responsable · Status con título de 18px, `actionablesTable`; el texto del borrador y el plano siguen siendo lista; un punto editado
+sin el formato va entero en la fila) → ✅ Ya avanzamos con → `cierre_mail` → Saludos; `actionableLine` =
+`• Título: Descripción. (Responsable) - Status: Pendiente ⏳|En curso ⏳|Stand By ⏳|Hecho ✅ (dd/mm)`), usado por `buildFollowup` con IA o por reglas
+(`meeting.ai.intro/cierre`; reuniones procesadas antes van con apertura/cierre por reglas; un solo destinatario sin nombre conocido toma el de
+`greetingName` del saludo de la IA). Trato: `PostMeetingInput.addressing` = `followupRecipients` (quienes hablaron del lado cliente): 1 → tú,
+varios → ustedes. Vista previa de una cuenta real: `pnpm preview:postmeeting -- --id <cuenta>` (no guarda); borrador real en Gmail sin tocar la
+base: `pnpm draft:postmeeting -- --id <cuenta> [--json <salida> --replace <draftId>]` (`applyMeetingAI` en memoria = lo que hace `setMeetingAI`).
 Tests: `pnpm test` (vitest, `tests/`); `RUN_LLM=1 LLM_DOC=<minuta.txt>` corre la prueba real contra la API.
 **Registro de consumo**: las llamadas (`postmeeting`, `status`, `analysis`, `reply`, `reminder`, `weekly`) registran `response.usage` con `recordResponse`
 (`lib/store/ai-usage-store.ts`, `app_state.ai_usage` / `.data/ai-usage.json`, 120 días, escrituras encadenadas en el proceso; cuenta + `trigger`

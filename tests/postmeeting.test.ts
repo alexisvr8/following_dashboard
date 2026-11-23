@@ -8,6 +8,8 @@ import { splitNotesAndTranscript } from "@/lib/utils/transcript";
 
 const SAMPLE: PostMeetingOutput = {
   dia_reunion: "miércoles",
+  intro_mail: "Buen día equipo,\nGracias por el espacio del miércoles. Les dejo un resumen rápido de lo que charlamos y cómo seguimos:",
+  cierre_mail: "Si ven algo distinto o quedó algún detalle afuera, me avisan.",
   objetivo: "Revisión técnica de integraciones con Finnegans y validación de pruebas en Xtract.",
   puntos_importantes: ["Revisión técnica de API de Finnegans (endpoints faltantes).", "Mapeo de productos."],
   lo_que_charlamos: ["Se acordó utilizar inicialmente la exportación manual desde Xtract."],
@@ -48,7 +50,11 @@ const SAMPLE: PostMeetingOutput = {
   revision: [],
 };
 
-const actionLines = (body: string) => body.split("\n").filter((l) => / - Status: /.test(l));
+/** Viñetas de "Accionables" y "Ya avanzamos con" (después de "Lo que charlamos"). */
+const actionLines = (body: string) => {
+  const lines = body.split("\n");
+  return lines.slice(lines.findIndex((l) => l.startsWith("🚀"))).filter((l) => l.startsWith("• "));
+};
 
 describe("mail post-reunión", () => {
   it("el JSON de ejemplo respeta el schema", () => {
@@ -73,20 +79,42 @@ describe("mail post-reunión", () => {
 
   it("estructura fija y secciones vacías omitidas", () => {
     const body = mailFromOutput(SAMPLE, "Salvita Alimentos", "Alexis", "11/11");
-    const order = ["Buen día equipo,", "Gracias por el espacio del miércoles", "Puntos importantes:", "Lo que charlamos:", "Accionables de Salvita Alimentos:", "Ya avanzamos con:", "Quedo a disposición", "Saludos"];
+    const order = ["Buen día equipo,", "Gracias por el espacio del miércoles", "📌 Puntos importantes:", "💬 Lo que charlamos:", "🚀 Accionables:", "De parte de Salvita Alimentos:", "✅ Ya avanzamos con:", "Si ven algo distinto", "Saludos"];
     const idx = order.map((t) => body.indexOf(t));
     expect(idx.every((i) => i >= 0)).toBe(true);
     expect([...idx].sort((a, b) => a - b)).toEqual(idx);
-    expect(body).not.toContain("Accionables de Xtract:");
+    expect(body).not.toContain("De nuestro lado (Xtract):");
+    // El saludo de la IA no se duplica: lo pone la app.
+    expect(body.match(/Buen día/g)).toHaveLength(1);
     expect(body).not.toMatch(/N\/A/);
   });
 
   it("HTML: títulos y status con color, Stand By y emoji", () => {
     const html = bodyToHtml(mailFromOutput(SAMPLE, "Salvita Alimentos", "Alexis", "11/11"));
-    expect(html).toContain("<strong>Puntos importantes:</strong>");
-    expect(html).toContain('<span style="text-decoration:underline">Accionables de Salvita Alimentos</span>');
+    expect(html).toContain("<strong>📌 Puntos importantes:</strong>");
+    // Accionables: título grande + tabla segmentada por lado (Accionable · Responsable · Status).
+    expect(html).toContain('font-size:18px;line-height:1.3;"><strong>🚀 Accionables</strong>');
+    expect(html).toMatch(/<table[^>]*>[\s\S]*<th[^>]*>Accionable<\/th>[\s\S]*De parte de Salvita Alimentos[\s\S]*Revisar endpoints faltantes[\s\S]*<\/table>/);
     expect(html).toContain('<strong style="color:#5F6368">Stand By</strong> ⏳');
-    expect(html).toContain('<strong style="color:#188038">Hecho</strong> ✅ (11/11)');
+    expect(html).toContain('<strong style="color:#D93025">Pendiente</strong> ⏳');
+    // "Ya avanzamos con" sigue como lista, fuera de la tabla.
+    expect(html).toMatch(/<\/table>[\s\S]*Ya avanzamos con[\s\S]*<ul/);
+    expect(html).toContain('<strong>Status:</strong> <strong style="color:#188038">Hecho</strong> ✅ (11/11)');
+    // Un punto editado sin el formato igual entra (texto completo en la fila).
+    const edited = bodyToHtml("🚀 Accionables:\n\nDe parte de X:\n• algo libre que escribí\n\nSaludos");
+    expect(edited).toContain('<td colspan="3"');
+    expect(edited).toContain("algo libre que escribí");
+    expect(edited).toMatch(/<\/table><p[^>]*>Saludos/);
+  });
+
+  it("toma el nombre del saludo de la IA", async () => {
+    const { greetingName } = await import("@/lib/utils/postmeeting-mail");
+    expect(greetingName("Buen día Denise,\nGracias…")).toBe("Denise");
+    expect(greetingName("Buenas tardes equipo,\nGracias…")).toBeNull();
+    const { matchesAddressing } = await import("@/lib/utils/postmeeting-mail");
+    expect(matchesAddressing("Te dejo un resumen rápido", false)).toBe(false);
+    expect(matchesAddressing("Les dejo un resumen rápido", false)).toBe(true);
+    expect(matchesAddressing("Les dejo un resumen rápido", true)).toBe(false);
   });
 
   it("separa minuta y transcripción del Doc de Gemini", () => {

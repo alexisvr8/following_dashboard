@@ -30,6 +30,8 @@ export interface PostMeetingInput {
   estimateGuide?: string;
   notes: string | null;
   transcript: string | null;
+  /** A quién va el mail (del lado cliente, quienes hablaron en la reunión): 1 persona → tú; varias → ustedes. */
+  addressing?: { plural: boolean; names: string[] };
 }
 
 const block = (tag: string, text: string | null) => (text?.trim() ? `<${tag}>\n${text.trim()}\n</${tag}>` : `<${tag}>(no disponible)</${tag}>`);
@@ -42,6 +44,13 @@ export function buildUserMessage(input: PostMeetingInput): string {
     `Reunión: ${input.meetingTitle}`,
     `Fecha de la reunión: ${input.meetingDate}`,
     ...(input.erp ? [`ERP del cliente: ${input.erp}`] : []),
+    ...(input.addressing
+      ? [
+          `Destinatarios del mail: ${input.addressing.names.join(", ") || "equipo del cliente"} → Trato: ${
+            input.addressing.plural ? "ustedes (plural, al equipo)" : `tú (singular, directo a ${input.addressing.names[0] ?? "la persona"})`
+          }`,
+        ]
+      : []),
     ...(input.estimateGuide ? [`Tiempos de referencia del PM: ${input.estimateGuide}`] : []),
     "Participantes:",
     ...(input.participants.length

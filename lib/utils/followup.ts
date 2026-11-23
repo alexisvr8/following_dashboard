@@ -24,7 +24,7 @@ import {
   strayNotes,
   strayParticipants,
 } from "@/lib/utils/followup-thread";
-import { actionableLine, renderPostMeetingMail, statusSuffix, type MailStatus } from "@/lib/utils/postmeeting-mail";
+import { actionableLine, greetingName, matchesAddressing, renderPostMeetingMail, statusSuffix, stripGreeting, type MailStatus } from "@/lib/utils/postmeeting-mail";
 import type { Actionable } from "@/lib/utils/actionables";
 import type { AISide } from "@/lib/llm/postmeeting-schema";
 import { statusKey, type StatusMailInput } from "@/lib/llm/status-mail";
@@ -457,7 +457,8 @@ export function buildFollowup(
   // Contenido de la reunión: el de la IA si existe; si no, el de la minuta de Gemini por reglas.
   const ai = meeting.ai;
   const puntos = ai ? ai.puntos : (meeting.milestones ?? []).map(milestoneTitle);
-  const objetivo = ai ? ai.objetivo : meeting.summary;
+  // Con IA, los bullets de "Lo que charlamos" ya cubren el objetivo (como en el ejemplo del prompt).
+  const objetivo = ai ? null : meeting.summary;
   const charlamos = ai
     ? ai.charlamos
     : [
@@ -467,9 +468,25 @@ export function buildFollowup(
 
   // Un solo referente: se le habla a él; dos o más: en plural.
   const one = recipients.length === 1;
+  // Sin nombre conocido para ese único destinatario ("dacosta@…"), el que la IA reconoció en la reunión.
+  // Sin ningún nombre, saludo sin "equipo" (el resto del mail le habla a una persona).
+  const oneGreeting = () => {
+    const hello = greet(recipients, client);
+    if (!hello.startsWith("Hola equipo")) return hello.replace(/^Hola\b/, salutation(now));
+    const aiName = greetingName(ai?.intro ?? "");
+    return aiName ? `${salutation(now)} ${aiName},` : `${salutation(now)},`;
+  };
+  // Apertura/cierre de la IA solo si están en el mismo trato que los destinatarios actuales; si no, por reglas.
+  const aiIntro = stripGreeting(ai?.intro ?? "");
+  const aiClose = ai?.cierre?.trim() ?? "";
+  const useAiIntro = Boolean(aiIntro) && matchesAddressing(aiIntro, one);
+  const useAiClose = Boolean(aiClose) && matchesAddressing(aiClose, one);
   const body = renderPostMeetingMail({
-    greeting: one ? greet(recipients, client).replace(/^Hola\b/, salutation(now)) : `${salutation(now)} equipo,`,
-    thanks: `Gracias por la reunión ${meetingDay(meeting.date, now)} y por ${one ? "tu" : "su"} tiempo y disposición. ${one ? "Te" : "Les"} comparto un resumen y los próximos pasos.`,
+    greeting: one ? oneGreeting() : `${salutation(now)} equipo,`,
+    // Apertura y cierre de la IA si los tiene (sin su saludo: va el de los destinatarios reales); si no, por reglas.
+    thanks: useAiIntro
+      ? aiIntro
+      : `Gracias por la reunión ${meetingDay(meeting.date, now)}. ${one ? "Te" : "Les"} dejo un resumen rápido de lo que charlamos y cómo seguimos:`,
     puntos,
     objetivo,
     charlamos,
@@ -478,7 +495,7 @@ export function buildFollowup(
     ours: ours.map((s) => actionableLine(s.text, s.owner === both ? both : me, s.status)),
     done: steps.filter((s) => s.done).map((s) => actionableLine(s.text, s.owner || me, "Hecho", s.doneAt ? fmtDay(s.doneAt) : null)),
     extra: strays.length ? [strayLine(strays, one)!] : [],
-    closing: `Quedo a disposición por si ${one ? "tienes" : "tienen"} alguna consulta o si algo no quedó reflejado.`,
+    closing: useAiClose ? aiClose : `Si ${one ? "ves" : "ven"} algo distinto o quedó algún detalle afuera, me ${one ? "avisas" : "avisan"}.`,
   });
 
   const reviewNotes = [...thread.notes, ...strayNotes(strays), ...lastTalkNote(interaction)];

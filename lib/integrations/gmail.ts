@@ -74,7 +74,8 @@ const escapeHtml = (s: string) =>
 // "- Status: Hecho|En curso|Pendiente|Stand By [⏳|✅] (dd/mm)" al final de un punto → "Status:" en negrita y el valor
 // en negrita con color; emoji y fecha van después, sin color. Gmail/Outlook descartan <style> y clases: todo inline.
 // Funciona también si lo escribís a mano en el editor.
-const STATUS_RE = /\s[—-]\s*Status:\s*(Hecho|En curso|Pendiente|Stand By)(\s*[⏳✅]️?)?(\s*\([^)]*\))?\s*$/iu;
+// También sin "Status:" (mail post-reunión: " - Stand By ⏳" / " - Hecho (11/11)").
+const STATUS_RE = /\s[—-]\s*(Status:\s*)?(Hecho|En curso|Pendiente|Stand By)(\s*[⏳✅]️?)?(\s*\([^)]*\))?\s*$/iu;
 const STATUS_COLOR: Record<string, string> = {
   hecho: "#188038",
   "en curso": "#E37400",
@@ -115,14 +116,46 @@ function formatLine(line: string): string {
   const m = line.match(STATUS_RE);
   if (!m) return inline(line);
   const head = inline(line.slice(0, m.index));
-  const key = m[1].toLowerCase();
-  const emoji = m[2] ? ` ${m[2].trim()}` : "";
-  const date = m[3] ? ` ${escapeHtml(m[3].trim())}` : "";
-  return `${head} - <strong>Status:</strong> <strong style="color:${STATUS_COLOR[key]}">${STATUS_LABEL[key]}</strong>${emoji}${date}`;
+  const key = m[2].toLowerCase();
+  const emoji = m[3] ? ` ${m[3].trim()}` : "";
+  const date = m[4] ? ` ${escapeHtml(m[4].trim())}` : "";
+  const label = m[1] ? "<strong>Status:</strong> " : "";
+  return `${head} - ${label}<strong style="color:${STATUS_COLOR[key]}">${STATUS_LABEL[key]}</strong>${emoji}${date}`;
 }
 
 /** Títulos que van solo en negrita; el resto ("Accionables de…", "Ya avanzamos con") en negrita y subrayado. */
-const PLAIN_HEADING = /^(Puntos importantes|Lo que charlamos)$/i;
+const PLAIN_HEADING = /^(\p{Extended_Pictographic}\uFE0F?\s*)?(Puntos importantes|Lo que charlamos|Próximos pasos|Accionables|Ya avanzamos con)$/iu;
+
+// Sección "🚀 Accionables:" del mail post-reunión → tabla segmentada (Accionable · Responsable · Status), una franja por
+// lado ("De parte de X:" / "De nuestro lado (Xtract):"). El texto del borrador sigue siendo una lista (editor y texto plano).
+const ACTIONABLES_HEADING = /^(\p{Extended_Pictographic}\uFE0F?\s*)?Accionables$/iu;
+const BIG_H_STYLE = "margin:24px 0 10px 0;font-size:18px;line-height:1.3;";
+const TABLE_STYLE = "border-collapse:collapse;width:100%;max-width:680px;border:1px solid #e0e0e0;margin:0 0 16px 0;";
+const TH_STYLE = "padding:8px 10px;text-align:left;font-size:12px;color:#5f6368;border-bottom:2px solid #c0c0c0;";
+const TD_STYLE = "padding:8px 10px;border-bottom:1px solid #e0e0e0;vertical-align:top;font-size:13px;line-height:1.45;";
+const SEG_STYLE = "padding:7px 10px;font-weight:bold;font-size:13px;border-bottom:1px solid #d0d0d0;";
+/** "Título: descripción. (Responsable) - Status: X ⏳ (dd/mm)" → partes; null si se editó y ya no tiene ese formato. */
+const ROW_RE = /^([^:]{2,80}):\s+(.*?)\s*\(([^()]+)\)\s*[—-]\s*Status:\s*(Hecho|En curso|Pendiente|Stand By)(\s*[⏳✅]️?)?(\s*\([^)]*\))?\s*$/iu;
+
+function actionablesTable(segments: { label: string; rows: string[] }[]): string {
+  const body = segments
+    .filter((seg) => seg.rows.length)
+    .map((seg) => {
+      const bg = /xtract/i.test(seg.label) ? "#f1f3f4" : "#e8f0fe";
+      const rows = seg.rows.map((text) => {
+        const m = text.match(ROW_RE);
+        if (!m) return `<tr><td colspan="3" style="${TD_STYLE}">${inline(text)}</td></tr>`;
+        const key = m[4].toLowerCase();
+        const status = `<strong style="color:${STATUS_COLOR[key]}">${STATUS_LABEL[key]}</strong>${m[5] ? ` ${m[5].trim()}` : ""}${m[6] ? ` ${escapeHtml(m[6].trim())}` : ""}`;
+        return `<tr><td style="${TD_STYLE}"><strong>${inline(m[1].trim())}</strong><br><span style="color:#5f6368">${inline(m[2].trim())}</span></td><td style="${TD_STYLE}white-space:nowrap">${escapeHtml(m[3].trim())}</td><td style="${TD_STYLE}white-space:nowrap">${status}</td></tr>`;
+      });
+      const label = seg.label ? `<tr><td colspan="3" style="${SEG_STYLE}background:${bg}">${escapeHtml(seg.label)}</td></tr>` : "";
+      return label + rows.join("");
+    })
+    .join("");
+  if (!body) return "";
+  return `<table cellpadding="0" cellspacing="0" style="${TABLE_STYLE}"><tr><th style="${TH_STYLE}">Accionable</th><th style="${TH_STYLE}">Responsable</th><th style="${TH_STYLE}">Status</th></tr>${body}</table>`;
+}
 
 /**
  * Texto del borrador → HTML compacto con estilos inline: cada línea un <p>, títulos en negrita y subrayados + ":", viñetas
@@ -147,6 +180,12 @@ export function bodyToHtml(body: string): string {
     if (text) list.push(formatLine(text));
     prevHeading = false;
   };
+  // Dentro de "🚀 Accionables:": franjas por lado hasta el próximo título con emoji o un párrafo.
+  let table: { label: string; rows: string[] }[] | null = null;
+  const closeTable = () => {
+    if (table) out.push(actionablesTable(table));
+    table = null;
+  };
   for (const raw of body.replace(/\r/g, "").split("\n")) {
     const line = raw.replace(/\s+$/, "");
     if (!line.trim()) {
@@ -155,6 +194,21 @@ export function bodyToHtml(body: string): string {
     }
     const gap = blanks >= 2;
     blanks = 0;
+    if (table) {
+      const t = line.trim();
+      const item = t.match(BULLET_RE);
+      if (item) {
+        if (!table.length) table.push({ label: "", rows: [] });
+        if (item[1].trim()) table.at(-1)!.rows.push(item[1].trim());
+        continue;
+      }
+      if (isHeading(t) && !/^\p{Extended_Pictographic}/u.test(t)) {
+        table.push({ label: t.replace(/\s*:\s*$/, ""), rows: [] });
+        continue;
+      }
+      closeTable();
+      prevHeading = false;
+    }
     const bullet = line.match(BULLET_RE);
     if (bullet) {
       push("ul", bullet[1].trim());
@@ -166,6 +220,11 @@ export function bodyToHtml(body: string): string {
       continue;
     }
     flush();
+    if (isHeading(line.trim()) && ACTIONABLES_HEADING.test(line.trim().replace(/\s*:\s*$/, ""))) {
+      out.push(`<p style="${BIG_H_STYLE}"><strong>${escapeHtml(line.trim().replace(/\s*:\s*$/, ""))}</strong></p>`);
+      table = [];
+      continue;
+    }
     if (isHeading(line.trim())) {
       const raw = line.trim().replace(/\s*:\s*$/, "");
       const title = escapeHtml(raw);
@@ -178,6 +237,7 @@ export function bodyToHtml(body: string): string {
     }
   }
   flush();
+  closeTable();
   return normalizeHtml(out.join(""));
 }
 
@@ -230,7 +290,9 @@ export function buildMimeMessage(input: {
     // El último <p> ("Saludos") ya deja 12px: la firma va pegada, sin <br> extra.
     // Gmail además esconde lo que se repite igual en mensajes anteriores del hilo (la firma de cada mail): un
     // marcador invisible y único al principio y al final hace que nunca coincida con la de mails previos.
-    signature ? `<div dir="ltr">${uniqueMark()}${signature}${uniqueMark()}</div>` : ""
+    // El oculto (display:none) Gmail lo descarta al comparar, así que al final va también uno que cuenta como texto
+    // (1px, color del fondo): el bloque final ya nunca es igual al de los mails previos y la firma no se recorta.
+    signature ? `<div dir="ltr">${uniqueMark()}${signature}${uniqueMark()}</div>${tailMark()}` : ""
   }</div>`;
   return [
     `To: ${input.to.join(", ")}`,
@@ -250,6 +312,10 @@ export function buildMimeMessage(input: {
 /** Texto oculto distinto en cada mail (no se ve ni ocupa lugar) para que Gmail no recorte la firma como repetida. */
 const uniqueMark = () =>
   `<span style="display:none;font-size:0;line-height:0;max-height:0;max-width:0;opacity:0;overflow:hidden;color:transparent">${randomUUID().slice(0, 8)}</span>`;
+
+/** Marcador final distinto en cada mail que Gmail sí cuenta como texto (no se distingue a simple vista). */
+const tailMark = () =>
+  `<div style="color:#ffffff;font-size:1px;line-height:1px;mso-hide:all" aria-hidden="true">${randomUUID().slice(0, 8)}</div>`;
 
 type MailInput = { threadId: string | null; to: string[]; cc?: string[]; subject: string; body: string; html?: string };
 
