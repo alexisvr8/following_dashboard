@@ -126,7 +126,7 @@ se vuelve menú desplegable `MobileNav`). Sin sidebar. 5 secciones. Navegación 
   handlers `GET` de `/api/integrations/*` (sin fetch HTTP, in-process). Debajo, `AIUsageCard`
   (`components/conexiones/`): consumo de IA estimado hoy / 7 / 30 días, por tipo, por origen y top 5 cuentas
   (`summarizeAIUsage`, `lib/utils/ai-usage-summary.ts`, el mismo que usa `GET /api/ai-usage`) + **saldo estimado** (`AICreditPanel`:
-  saldo de la consola cargado a mano en `settings.aiCredit {amountUsd, since}` menos `spentSince`; la API no expone el saldo).
+  saldo de la consola cargado a mano en `settings.aiCredit {amountUsd, since}` menos `spentSince`; la API no expone el saldo). Al pie, línea **"Lectura Supabase"** (hoy / 30 días de 5 GB / consultas): `fetchWithRetry` mide los bytes de cada respuesta (`lib/supabase/egress-meter.ts`, sin comprimir = cota superior) y cada 10 min los suma por día en `app_state.supabase_egress` (`lib/store/egress-store.ts`, 40 días; cada equipo suma lo suyo).
 
 Dark mode vía `next-themes` (`ThemeProvider`/`ThemeToggleButton` en
 `components/layout/`), toggle en `AppHeader`; tokens OKLCH ya definidos en

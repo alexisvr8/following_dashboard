@@ -9,6 +9,8 @@ import { AIUsageCard } from "@/components/conexiones/AIUsageCard";
 import { aiEnabled, postMeetingModel, statusMailModel } from "@/lib/llm/postmeeting";
 import { getSettings } from "@/lib/store/settings-store";
 import { getAIUsage } from "@/lib/store/ai-usage-store";
+import { getEgressSummary } from "@/lib/store/egress-store";
+import { usingSupabase } from "@/lib/store/backend";
 import { spentSince, summarizeAIUsage } from "@/lib/utils/ai-usage-summary";
 
 // El estado depende de .data/google-tokens.json (archivo local, no cacheable):
@@ -27,7 +29,12 @@ async function loadIntegrations(): Promise<IntegrationStatus[]> {
 }
 
 export default async function ConexionesPage() {
-  const [integrations, usage, settings] = await Promise.all([loadIntegrations(), getAIUsage().catch(() => []), getSettings()]);
+  const [integrations, usage, settings, egress] = await Promise.all([
+    loadIntegrations(),
+    getAIUsage().catch(() => []),
+    getSettings(),
+    usingSupabase() ? getEgressSummary(30) : Promise.resolve(null),
+  ]);
   const credit = settings.aiCredit ?? null;
   const now = new Date();
   const month = summarizeAIUsage(usage, 30, now);
@@ -51,6 +58,7 @@ export default async function ConexionesPage() {
         today={month.byDay[now.toLocaleDateString("en-CA")]}
         week={summarizeAIUsage(usage, 7, now)}
         month={month}
+        egress={egress}
       />
     </div>
   );

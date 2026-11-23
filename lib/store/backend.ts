@@ -24,7 +24,8 @@ export type StateKey =
   | "ai_usage"
   | "board_order"
   | "scheduler_lock"
-  | "unassigned_mails";
+  | "unassigned_mails"
+  | "supabase_egress";
 
 /** Archivo local equivalente a cada clave (modo `file`). */
 const STATE_FILES: Partial<Record<StateKey, string>> = {
@@ -37,6 +38,7 @@ const STATE_FILES: Partial<Record<StateKey, string>> = {
   board_order: "board-order.json",
   scheduler_lock: "scheduler-lock.json",
   unassigned_mails: "unassigned-mails.json",
+  supabase_egress: "supabase-egress.json",
 };
 
 // Caché en memoria por `updated_at` (egress de Supabase): las claves grandes (`clients_unmatched`, `ai_usage`…)

@@ -2,6 +2,8 @@
 // errores de red): reintenta con espera creciente y, si igual falla, devuelve un error JSON corto en vez
 // de la página HTML de Cloudflare (que terminaba impresa entera en la consola).
 
+import { meterResponse } from "./egress-meter";
+
 const RETRY_STATUS = new Set([502, 503, 504, 520, 521, 522, 523, 524]);
 const DELAYS_MS = [500, 1500, 3500];
 const ATTEMPT_TIMEOUT_MS = 15_000;
@@ -31,7 +33,7 @@ export async function fetchWithRetry(input: RequestInfo | URL, init?: RequestIni
     const signal = init?.signal ? AbortSignal.any([init.signal, timeout]) : timeout;
     try {
       const res = await fetch(input, { ...init, signal });
-      if (!RETRY_STATUS.has(res.status)) return res;
+      if (!RETRY_STATUS.has(res.status)) return meterResponse(res);
       last = { status: res.status, detail: `HTTP ${res.status}` };
       await res.body?.cancel();
     } catch (error) {

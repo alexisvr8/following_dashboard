@@ -27,6 +27,8 @@ const TRIGGER_LABEL: Record<string, string> = {
 
 const usd = (n: number) => (n > 0 && n < 0.01 ? "< US$ 0,01" : `US$ ${n.toLocaleString("es", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`);
 const tokens = (n: number) => n.toLocaleString("es", { notation: "compact", maximumFractionDigits: 1 });
+const mb = (n: number) => (n >= 1024 ** 3 ? `${(n / 1024 ** 3).toFixed(2)} GB` : `${(n / 1024 ** 2).toFixed(1)} MB`);
+const EGRESS_QUOTA = 5 * 1024 ** 3;
 const inputTokens = (b: UsageBucket) => b.input + b.cacheRead + b.cacheWrite;
 
 function Figure({ label, bucket }: { label: string; bucket: UsageBucket | undefined }) {
@@ -51,6 +53,7 @@ export function AIUsageCard({
   today,
   week,
   month,
+  egress,
 }: {
   enabled: boolean;
   model: string;
@@ -60,6 +63,7 @@ export function AIUsageCard({
   today: UsageBucket | undefined;
   week: UsageSummary;
   month: UsageSummary;
+  egress: { today: number; total: number; requests: number } | null;
 }) {
   const kinds = Object.keys(KIND_LABEL);
   const triggers = Object.entries(month.byTrigger).sort((a, b) => b[1].costUsd - a[1].costUsd);
@@ -170,6 +174,13 @@ export function AIUsageCard({
           </a>
           . Detalle completo en <span className="font-mono">/api/ai-usage</span>.
         </p>
+        {egress && (
+          <p className="text-xs text-subtle-foreground tabular" title="Bytes que bajó esta app de Supabase (aprox., sin comprimir: cota superior). La cifra oficial está en Supabase → Usage.">
+            Lectura Supabase · hoy {mb(egress.today)} · 30 días{" "}
+            <span className={egress.total > EGRESS_QUOTA * 0.8 ? "text-critical" : "text-foreground"}>{mb(egress.total)}</span> de 5 GB (
+            {Math.round((egress.total / EGRESS_QUOTA) * 100)}%) · {egress.requests.toLocaleString("es")} consultas
+          </p>
+        )}
       </CardContent>
     </Card>
   );
