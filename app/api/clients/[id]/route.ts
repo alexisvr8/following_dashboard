@@ -4,6 +4,7 @@ import {
   reopenClient,
   resolveRewrite,
   resolveSuggestion,
+  resolveWeeklyReview,
   setFollowupThread,
   setActionablePlan,
   setTicketDone,
@@ -12,6 +13,7 @@ import {
   type ActionableChange,
   type ClientProfile,
   type ClientStatus,
+  type WeeklyReviewAction,
 } from "@/lib/store/clients-store";
 import { getSettings } from "@/lib/store/settings-store";
 
@@ -32,6 +34,7 @@ export async function PATCH(
     plan?: { ticketId?: unknown; due?: unknown; estimateMinutes?: unknown; side?: unknown };
     suggestion?: { suggestionId?: unknown; action?: unknown; title?: unknown; due?: unknown };
     rewrite?: { ref?: unknown; action?: unknown; title?: unknown };
+    weeklyReview?: { id?: unknown; action?: unknown; title?: unknown; due?: unknown; reason?: unknown };
     followupThread?: { threadId?: unknown; subject?: unknown } | null;
     close?: { note?: unknown; handedTo?: unknown };
     reopen?: boolean;
@@ -81,6 +84,26 @@ export async function PATCH(
     const client = await resolveRewrite(decodeURIComponent(id), ref, action, typeof title === "string" ? title : undefined);
     if (!client) return Response.json({ error: "not_found" }, { status: 404 });
     return Response.json({ id: client.id });
+  }
+
+  // Revisión del mail semanal: punto quitado (hecho / no corresponde / sigue), agregado (crear card / ignorar) o
+  // cuenta sin mail (confirmar con motivo).
+  if (body.weeklyReview && typeof body.weeklyReview === "object") {
+    const { id: itemId, action, title, due, reason } = body.weeklyReview;
+    const actions: WeeklyReviewAction[] = ["done", "not_applicable", "keep", "create", "ignore", "ok"];
+    const validDue = due == null || (typeof due === "string" && /^\d{4}-\d{2}-\d{2}$/.test(due));
+    if (typeof itemId !== "string" || !actions.includes(action as WeeklyReviewAction) || !validDue) {
+      return Response.json({ error: "invalid_weekly_review" }, { status: 400 });
+    }
+    const result = await resolveWeeklyReview(decodeURIComponent(id), {
+      id: itemId,
+      action: action as WeeklyReviewAction,
+      title: typeof title === "string" ? title : undefined,
+      due: (due as string | null | undefined) ?? null,
+      reason: typeof reason === "string" ? reason : undefined,
+    });
+    if (!result) return Response.json({ error: "not_found" }, { status: 404 });
+    return Response.json({ id: result.client.id, ticketId: result.ticketId });
   }
 
   // Sugerencia de la transcripción: aceptar (crea accionable propio) o descartar (enseña a no repetirla).

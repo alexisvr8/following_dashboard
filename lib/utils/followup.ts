@@ -1129,10 +1129,10 @@ function weekSeed(clientId: string, d: Date): number {
 /** Saludos del lunes: `{n}` = nombre o "equipo"; [ustedes, vos]. */
 const WEEKLY_GREETINGS: [string, string][] = [
   ["Buen día {n}, excelente inicio de semana.", "Buen día {n}, excelente inicio de semana."],
-  ["Hola {n}, ¿cómo arrancan la semana?", "Hola {n}, ¿cómo arrancás la semana?"],
+  ["Hola {n}, ¿cómo arrancan la semana?", "Hola {n}, ¿cómo arrancas la semana?"],
   ["Buen día {n}, espero que hayan tenido un lindo fin de semana.", "Buen día {n}, espero que hayas tenido un lindo fin de semana."],
   ["Hola {n}, buen comienzo de semana.", "Hola {n}, buen comienzo de semana."],
-  ["Buen día {n}, ¿todo bien? Arrancamos una semana nueva.", "Buen día {n}, ¿todo bien? Arrancamos una semana nueva."],
+  ["Buen día {n}, que tengan una excelente semana.", "Buen día {n}, que tengas una excelente semana."],
   ["Hola {n}, espero que estén muy bien. Que tengan una buena semana.", "Hola {n}, espero que estés muy bien. Que tengas una buena semana."],
 ];
 const WEEKLY_TONES = [
@@ -1143,14 +1143,14 @@ const WEEKLY_TONES = [
   "positivo, transmitiendo que vamos bien encaminados",
 ];
 const WEEKLY_OPENINGS = [
-  "arrancá por lo que necesito de ellos esta semana y mencioná al pasar que lo mío sigue en curso",
-  "contá que sigo con lo que quedó de mi lado (sin decir que está terminado) y que les paso novedades en estos días",
+  "anclá la apertura en la última interacción de <contexto> (reunión o mail, con su día) y pasá a lo que necesito de su lado",
+  "contá que sigo con lo que quedó de mi lado (sin decir que está terminado) y que les paso novedades en estos días; mientras tanto, lo que necesito",
   "planteá que esta semana me gustaría cerrar estos temas y que de mi lado ya estoy avanzando",
   "decí que para seguir avanzando (o no frenar) necesito una mano con algunos puntos de su lado",
-  "abrí con un repaso rápido: lo mío está en marcha y quedan algunos puntos de su lado",
+  "si <contexto> tiene un objetivo cercano (próxima reunión o fecha acordada), arrancá por eso: para llegar a eso necesito estos puntos",
 ];
 const WEEKLY_CLOSINGS = [
-  "invitá a que confirmen cuando lo tengan, sin presión",
+  "atá el cierre a lo que viene según <contexto> (la próxima reunión, validar en producción, definir la fecha de salida); si no hay nada, invitá a confirmar cuando lo tengan",
   "ofrecé ayuda si algo se traba o necesitan una mano",
   "proponé que si algo no se puede esta semana me avisen y lo reordenamos",
   "agradecé la mano de su lado y pedí que me avisen cualquier duda",
@@ -1175,7 +1175,8 @@ function weeklyParts(client: ClientRecord, meeting: DiscoveredMeeting, ownerEmai
   const all = accountActionables(client);
   const dueAt = (a: (typeof all)[number]) => {
     const due = agreedDue(client, a.id, a.step, a.meeting.date, settings.workDays);
-    return due && due.until >= now ? due : null;
+    // Una fecha "acordada" a más de 120 días es un dd/mm ya pasado que se corrió al año siguiente: no se usa.
+    return due && due.until >= now && due.until.getTime() - now.getTime() < 120 * 86_400_000 ? due : null;
   };
   const dueOf = (a: (typeof all)[number]) => dueAt(a)?.label ?? null;
   const sideOf = (a: (typeof all)[number]) => overrideSide(client, a.id, stepSide(a.step, client, ownerEmail, settings));
@@ -1192,8 +1193,8 @@ function weeklyParts(client: ClientRecord, meeting: DiscoveredMeeting, ownerEmai
     base,
     hello,
     names,
-    // Tuteo solo con una persona identificada; buzón genérico o varios destinatarios = "ustedes".
-    plural: base.to.length !== 1 || names.length !== 1,
+    // Tuteo solo con una persona identificada (los buzones genéricos en Para no cuentan); si no, "ustedes".
+    plural: names.length !== 1 || base.to.filter((e) => !GENERIC_MAILBOX.test(e)).length > 1,
     dueOf,
     dueAt,
     ours: open.filter((a) => ["me", "team"].includes(sideOf(a))),
@@ -1209,16 +1210,39 @@ function weeklyParts(client: ClientRecord, meeting: DiscoveredMeeting, ownerEmai
   };
 }
 
-/** Cuerpos de los últimos 3 mails semanales de semanas anteriores (enviados o en borrador), el más reciente primero. */
+/**
+ * Últimos 3 mails semanales a la cuenta, el más reciente primero: el texto que REALMENTE envié (`outcome.body`) si
+ * lo hay; si no, el borrador. Los que borré no cuentan.
+ */
 function previousWeeklyBodies(client: ClientRecord, now: Date): string[] {
   const current = `week:${mondayKey(now)}`;
   return Object.keys(client.followups ?? {})
     .filter((k) => k.startsWith("week:") && k < current)
+    .filter((k) => client.followups![k].outcome?.state !== "deleted")
     .sort()
     .reverse()
     .slice(0, 3)
-    .map((k) => (client.followups![k].gmailBody ?? client.followups![k].body ?? "").trim().slice(0, 1500))
+    .map((k) => {
+      const f = client.followups![k];
+      return (f.outcome?.body ?? f.gmailBody ?? f.body ?? "").trim().slice(0, 1500);
+    })
     .filter(Boolean);
+}
+
+/**
+ * Contexto para anclar apertura y cierre: última reunión y último mail DEL CLIENTE (solo si son de los últimos
+ * 14 días; algo más viejo no sirve de ancla) y la fecha acordada más próxima.
+ */
+function weeklyContext(client: ClientRecord, meeting: DiscoveredMeeting, anchor: string | null, now: Date): string[] {
+  const recent = (iso: string) => now.getTime() - Date.parse(iso) <= 14 * 86_400_000;
+  const out: string[] = [];
+  if (recent(meeting.date)) out.push(`Última reunión con el cliente: ${fmtDate(meeting.date)}${meeting.title ? ` (${meeting.title.slice(0, 80)})` : ""}`);
+  const inbound = client.activity?.lastInboundMail;
+  if (inbound && recent(inbound.date)) {
+    out.push(`Último mail que ME escribió el cliente: ${fmtDate(inbound.date)}, de ${inbound.fromName ?? inbound.from}: "${inbound.excerpt.replace(/\s+/g, " ").slice(0, 220)}"`);
+  }
+  if (anchor) out.push(`Fecha acordada más próxima: ${anchor}`);
+  return out.length ? out : ["(sin interacciones recientes: no anclar la apertura en una fecha)"];
 }
 
 /** Entrada de la IA para el mail de los lunes y su huella; `null` si no queda nada pendiente con la cuenta. */
@@ -1228,10 +1252,13 @@ export function weeklyAIRequest(
   ownerEmail: string | null,
   settings: WorkSettings,
   now = new Date(),
-): { input: WeeklyMailInput; key: string } | null {
+  /** Mails semanales enviados de otras cuentas (`weeklyStyleExamples`); no entran en la huella. */
+  styleExamples: string[] = [],
+): { input: WeeklyMailInput; key: string; ticketIds: string[] } | null {
   const p = weeklyParts(client, meeting, ownerEmail, settings, now);
-  if (!p.ours.length && !p.theirs.length && !p.shared.length && !p.other.length && !p.requests.length && !p.commitments.length) return null;
   const items = [...p.theirs, ...p.shared];
+  // Sin nada que pedirle al cliente no hay mail de los lunes (un mail sin puntos se borraba siempre).
+  if (!items.length) return null;
   // Responsables del lado del cliente: yo y el equipo Xtract no figuran ("Kazaro y Alexis" → "Kazaro").
   const clientOwners = (step: string) => {
     const owners = step.match(/^\s*\[([^\]]+)\]/)?.[1].split(",").map((o) => o.trim()).filter(Boolean) ?? [];
@@ -1266,8 +1293,10 @@ export function weeklyAIRequest(
       closing: WEEKLY_CLOSINGS[(weekSeed(client.id, now) + 2) % WEEKLY_CLOSINGS.length],
     },
     previousMails: previousWeeklyBodies(client, now),
+    context: weeklyContext(client, meeting, anchor?.label ?? null, now),
+    styleExamples,
   };
-  return { input, key: weeklyKey(input) };
+  return { input, key: weeklyKey(input), ticketIds: items.map((a) => a.id) };
 }
 
 /**

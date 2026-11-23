@@ -2,8 +2,11 @@ import Anthropic from "@anthropic-ai/sdk";
 import { zodOutputFormat } from "@anthropic-ai/sdk/helpers/zod";
 import { ACCOUNT_ANALYSIS_SYSTEM_PROMPT } from "@/lib/llm/account-analysis-prompt";
 import { AccountAnalysisSchema, type AccountAnalysisOutput } from "@/lib/llm/account-analysis-schema";
-import { postMeetingModel } from "@/lib/llm/postmeeting";
 import { recordResponse, type UsageMeta } from "@/lib/store/ai-usage-store";
+
+/** Análisis semanal: Haiku por defecto (informativo y de alto volumen; ~20x más barato que Sonnet). */
+export const DEFAULT_ANALYSIS_MODEL = "claude-haiku-5-5";
+export const analysisModel = () => process.env.ANTHROPIC_MODEL_ANALYSIS || DEFAULT_ANALYSIS_MODEL;
 
 // Análisis semanal de UNA cuenta: última reunión + tablero + trazabilidad completa de mails → JSON fijo
 // (`AccountAnalysisSchema`). Mismo modelo y clave que el mail post-reunión (`ANTHROPIC_MODEL`).
@@ -134,7 +137,7 @@ export interface AnalysisUsage {
 
 export async function generateAccountAnalysis(input: AnalysisInput, meta?: UsageMeta): Promise<{ output: AccountAnalysisOutput; usage: AnalysisUsage }> {
   const client = new Anthropic();
-  const model = postMeetingModel();
+  const model = analysisModel();
   const response = await client.messages.parse({
     model,
     max_tokens: 16000,

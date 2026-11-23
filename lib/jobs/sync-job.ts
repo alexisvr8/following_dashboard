@@ -3,6 +3,8 @@ import { generateMeetingAI } from "@/lib/integrations/meeting-ai";
 import { generateStatusMails } from "@/lib/integrations/status-ai";
 import { createThreadDraft, draftFate } from "@/lib/integrations/gmail";
 import { syncClientsActivity } from "@/lib/integrations/client-activity";
+import { captureWeeklyOutcomes } from "@/lib/integrations/weekly-outcome";
+import { weeklyStyleExamples } from "@/lib/utils/weekly-learning";
 import { scanUnassignedMails, UNASSIGNED_SCAN_EVERY_MS } from "@/lib/integrations/unassigned-mail";
 import { getUnassignedMails } from "@/lib/store/unassigned-mail-store";
 import {
@@ -111,6 +113,9 @@ async function doSync({ drafts: withDrafts, trigger }: SyncOptions): Promise<Syn
     status.synced = ok.length;
     status.failed = results.length - ok.length;
 
+    // 2a) Mail de los lunes: qué envié / programé / borré (referencia de estilo + revisión punto por punto). Cada 30 min.
+    await captureWeeklyOutcomes(await getClientsFile()).catch(() => undefined);
+
     // 2b) Mails sin cuenta (capa C): externos dirigidos a mí que nadie tomó. Cada 30 min (muchas llamadas a Gmail).
     const inbox = await getUnassignedMails().catch(() => null);
     if (inbox && (!inbox.scannedAt || Date.now() - Date.parse(inbox.scannedAt) >= UNASSIGNED_SCAN_EVERY_MS)) {
@@ -194,7 +199,7 @@ async function createWeeklyDrafts(file: ClientsFile, settings: WorkSettings) {
         continue;
       }
     }
-    const req = weeklyAIRequest(client, meeting, file.ownerEmail ?? null, settings);
+    const req = weeklyAIRequest(client, meeting, file.ownerEmail ?? null, settings, new Date(), weeklyStyleExamples(file.clients, client.id, key));
     if (!req) continue;
     // Ya redactado con IA para esta misma entrada (se corrió de nuevo el lunes): el borrador está al día.
     if (previous?.gmailDraftId && previous.aiKey === req.key) continue;
@@ -226,6 +231,7 @@ async function createWeeklyDrafts(file: ClientsFile, settings: WorkSettings) {
         draftCreatedAt: new Date().toISOString(),
         gmailBody: draft.body,
         autoFor: key,
+        ...(ai && draft.aiKey === req.key && { weeklyItems: req.ticketIds }),
       });
       out.push({ clientId: client.id, ok: true });
     } catch (error) {

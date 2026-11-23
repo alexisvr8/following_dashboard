@@ -363,7 +363,7 @@ Por cuenta asignada: `analysisWindow` (base reunión ≤7 días / mails 21–45 
 todos los hilos del período, texto completo, tope 100k caracteres) → `buildAnalysisInput` (`lib/utils/account-analysis.ts`: `plannedItems` con refs A1…,
 `refTexts`, reescribibles) → `generateAccountAnalysis` (`lib/llm/account-analysis*.ts`, JSON `AccountAnalysisSchema`) → `sanitizeRefs` → `setAccountAnalysis`
 (`client.analysis`; nuevos = `customActionables` con `source: "ia"` + `evidence`, dedupe ≥0.5 contra todo el tablero y ≥0.6 contra `aiLearned`; nunca tilda).
-Orquestación `analyzeAccounts` (`lib/integrations/account-analysis.ts`, 2 en paralelo, una vez por semana salvo `force`). Lo de la IA es arrastrado solo si
+Orquestación `analyzeAccounts` (`lib/integrations/account-analysis.ts`, 2 en paralelo, una vez por semana salvo `force`; **solo cuentas con novedades**: reunión o mail posterior al último análisis, `hasNewsSince`). Modelo propio `analysisModel()` = `ANTHROPIC_MODEL_ANALYSIS` (default `claude-haiku-5-5`; con Sonnet costaba ~US$2,6 por lunes). Lo de la IA es arrastrado solo si
 llegó una reunión después de `createdAt`. Prioridad de cuenta `accountPriority` (`profile.priority` manual > IA > media; "alta" sube un nivel sus accionables).
 `nextMeetings` solo mira asignadas. Reescrituras (`output.reescrituras`) → modal "Mejoras IA" en `/accionables` (`RewritesDialog`, `pendingRewrites`:
 abiertos cuyo texto no cambió) → `PATCH /api/clients/[id] {rewrite: {ref, action, title?}}` (`resolveRewrite` → `actionableEdits`, `analysis.rewritesResolved`).
@@ -408,7 +408,16 @@ saludo rotativo `WEEKLY_GREETINGS` (por semana + cliente, nunca el de la semana 
 `1. **Hito (Responsable):** qué hacer *(acordado para el …)*` solo con lo del cliente + en conjunto (sin mí/equipo Xtract, empresa ni buzones como
 responsable; sin nombre si va a una sola persona dueña de todo) → cierre → "Saludos". Para que no suene a plantilla: la IA recibe tono
 (`WEEKLY_TONES`) y enfoque de apertura/cierre (`WEEKLY_OPENINGS`/`WEEKLY_CLOSINGS`) que rotan por semana, y los últimos 3 mails semanales de la
-cuenta (`previousWeeklyBodies`) para no repetir frases (`--weeks N` en la vista previa simula lunes seguidos). **Sin IA / si falla**, por reglas: tú/ustedes según
+cuenta (`previousWeeklyBodies`: el texto que REALMENTE envié, `outcome.body`) para no repetir frases (`--weeks N` / `--date AAAA-MM-DD` / `--ids a,b` en la vista previa).
+Trato **tú/ustedes (tuteo neutro, no voseo)**; tú solo con un nombre conocido y ≤1 destinatario no genérico. Sin puntos del cliente no hay mail. `<contexto>` = última reunión y
+último mail del cliente (≤14 días) + fecha acordada, para anclar apertura/cierre; `<ejemplos_pm>` = mails semanales enviados de otras cuentas
+(`weeklyStyleExamples`, fuera de la huella). Fechas acordadas a >120 días (dd/mm corrido de año) se ignoran.
+**Aprendizaje de lo enviado** (`lib/integrations/weekly-outcome.ts` `captureWeeklyOutcomes`, en `runSync` cada 30 min; `lib/utils/weekly-learning.ts`):
+borrador borrado → lee el hilo (enviados + `in:scheduled`) → `followups[week:].outcome` {sent|scheduled|replaced|deleted, body} (enviado/programado = `sentAt`)
+→ `client.weeklyReview` (borrador vs. enviado por puntos numerados, `parseMailItems`; ticket de cada punto = `weeklyItems` guardado al crear o el
+accionable más parecido): `removed` (Hecho / No corresponde / Sigue abierto), `added` (Crear card con texto y fecha / Ignorar), `skipped`
+(cuenta sin mail: confirmar con motivo). Modal **"Del mail semanal (N)"** en `/accionables` (`WeeklyReviewDialog`, `pendingWeeklyReview`) →
+`PATCH /api/clients/[id] {weeklyReview: {id, action, title?, due?, reason?}}` (`resolveWeeklyReview`). Nada se aplica solo. **Sin IA / si falla**, por reglas: tú/ustedes según
 destinatarios, completado desde el lunes de la semana pasada (incl. pedidos/compromisos por mail cerrados), objetivos de nuestro lado [+ compromisos
 por mail] / "Lo que nos consultaron por mail" / de su lado / en conjunto / otros, fechas solo acordadas. `bodyToHtml` arma `<ol>` con "1. ", `**negrita**` y `*cursiva*`;
 una línea con ", minúscula" que termina en ":" no es título; clave
