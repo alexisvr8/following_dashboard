@@ -65,6 +65,9 @@ export interface MeetingAI {
   model: string;
   generatedAt: string;
   objetivo: string;
+  /** Apertura y cierre redactados por la IA (reuniones procesadas antes no los tienen: van por reglas). */
+  intro?: string;
+  cierre?: string;
   puntos: string[];
   charlamos: string[];
   /** Por índice de `nextSteps` (accionables y, al final, lo ya avanzado). */
@@ -1004,7 +1007,18 @@ export async function setMeetingAI(
   out: PostMeetingOutput,
   model: string,
 ): Promise<"full" | "context" | false> {
-  const res = await mutateClient(clientId, (client): "full" | "context" | typeof SKIP => {
+  const res = await mutateClient(clientId, (client) => applyMeetingAI(client, meetingId, out, model));
+  return res?.result ?? false;
+}
+
+/** Lo que hace `setMeetingAI` sobre un `ClientRecord` en memoria (también lo usa la vista previa, sin guardar). */
+export function applyMeetingAI(
+  client: ClientRecord,
+  meetingId: string,
+  out: PostMeetingOutput,
+  model: string,
+): "full" | "context" | typeof SKIP {
+  {
     const m = client.meetings.find((x) => x.id === meetingId);
     if (!m || m.ai) return SKIP;
     const now = new Date().toISOString();
@@ -1014,6 +1028,8 @@ export async function setMeetingAI(
         model,
         generatedAt: now,
         objetivo: out.objetivo,
+        intro: out.intro_mail,
+        cierre: out.cierre_mail,
         puntos: out.puntos_importantes,
         charlamos: out.lo_que_charlamos,
         steps: [],
@@ -1030,6 +1046,8 @@ export async function setMeetingAI(
       model,
       generatedAt: now,
       objetivo: out.objetivo,
+      intro: out.intro_mail,
+      cierre: out.cierre_mail,
       puntos: out.puntos_importantes,
       charlamos: out.lo_que_charlamos,
       steps: [
@@ -1071,8 +1089,7 @@ export async function setMeetingAI(
     }
     client.ticketsUpdatedAt = now;
     return "full";
-  });
-  return res?.result ?? false;
+  }
 }
 
 /** Registra un intento fallido de generación (se reintenta en la próxima sync hasta `AI_MAX_ATTEMPTS`). */

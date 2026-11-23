@@ -11,6 +11,7 @@ import {
 } from "@/lib/store/clients-store";
 import { getSettings, type WorkSettings } from "@/lib/store/settings-store";
 import { accountActionables } from "@/lib/utils/actionables";
+import { followupRecipients } from "@/lib/utils/followup";
 import { DEFAULT_ESTIMATE_GUIDE, guideText } from "@/lib/utils/task-kind";
 import { applyCorrections, splitNotesAndTranscript } from "@/lib/utils/transcript";
 
@@ -72,7 +73,16 @@ export function buildPostMeetingInput(
     estimateGuide: guideText(settings.estimateGuide ?? DEFAULT_ESTIMATE_GUIDE),
     notes,
     transcript,
+    addressing: addressingFor(client, meeting, ownerEmail, settings),
   };
+}
+
+/** Mismos destinatarios que el borrador de la minuta (`followupRecipients`): 1 persona del cliente → tú; varias → ustedes. */
+function addressingFor(client: ClientRecord, meeting: DiscoveredMeeting, ownerEmail: string | null, settings: WorkSettings) {
+  const to = followupRecipients(client, meeting, ownerEmail, settings);
+  const custom = client.profile?.contactNames ?? {};
+  const names = to.map((r) => custom[r.email.toLowerCase()] ?? (r.name && !r.name.includes("@") ? r.name.split(/\s+/)[0] : nameFromEmail(r.email).split(" ")[0]));
+  return { plural: to.length !== 1, names };
 }
 
 /**

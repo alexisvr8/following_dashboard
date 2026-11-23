@@ -3,6 +3,8 @@
 //   pnpm preview:postmeeting -- --json <salida.json> --out <preview.html>            (sin costo, reusa una salida)
 //   pnpm preview:postmeeting -- --doc "docs/<minuta>.txt" --client "Salvita Alimentos" --out <preview.html>
 //     (genera con Claude: ~US$ 0,10; también guarda <preview>.json)
+//   pnpm preview:postmeeting -- --id <id o nombre de la cuenta> --out <preview.html>
+//     (última reunión con Doc de esa cuenta, con la misma entrada que la sync; no guarda nada en la base)
 import { readFileSync, writeFileSync } from "node:fs";
 import { bodyToHtml } from "@/lib/integrations/gmail";
 import { generatePostMeeting, postMeetingModel } from "@/lib/llm/postmeeting";
@@ -10,6 +12,10 @@ import { PostMeetingSchema, type PostMeetingOutput } from "@/lib/llm/postmeeting
 import { aiStepText } from "@/lib/store/clients-store";
 import { mailFromOutput } from "@/lib/utils/postmeeting-mail";
 import { splitNotesAndTranscript } from "@/lib/utils/transcript";
+import { getDocText } from "@/lib/integrations/drive";
+import { buildPostMeetingInput } from "@/lib/integrations/meeting-ai";
+import { getClientsFile } from "@/lib/store/clients-store";
+import { getSettings } from "@/lib/store/settings-store";
 
 const arg = (name: string) => {
   const i = process.argv.indexOf(`--${name}`);
@@ -19,13 +25,27 @@ const esc = (s: string) => s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replac
 
 async function main() {
   const out = arg("out") ?? "postmeeting-preview.html";
-  const client = arg("client") ?? "Salvita Alimentos";
+  let client = arg("client") ?? "Salvita Alimentos";
   const me = arg("me") ?? "Alexis";
-  const day = arg("day") ?? "11/11";
+  let day = arg("day") ?? "11/11";
   let data: PostMeetingOutput;
   let source: string;
 
-  if (arg("json")) {
+  if (arg("id")) {
+    const norm = (x: string) => x.normalize("NFD").replace(/[\u0300-\u036f]/g, "").toLowerCase();
+    const [file, settings] = await Promise.all([getClientsFile(), getSettings()]);
+    const account = file.clients.find((c) => c.status === "assigned" && (c.id === arg("id") || norm(c.name).includes(norm(arg("id")!))));
+    if (!account) throw new Error(`No hay cuenta asignada que coincida con "${arg("id")}"`);
+    const meeting = [...account.meetings].filter((m) => m.docId).sort((x, y) => y.date.localeCompare(x.date))[0];
+    if (!meeting) throw new Error(`${account.name} no tiene reuniones con Doc de Gemini`);
+    const input = buildPostMeetingInput(account, meeting, await getDocText(meeting.docId!), file.ownerEmail ?? null, settings);
+    client = input.clientName;
+    const d = new Date(meeting.date);
+    day = `${String(d.getDate()).padStart(2, "0")}/${String(d.getMonth() + 1).padStart(2, "0")}`;
+    data = await generatePostMeeting(input, { clientId: account.id, clientName: account.name, trigger: "preview" });
+    writeFileSync(out.replace(/\.html?$/, "") + ".json", JSON.stringify(data, null, 2), "utf8");
+    source = `Generado ahora con ${postMeetingModel()} · reunión "${meeting.title}" del ${day} · ${input.participants.length} participantes`;
+  } else if (arg("json")) {
     data = PostMeetingSchema.parse(JSON.parse(readFileSync(arg("json")!, "utf8")));
     source = `Salida guardada: ${arg("json")}`;
   } else if (arg("doc")) {
