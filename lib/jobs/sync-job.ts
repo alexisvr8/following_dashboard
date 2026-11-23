@@ -23,6 +23,7 @@ import { computeAlerts, type AccountAlert } from "@/lib/utils/followup-alerts";
 import { buildFollowup, buildWeeklyPlan, weeklyAIRequest } from "@/lib/utils/followup";
 import { aiEnabled } from "@/lib/llm/postmeeting";
 import { generateWeeklyMail, type WeeklyMailOutput } from "@/lib/llm/weekly-mail";
+import { aiPausedUntil, isAILimitError, pauseAIFor } from "@/lib/llm/ai-limit";
 import { getSyncStatus } from "@/lib/store/sync-status-store";
 import { followupTicketId, meetingEnd } from "@/lib/store/clients-store";
 import { createHash } from "node:crypto";
@@ -199,10 +200,12 @@ async function createWeeklyDrafts(file: ClientsFile, settings: WorkSettings) {
     if (previous?.gmailDraftId && previous.aiKey === req.key) continue;
     // Redacción con IA (Haiku); si falla o no hay clave, va la plantilla por reglas.
     let ai: { output: WeeklyMailOutput; key: string } | null = null;
-    if (aiEnabled()) {
+    if (aiEnabled() && !aiPausedUntil()) {
       try {
         ai = { key: req.key, output: await generateWeeklyMail(req.input, { clientId: client.id, clientName: client.name, trigger: "semanal" }) };
-      } catch {
+      } catch (error) {
+        // Límite de gasto: el resto de las cuentas va por reglas sin intentar (fallarían igual).
+        if (isAILimitError((error as Error).message)) pauseAIFor((error as Error).message);
         ai = null;
       }
     }

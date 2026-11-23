@@ -1,4 +1,5 @@
 import { getDocText } from "@/lib/integrations/drive";
+import { aiPausedUntil, isAILimitError, pauseAIFor } from "@/lib/llm/ai-limit";
 import { aiEnabled, generatePostMeeting, postMeetingModel, type PostMeetingInput } from "@/lib/llm/postmeeting";
 import {
   getClientsFile,
@@ -11,7 +12,7 @@ import {
 } from "@/lib/store/clients-store";
 import { getSettings, type WorkSettings } from "@/lib/store/settings-store";
 import { accountActionables } from "@/lib/utils/actionables";
-import { followupRecipients } from "@/lib/utils/followup";
+import { currentFollowupKind, followupRecipients } from "@/lib/utils/followup";
 import { DEFAULT_ESTIMATE_GUIDE, guideText } from "@/lib/utils/task-kind";
 import { applyCorrections, splitNotesAndTranscript } from "@/lib/utils/transcript";
 
@@ -86,7 +87,13 @@ function addressingFor(client: ClientRecord, meeting: DiscoveredMeeting, ownerEm
 }
 
 /**
- * Reuniones a procesar: última semana, cuentas asignadas, con Doc y sin IA. Si ya se tocaron sus accionables,
+ * ¿La minuta de esta reunión ya salió? (mail mío después del fin de la reunión, follow-up tildado o enviado desde la
+ * app; mismo criterio que `currentFollowupKind`). En ese caso no se gastan créditos en generarla.
+ */
+export const minutaAlreadySent = (client: ClientRecord, meeting: DiscoveredMeeting) => currentFollowupKind(client, meeting) === "status";
+
+/**
+ * Reuniones a procesar: última semana, cuentas asignadas, con Doc, sin IA y sin minuta enviada. Si ya se tocaron sus accionables,
  * `setMeetingAI` guarda solo el contexto (sin reemplazar `nextSteps`).
  */
 function pendingMeetings(file: ClientsFile): { client: ClientRecord; meeting: DiscoveredMeeting }[] {
@@ -99,8 +106,10 @@ function pendingMeetings(file: ClientsFile): { client: ClientRecord; meeting: Di
           (m) =>
             m.docId &&
             !m.ai &&
-            (m.aiAttempts ?? 0) < AI_MAX_ATTEMPTS &&
-            Date.parse(m.date) >= since,
+            // Intentos agotados por el límite de gasto (antes de que no contaran) no frenan el reintento.
+            ((m.aiAttempts ?? 0) < AI_MAX_ATTEMPTS || isAILimitError(m.aiError)) &&
+            Date.parse(m.date) >= since &&
+            !minutaAlreadySent(client, m),
         )
         .map((meeting) => ({ client, meeting })),
     )
@@ -110,7 +119,7 @@ function pendingMeetings(file: ClientsFile): { client: ClientRecord; meeting: Di
 
 /** Genera y guarda el mail post-reunión de las reuniones pendientes. Devuelve cuántas se procesaron. */
 export async function generateMeetingAI(file: ClientsFile, settings: WorkSettings): Promise<{ generated: number; failed: number }> {
-  if (!aiEnabled()) return { generated: 0, failed: 0 };
+  if (!aiEnabled() || aiPausedUntil()) return { generated: 0, failed: 0 };
   let generated = 0;
   let failed = 0;
   // De a una: son pocas por corrida y así no se pisan los límites de la API.
@@ -118,6 +127,11 @@ export async function generateMeetingAI(file: ClientsFile, settings: WorkSetting
     const r = await processMeeting(client, meeting, file.ownerEmail ?? null, settings);
     if (r.ok) generated++;
     else failed++;
+    // Límite de gasto: se corta la corrida y se pausa hasta que vuelva el acceso (las demás fallarían igual).
+    if (!r.ok && isAILimitError(r.error)) {
+      pauseAIFor(r.error);
+      break;
+    }
   }
   return { generated, failed };
 }
@@ -159,7 +173,9 @@ export interface BackfillRow {
  * con Doc y sin IA, sin límite de fecha. Sin accionables tocados se reemplazan los pasos (A); con accionables
  * tocados solo se guarda el contexto (B). `dryRun` lista el plan sin llamar a la API.
  */
-export async function backfillMeetingAI(opts: { ids?: string[]; dryRun?: boolean; limit?: number } = {}): Promise<BackfillRow[]> {
+export async function backfillMeetingAI(
+  opts: { ids?: string[]; dryRun?: boolean; limit?: number; includeSent?: boolean } = {},
+): Promise<BackfillRow[]> {
   const [file, settings] = await Promise.all([getClientsFile(), getSettings()]);
   const wanted = opts.ids && new Set(opts.ids);
   const rows: { row: BackfillRow; client: ClientRecord; meeting: DiscoveredMeeting }[] = file.clients
@@ -167,6 +183,8 @@ export async function backfillMeetingAI(opts: { ids?: string[]; dryRun?: boolean
     .flatMap((client) => {
       const meeting = [...client.meetings].sort((a, b) => b.date.localeCompare(a.date))[0];
       if (!meeting?.docId || meeting.ai || (meeting.aiAttempts ?? 0) >= AI_MAX_ATTEMPTS) return [];
+      // Minuta ya enviada: no gasta créditos salvo que se pida (`--include-sent`).
+      if (!opts.includeSent && minutaAlreadySent(client, meeting)) return [];
       const plan: BackfillRow["plan"] = meetingHasTicketState(client, meeting.id) ? "context" : "full";
       return [
         {

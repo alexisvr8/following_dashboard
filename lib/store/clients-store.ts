@@ -1,3 +1,4 @@
+import { isAILimitError } from "@/lib/llm/ai-limit";
 import { randomUUID } from "crypto";
 import { mkdir, readFile, rename, rm, writeFile } from "fs/promises";
 import path from "path";
@@ -1097,7 +1098,8 @@ export async function markMeetingAIFailed(clientId: string, meetingId: string, e
   await mutateClient(clientId, (client) => {
     const m = client.meetings.find((x) => x.id === meetingId);
     if (!m) return SKIP;
-    m.aiAttempts = (m.aiAttempts ?? 0) + 1;
+    // Límite de gasto de la API: no es un intento fallido de esta reunión (se reintenta cuando vuelve el acceso).
+    if (!isAILimitError(error)) m.aiAttempts = (m.aiAttempts ?? 0) + 1;
     m.aiError = error.slice(0, 200);
     return true;
   });

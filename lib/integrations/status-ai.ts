@@ -1,4 +1,5 @@
 import { aiEnabled, statusMailModel } from "@/lib/llm/postmeeting";
+import { aiPausedUntil, isAILimitError, pauseAIFor } from "@/lib/llm/ai-limit";
 import { generateStatusMail } from "@/lib/llm/status-mail";
 import { markStatusAIFailed, setStatusAI, type ClientRecord, type ClientsFile } from "@/lib/store/clients-store";
 import type { WorkSettings } from "@/lib/store/settings-store";
@@ -25,7 +26,8 @@ export async function generateStatusMails(
   /** `force` (botón Actualizar): ignora la espera y el intervalo mínimo. */
   opts: { ids?: string[]; max?: number; force?: boolean } = {},
 ): Promise<{ generated: number; failed: number }> {
-  if (!aiEnabled()) return { generated: 0, failed: 0 };
+  // En pausa por límite de gasto: la sync no insiste; "Actualizar" (force) sí prueba (el fallo no se cobra).
+  if (!aiEnabled() || (!opts.force && aiPausedUntil())) return { generated: 0, failed: 0 };
   const wanted = opts.ids && new Set(opts.ids);
   const todo = file.clients
     .filter((c) => c.status === "assigned" && (!wanted || wanted.has(c.id)))
@@ -67,8 +69,14 @@ export async function generateStatusMails(
       });
       generated++;
     } catch (error) {
-      await markStatusAIFailed(client.id, req.key, (error as Error).message || "error").catch(() => undefined);
+      const message = (error as Error).message || "error";
       failed++;
+      // Límite de gasto: no es culpa de esta entrada (no suma intento) y se pausa hasta que vuelva el acceso.
+      if (isAILimitError(message)) {
+        pauseAIFor(message);
+        break;
+      }
+      await markStatusAIFailed(client.id, req.key, message).catch(() => undefined);
     }
   }
   return { generated, failed };
