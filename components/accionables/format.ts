@@ -4,6 +4,8 @@ import type { Bucket, DueKind, PlannedItem, Priority } from "@/lib/utils/deadlin
 export const VIEW_COOKIE = "accionables_view";
 /** Densidad de las cards (cómoda / compacta), misma idea que la vista. */
 export const DENSITY_COOKIE = "accionables_density";
+/** Franja visible del tablero / lista (De esta semana / Para cerrar / Ambas), misma idea que la vista. */
+export const ROUND_COOKIE = "accionables_round";
 /** Espera antes de guardar Hecho / No corresponde (barra de progreso con "Deshacer"). */
 export const CLOSE_DELAY_MS = 5000;
 
