@@ -2,7 +2,7 @@ import { readFileSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import { describe, expect, it } from "vitest";
 import { PostMeetingSchema, type PostMeetingOutput } from "@/lib/llm/postmeeting-schema";
-import { ACTIONABLE_LINE_RE, mailFromOutput } from "@/lib/utils/postmeeting-mail";
+import { ACTIONABLE_LINE_RE, mailFromOutput, relativeDay, weeklyClosing, weeklyThanks } from "@/lib/utils/postmeeting-mail";
 import { bodyToHtml } from "@/lib/integrations/gmail";
 import { splitNotesAndTranscript } from "@/lib/utils/transcript";
 
@@ -79,7 +79,7 @@ describe("mail post-reunión", () => {
 
   it("estructura fija y secciones vacías omitidas", () => {
     const body = mailFromOutput(SAMPLE, "Salvita Alimentos", "Alexis", "11/11");
-    const order = ["Buen día equipo,", "Gracias por el espacio del miércoles", "📌 Puntos importantes:", "💬 Lo que charlamos:", "🚀 Accionables:", "De parte de Salvita Alimentos:", "✅ Ya avanzamos con:", "Si ven algo distinto", "Saludos"];
+    const order = ["Buen día equipo,", "Gracias por el espacio del miércoles", "📌 Puntos importantes:", "Lo que charlamos:", "🚀 Accionables:", "De parte de Salvita Alimentos:", "✅ Ya avanzamos con:", "Si ven algo distinto", "Saludos"];
     const idx = order.map((t) => body.indexOf(t));
     expect(idx.every((i) => i >= 0)).toBe(true);
     expect([...idx].sort((a, b) => a - b)).toEqual(idx);
@@ -92,19 +92,18 @@ describe("mail post-reunión", () => {
   it("HTML: títulos y status con color, Stand By y emoji", () => {
     const html = bodyToHtml(mailFromOutput(SAMPLE, "Salvita Alimentos", "Alexis", "11/11"));
     expect(html).toContain("<strong>📌 Puntos importantes:</strong>");
-    // Accionables: título grande + tabla segmentada por lado (Accionable · Responsable · Status).
+    // Accionables: título grande + lista por lado (título en negrita, responsable y status).
     expect(html).toContain('font-size:18px;line-height:1.3;"><strong>🚀 Accionables</strong>');
-    expect(html).toMatch(/<table[^>]*>[\s\S]*<th[^>]*>Accionable<\/th>[\s\S]*De parte de Salvita Alimentos[\s\S]*Revisar endpoints faltantes[\s\S]*<\/table>/);
+    expect(html).not.toContain("<table");
+    expect(html).toMatch(/De parte de Salvita Alimentos<\/span>:<\/strong><\/p><ul[^>]*><li[^>]*><strong>[^<]*:<\/strong>/);
+    expect(html).toContain("<strong>Revisar endpoints faltantes:</strong>");
     expect(html).toContain('<strong style="color:#5F6368">Stand By</strong> ⏳');
     expect(html).toContain('<strong style="color:#D93025">Pendiente</strong> ⏳');
-    // "Ya avanzamos con" sigue como lista, fuera de la tabla.
-    expect(html).toMatch(/<\/table>[\s\S]*Ya avanzamos con[\s\S]*<ul/);
+    expect(html).toMatch(/Ya avanzamos con[\s\S]*<ul/);
     expect(html).toContain('<strong>Status:</strong> <strong style="color:#188038">Hecho</strong> ✅ (11/11)');
-    // Un punto editado sin el formato igual entra (texto completo en la fila).
+    // Un punto editado sin el formato igual entra como viñeta.
     const edited = bodyToHtml("🚀 Accionables:\n\nDe parte de X:\n• algo libre que escribí\n\nSaludos");
-    expect(edited).toContain('<td colspan="3"');
-    expect(edited).toContain("algo libre que escribí");
-    expect(edited).toMatch(/<\/table><p[^>]*>Saludos/);
+    expect(edited).toMatch(/<li[^>]*>algo libre que escribí<\/li><\/ul><p[^>]*>Saludos/);
   });
 
   it("toma el nombre del saludo de la IA", async () => {
@@ -157,5 +156,32 @@ describe.runIf(process.env.RUN_LLM === "1" && !!process.env.LLM_DOC)("generador 
     }
     for (const l of actionLines(body)) expect(l).toMatch(ACTIONABLE_LINE_RE);
     expect(out.accionables.length).toBeGreaterThanOrEqual(5);
+  });
+});
+
+describe("apertura del mail post-reunión", () => {
+  it("el día de la IA pasa a relativo (hoy / ayer / día)", () => {
+    const intro = "Gracias por el espacio del martes. Te dejo un resumen de lo que vimos y cómo seguimos:";
+    expect(relativeDay(intro, "de hoy")).toBe("Gracias por el espacio de hoy. Te dejo un resumen de lo que vimos y cómo seguimos:");
+    expect(relativeDay(intro, "de ayer")).toContain("espacio de ayer.");
+    expect(relativeDay("Gracias por la reunión de hoy.", "del martes")).toBe("Gracias por la reunión del martes.");
+  });
+
+  it("la apertura con dos oraciones no va como título", () => {
+    const html = bodyToHtml("Buenas tardes equipo,\n\nGracias por el espacio de ayer. Te dejo un resumen de lo que vimos y cómo seguimos:");
+    expect(html).not.toContain("underline");
+    expect(html).toContain('<p style="margin:0 0 12px 0;">Gracias por el espacio de ayer.');
+  });
+});
+
+describe("apertura semanal", () => {
+  it("igual toda la semana (lun–dom), distinta la siguiente, con trato y día", () => {
+    const mon = new Date(2026, 10, 23, 9), sun = new Date(2026, 10, 29, 20), next = new Date(2026, 10, 30, 9);
+    expect(weeklyThanks(mon, "de ayer", true)).toBe(weeklyThanks(sun, "de ayer", true));
+    expect(weeklyThanks(next, "de ayer", true)).not.toBe(weeklyThanks(mon, "de ayer", true));
+    expect(weeklyThanks(mon, "de hoy", true)).toMatch(/ de hoy\. Te /);
+    expect(weeklyClosing(mon, true)).toBe(weeklyClosing(sun, true));
+    expect(weeklyClosing(next, false)).not.toBe(weeklyClosing(mon, false));
+    expect(weeklyThanks(mon, "de hoy", false)).toMatch(/ de hoy\. (Les|Para que quede todo registrado, les) /);
   });
 });

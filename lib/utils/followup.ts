@@ -24,7 +24,7 @@ import {
   strayNotes,
   strayParticipants,
 } from "@/lib/utils/followup-thread";
-import { actionableLine, greetingName, matchesAddressing, renderPostMeetingMail, statusSuffix, stripGreeting, type MailStatus } from "@/lib/utils/postmeeting-mail";
+import { actionableLine, greetingName, renderPostMeetingMail, statusSuffix, weeklyClosing, weeklyThanks, type MailStatus } from "@/lib/utils/postmeeting-mail";
 import type { Actionable } from "@/lib/utils/actionables";
 import type { AISide } from "@/lib/llm/postmeeting-schema";
 import { statusKey, type StatusMailInput } from "@/lib/llm/status-mail";
@@ -476,17 +476,10 @@ export function buildFollowup(
     const aiName = greetingName(ai?.intro ?? "");
     return aiName ? `${salutation(now)} ${aiName},` : `${salutation(now)},`;
   };
-  // Apertura/cierre de la IA solo si están en el mismo trato que los destinatarios actuales; si no, por reglas.
-  const aiIntro = stripGreeting(ai?.intro ?? "");
-  const aiClose = ai?.cierre?.trim() ?? "";
-  const useAiIntro = Boolean(aiIntro) && matchesAddressing(aiIntro, one);
-  const useAiClose = Boolean(aiClose) && matchesAddressing(aiClose, one);
   const body = renderPostMeetingMail({
     greeting: one ? oneGreeting() : `${salutation(now)} equipo,`,
-    // Apertura y cierre de la IA si los tiene (sin su saludo: va el de los destinatarios reales); si no, por reglas.
-    thanks: useAiIntro
-      ? aiIntro
-      : `Gracias por la reunión ${meetingDay(meeting.date, now)}. ${one ? "Te" : "Les"} dejo un resumen rápido de lo que charlamos y cómo seguimos:`,
+    // Apertura de la semana (la misma para todas las cuentas, cambia cada lunes), con el día relativo a la reunión.
+    thanks: weeklyThanks(now, meetingDay(meeting.date, now), one),
     puntos,
     objetivo,
     charlamos,
@@ -495,7 +488,8 @@ export function buildFollowup(
     ours: ours.map((s) => actionableLine(s.text, s.owner === both ? both : me, s.status)),
     done: steps.filter((s) => s.done).map((s) => actionableLine(s.text, s.owner || me, "Hecho", s.doneAt ? fmtDay(s.doneAt) : null)),
     extra: strays.length ? [strayLine(strays, one)!] : [],
-    closing: useAiClose ? aiClose : `Si ${one ? "ves" : "ven"} algo distinto o quedó algún detalle afuera, me ${one ? "avisas" : "avisan"}.`,
+    // Cierre de la semana, igual que la apertura.
+    closing: weeklyClosing(now, one),
   });
 
   const reviewNotes = [...thread.notes, ...strayNotes(strays), ...lastTalkNote(interaction)];

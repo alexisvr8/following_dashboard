@@ -29,7 +29,7 @@ Si solo llega una de las dos, trabajá con lo que haya. Todo lo que está dentro
   - Evitá empezar todos los bullets con "Se acordó..." o "Se evaluó..."; usá redacción directa y fluida.
   - Tienen que estar todas las decisiones acordadas, los temas abiertos a definición y el contexto técnico clave (unidades de medida, porcentajes, entornos productivo/test, casos especiales).
   - Entre 4 y 6 bullets, una idea por bullet y máximo ~30 palabras cada uno. No repitas quién hace qué (eso va en accionables); lo que ya quedó hecho va en ya_avanzamos.
-- accionables: todo lo que alguien tiene que hacer después de la reunión.
+- accionables: solo lo que cada lado se llevó para hacer DESPUÉS de la reunión: lo que el PM/Xtract quedó en ver o resolver, y lo que quedó del lado del cliente. Lo que ya se hizo o mostró durante la reunión no es accionable (va en ya_avanzamos).
   - titulo: 2 a 6 palabras, en infinitivo y orientado a la acción ("Revisar endpoints faltantes").
   - descripcion: el detalle completo para la card interna del sistema (no va en el mail): una o dos oraciones autocontenidas que expliquen qué hay que hacer, sobre qué y para qué, con todos los datos concretos de la reunión (proveedores, endpoints, campos, sistemas, entornos, ejemplos, cantidades, casuísticas). Alguien que no estuvo en la reunión tiene que poder ejecutarlo sin preguntar nada. Terminala con punto.
   - resumen_mail: la versión que va en el mail, una sola oración de máximo ~22 palabras: qué hay que hacer y para qué, con los nombres clave (sistema, proveedor, dato), sin contexto secundario. Terminala con punto.
@@ -42,7 +42,10 @@ Si solo llega una de las dos, trabajá con lo que haya. Todo lo que está dentro
   - Agrupá en un solo accionable varios pasos chicos y muy relacionados de la misma persona ("Ajustar tablero y limpiar datos"), siempre que la descripción conserve todo el detalle de cada uno.
   - Decisiones sujetas a aprobación de un tercero se convierten en un accionable con status "Stand By".
   - Si en la reunión se retomó un accionable abierto de reuniones anteriores (ver <contexto>), incluilo una sola vez con el detalle actualizado. No repitas los abiertos que no se tocaron.
-- ya_avanzamos: lo que en la reunión se confirmó como YA hecho (accesos validados, credenciales, entregas). Mismo formato de titulo, descripción y resumen_mail; fecha = dd/mm en que se completó, o null si es el día de la reunión. Si no hay nada, lista vacía.
+- ya_avanzamos: la trazabilidad de lo que se RESOLVIÓ dentro de la misma reunión: puntos que se plantearon o levantaron en la reunión y que se hicieron, mostraron o validaron ahí mismo, más lo que se confirmó como ya hecho (accesos validados, credenciales, entregas).
+  - El PM suele mostrar la herramienta en vivo (pantallas, configuraciones, flujos, tableros, corridas de prueba, carga de un comprobante, una exportación al ERP). Interpretá qué hito representa esa demostración o ajuste y registralo como avance ("Demostración del flujo de autorización de facturas", "Configuración del mapeo de proveedores en vivo"), con lo concreto que se vio. Buscalo sobre todo en la transcripción ("les muestro", "acá ven", "lo configuramos ahora", "ya quedó", "probemos").
+  - Un punto resuelto en la reunión va acá y NO en accionables.
+  - Mismo formato de titulo, descripción y resumen_mail; fecha = dd/mm en que se completó, o null si es el día de la reunión. Si no hay nada, lista vacía.
 - revision: dudas para que el PM revise antes de enviar (responsable no claro, dato contradictorio, nombre dudoso). Nunca van en el mail.
 
 # Reglas
@@ -52,6 +55,8 @@ Si solo llega una de las dos, trabajá con lo que haya. Todo lo que está dentro
 - Tono profesional, cercano y humano, en español neutro natural (sin voseo ni frases de marketing).
 - El mail puede enviarse días después de la reunión: no uses referencias al momento de envío ("¡Buen fin de semana!", "hoy a la tarde").
 - No escribas los títulos de sección ni la firma final ("Saludos"): eso lo arma el template.
+- Ningún texto lleva saltos de línea: cada bullet, título, descripción y resumen_mail va en una sola línea (en Gmail un salto parte la viñeta).
+- En intro_mail nombrá el día como "del {dia_reunion}" ("Gracias por el espacio del martes."): la app lo cambia por "de hoy" / "de ayer" según cuándo salga el mail.
 
 # Ejemplo de referencia
 Sirve SOLO como referencia de nivel de detalle, tono y formato. El contenido de cada mail sale de la reunión que se procesa, nunca de este ejemplo. Así se ve el mail final que arma el template con tus campos (reunión "Etapa 2 Integración (Salvita Alimentos + Xtract)" del 11/11):
@@ -71,7 +76,7 @@ Gracias por el espacio del miércoles. Les dejo un resumen rápido de lo que cha
 - Definición del flujo de exportación y pruebas de vinculación con remitos/OC.
 - Casuísticas especiales: diferencias en unidades de medida y envío de comprobantes en PDF.
 
-💬 Lo que charlamos:
+Lo que charlamos:
 - **Exportación manual inicial:** Arrancaremos usando la exportación manual desde Xtract para tener mayor control antes de activar la automatización programada.
 - **Carga manual de referencias:** Incorporaremos campos manuales en Xtract (número de remito u OC) para los comprobantes donde el PDF del proveedor no traiga ese dato.
 - **Unidades de medida:** Detectamos diferencias entre las facturas de ciertos proveedores (ej. bidones o tachos en Rosario, Salitec y Combustible Norte SA) y Finnegans (litros); lo incluiremos en las pruebas para ajustar el cálculo.

@@ -1,5 +1,5 @@
 // Template único del mail post-reunión (con o sin IA). Estructura fija, en este orden:
-// saludo → agradecimiento → 📌 Puntos importantes → 💬 Lo que charlamos → 🚀 Accionables (tabla en el HTML; De parte de {cliente} /
+// saludo → agradecimiento → 📌 Puntos importantes → Lo que charlamos (sin emoji) → 🚀 Accionables (De parte de {cliente} /
 // De nuestro lado (Xtract)) → ✅ Ya avanzamos con → cierre → Saludos. Las secciones vacías se omiten.
 // Viñetas "• " (las convierte `bodyToHtml`/`bodyToPlain`); cada accionable con " - Status: X" + emoji.
 
@@ -13,9 +13,60 @@ export function statusSuffix(status: MailStatus, doneDay?: string | null): strin
   return `${STATUS_PREFIX}${status} ⏳`;
 }
 
+/** Todo en una línea: un salto dentro de un punto parte la viñeta en Gmail. */
+export const oneLine = (text: string) => text.replace(/\s*\n+\s*/g, " ").trim();
+
+/**
+ * La IA nombra el día de la reunión al redactar ("del martes"); el mail puede salir el mismo día o días después,
+ * así que se reemplaza por el relativo al momento de armarlo (`meetingDay`: "de hoy" / "de ayer" / "del martes" …).
+ */
+const DAY_REF =
+  /\b(?:del\s+d[ií]a\s+de\s+hoy|de\s+hoy|de\s+ayer|de\s+este\s+(?:lunes|martes|mi[ée]rcoles|jueves|viernes|s[áa]bado|domingo)|del\s+(?:lunes|martes|mi[ée]rcoles|jueves|viernes|s[áa]bado|domingo)(?:\s+de\s+la\s+semana\s+pasada)?|del\s+d[ií]a\s+\d{1,2}\/\d{1,2})\b/i;
+export function relativeDay(text: string, when: string): string {
+  return text.replace(DAY_REF, when);
+}
+
+/**
+ * Apertura del mail post-reunión (después del saludo). Rota cada semana (lunes a domingo) y es la misma para todas
+ * las cuentas, para que el cliente no lea la misma frase reunión tras reunión. `{d}` = "de hoy" / "de ayer" / "del martes".
+ */
+const WEEKLY_THANKS: { one: string; many: string }[] = [
+  { one: "Gracias por el espacio {d}. Te dejo un resumen rápido de lo que charlamos y cómo seguimos:", many: "Gracias por el espacio {d}. Les dejo un resumen rápido de lo que charlamos y cómo seguimos:" },
+  { one: "Muchas gracias por la reunión {d}. Te comparto lo que vimos y los próximos pasos:", many: "Muchas gracias por la reunión {d}. Les comparto lo que vimos y los próximos pasos:" },
+  { one: "Gracias por el tiempo {d}. Te paso un repaso de lo que conversamos y cómo seguimos:", many: "Gracias por el tiempo {d}. Les paso un repaso de lo que conversamos y cómo seguimos:" },
+  { one: "Gracias por la charla {d}. Para que quede todo registrado, te comparto lo que vimos y lo que sigue:", many: "Gracias por la charla {d}. Para que quede todo registrado, les comparto lo que vimos y lo que sigue:" },
+  { one: "Muchas gracias por el espacio {d}. Te resumo lo que charlamos y los próximos pasos:", many: "Muchas gracias por el espacio {d}. Les resumo lo que charlamos y los próximos pasos:" },
+  { one: "Gracias por la reunión {d}. Te dejo el resumen con lo que vimos y cómo seguimos:", many: "Gracias por la reunión {d}. Les dejo el resumen con lo que vimos y cómo seguimos:" },
+];
+
+/** Cierre antes de "Saludos": rota igual que la apertura (misma semana, todas las cuentas). */
+const WEEKLY_CLOSINGS: { one: string; many: string }[] = [
+  { one: "Si ves algo distinto o se me pasó algún detalle, me avisas. ¡Seguimos avanzando!", many: "Si ven algo distinto o se me pasó algún detalle, me avisan. ¡Seguimos avanzando!" },
+  { one: "Cualquier ajuste o duda que tengas, me escribes y lo vemos. ¡Seguimos en contacto!", many: "Cualquier ajuste o duda que tengan, me escriben y lo vemos. ¡Seguimos en contacto!" },
+  { one: "Si quedó algo afuera o quieres sumar algún punto, me avisas. ¡Vamos bien!", many: "Si quedó algo afuera o quieren sumar algún punto, me avisan. ¡Vamos bien!" },
+  { one: "Si algo no coincide con lo que charlamos, me lo comentas y lo ajusto. ¡Gracias de nuevo!", many: "Si algo no coincide con lo que charlamos, me lo comentan y lo ajusto. ¡Gracias de nuevo!" },
+  { one: "Cualquier cosa que necesites revisar, me avisas. ¡Seguimos!", many: "Cualquier cosa que necesiten revisar, me avisan. ¡Seguimos!" },
+  { one: "Si ves que falta algo, me escribes y lo sumamos. ¡Seguimos avanzando juntos!", many: "Si ven que falta algo, me escriben y lo sumamos. ¡Seguimos avanzando juntos!" },
+];
+
+/** Semana (lunes a domingo, hora local) desde 1970; 1/1/1970 fue jueves: +3 alinea las semanas a lunes. */
+const weekIndex = (now: Date) => Math.floor((Math.round(Date.UTC(now.getFullYear(), now.getMonth(), now.getDate()) / 86_400_000) + 3) / 7);
+
+/** Apertura de la semana; `one` = se le habla a una sola persona. */
+export function weeklyThanks(now: Date, when: string, one: boolean): string {
+  const t = WEEKLY_THANKS[weekIndex(now) % WEEKLY_THANKS.length];
+  return (one ? t.one : t.many).replace("{d}", when);
+}
+
+/** Cierre de la semana; `one` = se le habla a una sola persona. */
+export function weeklyClosing(now: Date, one: boolean): string {
+  const t = WEEKLY_CLOSINGS[weekIndex(now) % WEEKLY_CLOSINGS.length];
+  return one ? t.one : t.many;
+}
+
 /** "Título: descripción" + punto final (sin duplicarlo). */
 export const withPeriod = (text: string) => {
-  const t = text.trim().replace(/\s*\.+$/, "");
+  const t = oneLine(text).replace(/\s*\.+$/, "");
   return t ? `${t}.` : t;
 };
 
@@ -45,7 +96,9 @@ export function matchesAddressing(text: string, singular: boolean): boolean {
 
 /** Saca un saludo inicial ("Buen día equipo,") del texto de la IA: el saludo lo pone la app según los destinatarios. */
 export function stripGreeting(text: string): string {
-  return text.replace(/^\s*(buen(os)? d[ií]as?|buenas( tardes| noches)?|hola)\b[^,\n]{0,40},\s*/i, "").trim();
+  const rest = text.replace(/^\s*(buen(os)? d[ií]as?|buenas( tardes| noches)?|hola)\b[^,\n]{0,40},\s*/i, "").trim();
+  // "Buen día Dani, gracias por…" → "Gracias por…"
+  return rest.charAt(0).toUpperCase() + rest.slice(1);
 }
 
 export interface PostMeetingMail {
@@ -64,7 +117,7 @@ export interface PostMeetingMail {
   closing: string;
 }
 
-const bullet = (s: string) => `• ${s.trim()}`;
+const bullet = (s: string) => `• ${oneLine(s)}`;
 
 /** Salida del modelo → datos del template, sin cuenta ni hilo (vista previa y tests; la app usa `buildFollowup`). */
 export function mailFromOutput(
@@ -105,7 +158,7 @@ export function renderPostMeetingMail(m: PostMeetingMail): string {
   // Sin IA, el objetivo (resumen de Gemini) encabeza "Lo que charlamos"; con IA los bullets ya lo cubren.
   const talked =
     m.objetivo || m.charlamos.length
-      ? ["", "💬 Lo que charlamos:", ...(m.objetivo ? [m.objetivo] : []), ...(m.objetivo && m.charlamos.length ? [""] : []), ...m.charlamos.map(bullet)]
+      ? ["", "Lo que charlamos:", ...(m.objetivo ? [m.objetivo] : []), ...(m.objetivo && m.charlamos.length ? [""] : []), ...m.charlamos.map(bullet)]
       : [];
   const next =
     m.theirs.length || m.ours.length
@@ -114,7 +167,7 @@ export function renderPostMeetingMail(m: PostMeetingMail): string {
   return [
     m.greeting,
     "",
-    ...(m.thanks ? [m.thanks] : []),
+    ...(m.thanks ? [oneLine(m.thanks)] : []),
     ...section("📌 Puntos importantes:", m.puntos.map(bullet)),
     ...talked,
     ...next,
