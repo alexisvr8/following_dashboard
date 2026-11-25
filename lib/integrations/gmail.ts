@@ -103,7 +103,13 @@ const NUMBERED_RE = /^\s*\d{1,2}[.)]\s+(.*)$/;
  * minúscula ("Para mantener ese cronograma, necesitamos…:") es texto que presenta una lista, no un título.
  */
 const isHeading = (line: string) =>
-  line.length <= 90 && /:\s*$/.test(line) && !BULLET_RE.test(line) && !NUMBERED_RE.test(line) && !/,\s+\p{Ll}/u.test(line);
+  line.length <= 90 &&
+  /:\s*$/.test(line) &&
+  !BULLET_RE.test(line) &&
+  !NUMBERED_RE.test(line) &&
+  !/,\s+\p{Ll}/u.test(line) &&
+  // Dos oraciones ("Gracias por el espacio del martes. Te dejo un resumen…:") = apertura del mail, no título.
+  !/[.!?]\s+\S/.test(line);
 const OL_STYLE = "margin:0 0 12px 0;padding-left:22px;";
 
 /** Texto escapado con "**negrita**" → <strong> y "*cursiva*" → <em>. */
@@ -126,35 +132,29 @@ function formatLine(line: string): string {
 /** Títulos que van solo en negrita; el resto ("Accionables de…", "Ya avanzamos con") en negrita y subrayado. */
 const PLAIN_HEADING = /^(\p{Extended_Pictographic}\uFE0F?\s*)?(Puntos importantes|Lo que charlamos|Próximos pasos|Accionables|Ya avanzamos con)$/iu;
 
-// Sección "🚀 Accionables:" del mail post-reunión → tabla segmentada (Accionable · Responsable · Status), una franja por
-// lado ("De parte de X:" / "De nuestro lado (Xtract):"). El texto del borrador sigue siendo una lista (editor y texto plano).
+// Sección "🚀 Accionables:" del mail post-reunión → lista por lado (título en negrita, responsable y status con color),
+// subtítulos "De parte de X:" / "De nuestro lado (Xtract):".
 const ACTIONABLES_HEADING = /^(\p{Extended_Pictographic}\uFE0F?\s*)?Accionables$/iu;
 const BIG_H_STYLE = "margin:24px 0 10px 0;font-size:18px;line-height:1.3;";
-const TABLE_STYLE = "border-collapse:collapse;width:100%;max-width:680px;border:1px solid #e0e0e0;margin:0 0 16px 0;";
-const TH_STYLE = "padding:8px 10px;text-align:left;font-size:12px;color:#5f6368;border-bottom:2px solid #c0c0c0;";
-const TD_STYLE = "padding:8px 10px;border-bottom:1px solid #e0e0e0;vertical-align:top;font-size:13px;line-height:1.45;";
-const SEG_STYLE = "padding:7px 10px;font-weight:bold;font-size:13px;border-bottom:1px solid #d0d0d0;";
 /** "Título: descripción. (Responsable) - Status: X ⏳ (dd/mm)" → partes; null si se editó y ya no tiene ese formato. */
 const ROW_RE = /^([^:]{2,80}):\s+(.*?)\s*\(([^()]+)\)\s*[—-]\s*Status:\s*(Hecho|En curso|Pendiente|Stand By)(\s*[⏳✅]️?)?(\s*\([^)]*\))?\s*$/iu;
 
-function actionablesTable(segments: { label: string; rows: string[] }[]): string {
-  const body = segments
+/** Lista (no tabla: en Gmail borrar un punto de una tabla deja la fila vacía). Título en negrita + detalle + (Responsable) - Status. */
+function actionablesList(segments: { label: string; rows: string[] }[]): string {
+  return segments
     .filter((seg) => seg.rows.length)
     .map((seg) => {
-      const bg = /xtract/i.test(seg.label) ? "#f1f3f4" : "#e8f0fe";
-      const rows = seg.rows.map((text) => {
+      const items = seg.rows.map((text) => {
         const m = text.match(ROW_RE);
-        if (!m) return `<tr><td colspan="3" style="${TD_STYLE}">${inline(text)}</td></tr>`;
+        if (!m) return `<li style="${LI_STYLE}">${formatLine(text)}</li>`;
         const key = m[4].toLowerCase();
-        const status = `<strong style="color:${STATUS_COLOR[key]}">${STATUS_LABEL[key]}</strong>${m[5] ? ` ${m[5].trim()}` : ""}${m[6] ? ` ${escapeHtml(m[6].trim())}` : ""}`;
-        return `<tr><td style="${TD_STYLE}"><strong>${inline(m[1].trim())}</strong><br><span style="color:#5f6368">${inline(m[2].trim())}</span></td><td style="${TD_STYLE}white-space:nowrap">${escapeHtml(m[3].trim())}</td><td style="${TD_STYLE}white-space:nowrap">${status}</td></tr>`;
+        const status = `<strong>Status:</strong> <strong style="color:${STATUS_COLOR[key]}">${STATUS_LABEL[key]}</strong>${m[5] ? ` ${m[5].trim()}` : ""}${m[6] ? ` ${escapeHtml(m[6].trim())}` : ""}`;
+        return `<li style="${LI_STYLE}"><strong>${inline(m[1].trim())}:</strong> ${inline(m[2].trim())} (${escapeHtml(m[3].trim())}) - ${status}</li>`;
       });
-      const label = seg.label ? `<tr><td colspan="3" style="${SEG_STYLE}background:${bg}">${escapeHtml(seg.label)}</td></tr>` : "";
-      return label + rows.join("");
+      const label = seg.label ? `<p style="${SUBH_STYLE}"><strong><span style="text-decoration:underline">${escapeHtml(seg.label)}</span>:</strong></p>` : "";
+      return `${label}<ul style="${UL_STYLE}">${items.join("")}</ul>`;
     })
     .join("");
-  if (!body) return "";
-  return `<table cellpadding="0" cellspacing="0" style="${TABLE_STYLE}"><tr><th style="${TH_STYLE}">Accionable</th><th style="${TH_STYLE}">Responsable</th><th style="${TH_STYLE}">Status</th></tr>${body}</table>`;
 }
 
 /**
@@ -183,7 +183,7 @@ export function bodyToHtml(body: string): string {
   // Dentro de "🚀 Accionables:": franjas por lado hasta el próximo título con emoji o un párrafo.
   let table: { label: string; rows: string[] }[] | null = null;
   const closeTable = () => {
-    if (table) out.push(actionablesTable(table));
+    if (table) out.push(actionablesList(table));
     table = null;
   };
   for (const raw of body.replace(/\r/g, "").split("\n")) {

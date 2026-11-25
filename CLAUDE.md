@@ -337,7 +337,7 @@ redacción del mail de seguimiento, `statusMailModel`) en `.env.local`; sin clav
 `lib/llm/postmeeting.ts` (`generatePostMeeting`, `messages.parse` + `zodOutputFormat`) con prompt único + ejemplo de Salvita
 en `postmeeting-prompt.ts` y JSON fijo en `postmeeting-schema.ts` (objetivo, puntos, charlamos, accionables {titulo,
 descripcion, responsable, empresa cliente|xtract|ambas, status Pendiente|En curso|Stand By, fecha, requiere_revision},
-ya_avanzamos, revision; `descripcion` = detalle completo para la card, `resumen_mail` = versión corta ≤~20 palabras que va al mail
+ya_avanzamos = lo resuelto, mostrado o configurado en vivo dentro de la misma reunión [demos de la herramienta → hito como avance], accionables = solo lo que cada lado se llevó para después, textos sin saltos de línea [`oneLine` en el template], revision; `descripcion` = detalle completo para la card, `resumen_mail` = versión corta ≤~20 palabras que va al mail
 vía `ai.steps[i].mail`, salvo que el accionable se haya editado). Vista previa sin la app: `pnpm preview:postmeeting -- --json|--doc …`
 (`scripts/preview-postmeeting.ts`). `lib/integrations/meeting-ai.ts` `generateMeetingAI` (en `runSync`, tras transcripciones): reuniones
 ≤7 días y desde `AI_SINCE` (env; default 13/11/2026 13:45) de asignados con Doc, sin `meeting.ai`, **sin minuta ya enviada** (`minutaAlreadySent` =
@@ -348,11 +348,9 @@ o 1 h (`pauseAIFor`/`aiPausedUntil`, en memoria del proceso; corta la corrida; e
 correcciones, ERP y abiertos previos. `setMeetingAI` guarda `meeting.ai` (status/empresa por índice en `steps`) y **reemplaza
 `nextSteps`** por `[Responsable] Título: descripción` (accionables + ya avanzado, éste tildado con su fecha; originales en
 `ai.geminiNextSteps`; fecha acordada → `actionableDue`): mail y módulo de accionables comparten la lista.
-Template único `lib/utils/postmeeting-mail.ts` (`renderPostMeetingMail`: saludo → `intro_mail` de la IA sin su saludo (`stripGreeting`; el
-saludo lo pone la app según destinatarios) → 📌 Puntos importantes → 💬 Lo que charlamos (`**Tema:** …`; sin IA encabeza el resumen de Gemini) →
-🚀 Accionables (De parte de {cliente} / De nuestro lado (Xtract); en el HTML `bodyToHtml` la dibuja como tabla segmentada
-Accionable · Responsable · Status con título de 18px, `actionablesTable`; el texto del borrador y el plano siguen siendo lista; un punto editado
-sin el formato va entero en la fila) → ✅ Ya avanzamos con → `cierre_mail` → Saludos; `actionableLine` =
+Apertura y cierre del mail post-reunión = frases de la app que rotan por semana (lun–dom), iguales para todas las cuentas (`weeklyThanks`/`weeklyClosing`, `WEEKLY_THANKS`/`WEEKLY_CLOSINGS` en postmeeting-mail.ts; tú/ustedes + día relativo), no las de la IA (`intro`/`cierre` quedan guardados; el saludo de la IA solo aporta el nombre). Template único `lib/utils/postmeeting-mail.ts` (`renderPostMeetingMail`: saludo → `intro_mail` de la IA sin su saludo (`stripGreeting`, primera letra en mayúscula; el día que nombra la IA pasa a relativo al armar el mail con `relativeDay` + `meetingDay`: de hoy / de ayer / del martes; dos oraciones terminadas en ":" no son título en `isHeading`; el
+saludo lo pone la app según destinatarios) → 📌 Puntos importantes → Lo que charlamos (sin emoji, `**Tema:** …`; sin IA encabeza el resumen de Gemini) →
+🚀 Accionables (De parte de {cliente} / De nuestro lado (Xtract); en el HTML `bodyToHtml` la dibuja como lista por lado con título de 18px, `actionablesList`: título del punto en negrita + detalle + (Responsable) - Status con color; no tabla: al borrar un punto en Gmail quedaba la fila vacía) → ✅ Ya avanzamos con → `cierre_mail` → Saludos; `actionableLine` =
 `• Título: Descripción. (Responsable) - Status: Pendiente ⏳|En curso ⏳|Stand By ⏳|Hecho ✅ (dd/mm)`), usado por `buildFollowup` con IA o por reglas
 (`meeting.ai.intro/cierre`; reuniones procesadas antes van con apertura/cierre por reglas; un solo destinatario sin nombre conocido toma el de
 `greetingName` del saludo de la IA). Trato: `PostMeetingInput.addressing` = `followupRecipients` (quienes hablaron del lado cliente): 1 → tú,
