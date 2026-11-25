@@ -10,11 +10,11 @@ import { classifyMail, stripQuoted } from "@/lib/utils/mail-classify";
 // dirección. Mismos filtros que la sync: sin minutas, invitaciones, auto-respuestas, borradores ni automatizaciones.
 
 const FREEMAIL = /^(gmail|googlemail|hotmail|outlook|live|msn|yahoo|icloud|proton|protonmail)\./;
-const MAX_MESSAGES = 150;
-const MAX_THREADS = 25;
-const MAX_CHARS_PER_MESSAGE = 3500;
+const DEFAULT_MAX_MESSAGES = 150;
+const DEFAULT_MAX_THREADS = 25;
+export const MAX_CHARS_PER_MESSAGE = 3500;
 /** Tope total de texto de mails que se manda al modelo (~25k tokens). */
-const MAX_TOTAL_CHARS = 100_000;
+const DEFAULT_MAX_TOTAL_CHARS = 100_000;
 
 export interface AccountThreadsResult {
   threads: AnalysisThread[];
@@ -29,7 +29,12 @@ export async function collectAccountThreads(
   ownerEmail: string | null,
   shared: Set<string>,
   sinceMs: number,
+  /** Topes (la auditoría única lee más que el análisis semanal). */
+  limits: { maxThreads?: number; maxMessages?: number; maxTotalChars?: number } = {},
 ): Promise<AccountThreadsResult> {
+  const MAX_THREADS = limits.maxThreads ?? DEFAULT_MAX_THREADS;
+  const MAX_MESSAGES = limits.maxMessages ?? DEFAULT_MAX_MESSAGES;
+  const MAX_TOTAL_CHARS = limits.maxTotalChars ?? DEFAULT_MAX_TOTAL_CHARS;
   const { query, matches } = clientTargets(client, ownerEmail, shared);
   if (!query.length) return { threads: [], messages: 0, truncated: false };
   const or = query.join(" OR ");
@@ -106,7 +111,7 @@ export async function collectAccountThreads(
     // reportes de terceros que solo copian al cliente).
     const ours = (e: string) => e === me || (!!ownDomain && !FREEMAIL.test(ownDomain) && e.endsWith(`@${ownDomain}`));
     if (!messages.some((m) => (m.who === "cliente" && (matches(m.from) || m.to.some(ours))) || m.who === "yo")) continue;
-    threads.push({ subject: subject || "(sin asunto)", messages, last: messages.at(-1)!.date });
+    threads.push({ id, subject: subject || "(sin asunto)", messages, last: messages.at(-1)!.date });
   }
 
   // 3) Tope de texto: entran primero los hilos con movimiento más reciente.
@@ -121,7 +126,7 @@ export async function collectAccountThreads(
       continue;
     }
     total += size;
-    out.push({ subject: t.subject, messages: t.messages });
+    out.push({ id: t.id, subject: t.subject, messages: t.messages });
   }
   return { threads: out, messages: out.reduce((n, t) => n + t.messages.length, 0), truncated };
 }

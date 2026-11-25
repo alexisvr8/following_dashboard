@@ -376,6 +376,17 @@ API `GET|POST /api/analysis {ids?, force?}`. La prioridad sugerida por la IA es 
 prompt calibrado: ≤1 de cada 4 en "alta"). Pestaña **"Análisis IA"** en `/cuentas/[id]` (`AnalysisPanel`, `analysisView`: estado, resumen, próximo
 mail, posibles resueltos con botón Hecho, plan con "Nuevo", riesgos, conversaciones, Reanalizar; aviso si hubo reunión/mail del cliente
 después). Chip "IA" (`AiChip`, `PlannedItem.aiAdded/evidence`) en cards de `/accionables`.
+**Auditoría única de cuentas** (`pnpm audit:accounts -- prepare|submit|collect|report`, `scripts/audit-accounts.ts`; corrida en `.data/audit/<fecha-hora>/`):
+Opus 5.5 (`ANTHROPIC_MODEL_AUDIT`, esfuerzo `AUDIT_EFFORT` = high) por **Batch API** (−50%, uso `audit` con `batch: true` en `estimateCost`). `prepare` (sin costo: lee y cuenta tokens con
+`countTokens`) → `submit [--max-usd]` → `collect [--wait]` (idempotente) → `report` (HTML). Entrada por cuenta (`lib/integrations/account-audit.ts` +
+`lib/utils/account-audit.ts`): últimas 3 reuniones ≤60 días con notas + transcripción completa del Doc, hilos del período (`collectAccountThreads` con topes
+ampliados, 30–60 días), **hilos de partners** (`partnerTargets`: dominios externos de mails/reuniones que no son de ninguna cuenta + freemail en 2+ cuentas;
+entran si nombran la cuenta, `partnerThreadsFor`), tablero (`auditBoard`, refs A1…) y cerrados; regla del PM `OWN_DEV_RULES` (Finnegans y archivo de
+Algoritmo los desarrolla él). Salida `AccountAuditSchema` (veredicto por ref vigente/hecho/duplicado/no_corresponde/dudoso con evidencia y confianza, lado,
+reescritura, fecha acordada, faltantes, quién desarrolla, contactos, preguntas) → `client.audit` (`setAccountAudit`). **Nada se aplica solo**: modal
+**"Auditoría"** en el menú Revisar de `/accionables` (`AuditDialog`, `pendingAudit`/`auditView`: propuestas recalculadas contra el estado actual, se
+caen si el accionable cambió o se cerró) → `PATCH /api/clients/[id] {audit: {key, action: apply|dismiss, title?}}` (`resolveAudit`: tildado con fecha de
+la evidencia, quitado, `actionableSide`, edición, `actionableDue`, propio nuevo `custom-audit-*`, `profile.developer`/`erp`); "Aplicar confianza alta" por cuenta.
 **Mail de seguimiento con IA** (`lib/llm/status-mail.ts`, `lib/integrations/status-ai.ts` `generateStatusMails`): `buildStatusUpdate` arma
 secciones con refs (H/C/M/N/Q/S/J/O); las reglas deciden qué va y el estado, la IA redacta apertura, cada punto y cierre (`client.statusAI`,
 válido mientras `statusKey` de la entrada coincida; si no, vuelve a reglas). Corre en `runSync` (máx. 3/corrida) y en "Actualizar"

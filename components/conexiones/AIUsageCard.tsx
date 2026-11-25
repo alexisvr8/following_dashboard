@@ -14,6 +14,7 @@ const KIND_LABEL: Record<string, { name: string; hint: string }> = {
   reply: { name: "Respuesta al cliente", hint: "Al abrir Responder en el Dashboard · solo si cambió · modelo barato" },
   reminder: { name: "Pedir status", hint: "Al abrir Pedir status · solo si cambió · modelo barato" },
   weekly: { name: "Mail semanal", hint: "Lunes 08:30 · 1 por cuenta con pendientes · modelo barato" },
+  audit: { name: "Auditoría de cuentas", hint: "Única, a mano (pnpm audit:accounts) · Opus por Batch API (−50%)" },
 };
 
 const TRIGGER_LABEL: Record<string, string> = {

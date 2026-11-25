@@ -1,4 +1,7 @@
+import { auditView } from "@/lib/utils/account-audit";
 import {
+  getClient,
+  resolveAudit,
   changeActionable,
   closeClient,
   reopenClient,
@@ -34,6 +37,7 @@ export async function PATCH(
     plan?: { ticketId?: unknown; due?: unknown; estimateMinutes?: unknown; side?: unknown };
     suggestion?: { suggestionId?: unknown; action?: unknown; title?: unknown; due?: unknown };
     rewrite?: { ref?: unknown; action?: unknown; title?: unknown };
+    audit?: { key?: unknown; action?: unknown; title?: unknown };
     weeklyReview?: { id?: unknown; action?: unknown; title?: unknown; due?: unknown; reason?: unknown };
     followupThread?: { threadId?: unknown; subject?: unknown } | null;
     close?: { note?: unknown; handedTo?: unknown };
@@ -68,6 +72,27 @@ export async function PATCH(
     );
     if (!client) return Response.json({ error: "not_found" }, { status: 404 });
     return Response.json({ id: client.id, followupThread: client.profile?.followupThread ?? null });
+  }
+
+  // Auditoría única (modal "Auditoría"): aplicar una propuesta (tildar, quitar, lado, texto, fecha, nuevo, perfil) o
+  // descartarla. La propuesta se recalcula acá contra el estado actual (`auditView`): el cliente solo manda la clave.
+  if (body.audit && typeof body.audit === "object") {
+    const { key, action, title } = body.audit;
+    if (typeof key !== "string" || (action !== "apply" && action !== "dismiss")) {
+      return Response.json({ error: "invalid_audit" }, { status: 400 });
+    }
+    const clientId = decodeURIComponent(id);
+    const [{ client: current }, settings] = await Promise.all([getClient(clientId), getSettings()]);
+    const proposal = current ? auditView(current, settings)?.proposals.find((p) => p.key === key) : undefined;
+    if (!current || !proposal) return Response.json({ error: "not_found" }, { status: 404 });
+    const override = typeof title === "string" && title.trim() && (proposal.kind === "edit" || proposal.kind === "add") ? title.trim() : undefined;
+    const client = await resolveAudit(
+      clientId,
+      { key, kind: proposal.kind, ticketId: proposal.ticketId, ...proposal.apply, ...(override && { title: override }) },
+      action,
+    );
+    if (!client) return Response.json({ error: "not_found" }, { status: 404 });
+    return Response.json({ id: client.id });
   }
 
   // Reescritura del análisis semanal (modal "Mejoras IA"): aceptar = edición del texto; descartar = ocultar.

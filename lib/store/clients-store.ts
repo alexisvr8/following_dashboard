@@ -10,6 +10,7 @@ import type { Correction } from "@/lib/store/settings-store";
 import { answeredRequests, collectMailItems, mailTicketId, type MailItem } from "@/lib/utils/mail-items";
 import type { AISide, AIStatus, PostMeetingOutput } from "@/lib/llm/postmeeting-schema";
 import type { AccountAnalysisOutput, Level } from "@/lib/llm/account-analysis-schema";
+import type { AccountAuditOutput } from "@/lib/llm/account-audit-schema";
 import { keywordSimilarity } from "@/lib/utils/mail-classify";
 import { accountActionables, stepTicketId } from "@/lib/utils/actionables";
 
@@ -146,6 +147,22 @@ export interface AccountAnalysis {
   rewritesResolved?: Record<string, "accepted" | "dismissed">;
 }
 
+/** Auditoría única con IA (`scripts/audit-accounts.ts`): propuestas que el PM acepta o descarta en /accionables. */
+export interface AccountAudit {
+  generatedAt: string;
+  model: string;
+  /** Ref del prompt ("A3") → id del ticket. */
+  refs: Record<string, string>;
+  /** Texto de cada ref al auditar: si cambió, la propuesta deja de ofrecerse. */
+  refTexts: Record<string, string>;
+  output: AccountAuditOutput;
+  /** Propuestas resueltas (clave `AuditProposal.key`). */
+  resolved?: Record<string, { action: "applied" | "dismissed"; at: string }>;
+  meetingsRead: number;
+  threadsRead: number;
+  partnerThreadsRead: number;
+}
+
 export interface ClientRecord {
   id: string; // dominio, o email si es freemail
   domain: string;
@@ -187,6 +204,8 @@ export interface ClientRecord {
   followups?: Record<string, FollowupDraft>;
   /** Último análisis semanal con IA. */
   analysis?: AccountAnalysis;
+  /** Auditoría única con IA (cruce reuniones + mails + tablero). */
+  audit?: AccountAudit;
   /** Diferencias entre el mail semanal generado y el enviado, para revisar una por una (id → ítem). */
   weeklyReview?: Record<string, WeeklyReviewItem>;
   /** Último error del análisis (se reintenta en la próxima corrida). */
@@ -409,6 +428,11 @@ export interface ClientProfile {
    * nadie del cliente), así cuentan como interacción, sus pedidos van a "Por responder" y entran en la trazabilidad.
    */
   linkedThreads?: { threadId: string; subject: string; at: string }[];
+  /**
+   * Quién desarrolla la integración (validado desde la auditoría): `pm` = yo; `equipo_xtract` = otro dev de Xtract
+   * al que guío; `cliente` / `partner`; `mixto`. Informativo: el lado de cada accionable se corrige aparte.
+   */
+  developer?: { who: string; detail: string; at: string };
   /** Cierre de la cuenta (pase a Soporte, `status: "closed"`): cuándo, a quién y nota. Se borra al reabrir. */
   closure?: { at: string; handedTo: string; note?: string };
 }
@@ -487,7 +511,18 @@ async function saveClientsFile(file: ClientsFile): Promise<void> {
   const tmp = `${CLIENTS_FILE}.${randomUUID()}.tmp`;
   try {
     await writeFile(tmp, JSON.stringify(file, null, 2), "utf-8");
-    await rename(tmp, CLIENTS_FILE);
+    // Windows: si otro proceso (el server, OneDrive, el antivirus) tiene el archivo abierto, el rename falla con
+    // EPERM/EBUSY un instante. Reintentar unas veces antes de rendirse.
+    for (let attempt = 0; ; attempt++) {
+      try {
+        await rename(tmp, CLIENTS_FILE);
+        break;
+      } catch (error) {
+        const code = (error as NodeJS.ErrnoException).code;
+        if (attempt >= 8 || (code !== "EPERM" && code !== "EBUSY" && code !== "EACCES")) throw error;
+        await new Promise((r) => setTimeout(r, 150 * (attempt + 1)));
+      }
+    }
   } catch (error) {
     await rm(tmp, { force: true });
     throw error;
@@ -1321,6 +1356,103 @@ export async function resolveRewrite(
       client.ticketsUpdatedAt = new Date().toISOString();
     }
     analysis.rewritesResolved = { ...analysis.rewritesResolved, [ref]: action === "accept" ? "accepted" : "dismissed" };
+    return true;
+  });
+  return res?.client ?? null;
+}
+
+/** Guarda la auditoría de una cuenta (pisa la anterior). No toca accionables. */
+export async function setAccountAudit(clientId: string, audit: AccountAudit): Promise<boolean> {
+  const res = await mutateClient(clientId, (client) => {
+    client.audit = audit;
+  });
+  return Boolean(res);
+}
+
+export interface AuditApply {
+  key: string;
+  kind: "done" | "remove" | "side" | "edit" | "due" | "add" | "profile" | "question";
+  ticketId: string | null;
+  side?: "debo" | "me_deben";
+  title?: string;
+  due?: string | null;
+  doneAt?: string | null;
+  developer?: { who: string; detail: string };
+  erp?: string;
+}
+
+/**
+ * Aplica o descarta una propuesta de la auditoría (modal "Auditoría" de /accionables). Usa los mismos campos que
+ * la UI (tildado, quitado, lado, edición, fecha, propio nuevo, perfil), así que Capacidad, mails y alertas lo ven
+ * igual que un cambio a mano.
+ */
+export async function resolveAudit(clientId: string, p: AuditApply, action: "apply" | "dismiss"): Promise<ClientRecord | null> {
+  const res = await mutateClient(clientId, (client) => {
+    const audit = client.audit;
+    if (!audit || audit.resolved?.[p.key]) return SKIP;
+    const now = new Date().toISOString();
+    if (action === "apply") {
+      const t = p.ticketId;
+      switch (p.kind) {
+        case "done": {
+          if (!t) return SKIP;
+          client.doneTicketIds = [...new Set([...(client.doneTicketIds ?? []), t])];
+          const at = p.doneAt ? new Date(`${p.doneAt}T12:00:00`).toISOString() : now;
+          client.doneTicketAt = { ...client.doneTicketAt, [t]: at };
+          client.ticketsUpdatedAt = now;
+          break;
+        }
+        case "remove": {
+          if (!t) return SKIP;
+          if (client.customActionables?.some((c) => c.id === t)) client.customActionables = client.customActionables.filter((c) => c.id !== t);
+          else client.removedTicketIds = [...new Set([...(client.removedTicketIds ?? []), t])];
+          client.ticketsUpdatedAt = now;
+          break;
+        }
+        case "side":
+          if (!t || !p.side) return SKIP;
+          client.actionableSide = { ...client.actionableSide, [t]: p.side };
+          client.ticketsUpdatedAt = now;
+          break;
+        case "edit": {
+          const text = p.title?.trim().slice(0, 500);
+          if (!t || !text) return SKIP;
+          client.actionableEdits = { ...client.actionableEdits, [t]: text };
+          client.ticketsUpdatedAt = now;
+          break;
+        }
+        case "due":
+          if (!t || !p.due) return SKIP;
+          client.actionableDue = { ...client.actionableDue, [t]: p.due };
+          client.ticketsUpdatedAt = now;
+          break;
+        case "add": {
+          const text = p.title?.trim().slice(0, 500);
+          const latest = client.meetings.reduce<DiscoveredMeeting | null>((max, m) => (!max || m.date > max.date ? m : max), null);
+          if (!text || !latest) return SKIP;
+          const id = `${client.id}:custom-audit-${randomUUID().slice(0, 8)}`;
+          client.customActionables = [
+            ...(client.customActionables ?? []),
+            { id, title: text, meetingId: latest.id, createdAt: now, source: "ia", evidence: "Auditoría" },
+          ];
+          if (p.due) client.actionableDue = { ...client.actionableDue, [id]: p.due };
+          if (p.side) client.actionableSide = { ...client.actionableSide, [id]: p.side };
+          client.ticketsUpdatedAt = now;
+          break;
+        }
+        case "profile": {
+          const profile = { ...client.profile };
+          if (p.developer) profile.developer = { ...p.developer, at: now };
+          if (p.erp) profile.erp = p.erp;
+          client.profile = profile;
+          client.profileUpdatedAt = now;
+          break;
+        }
+        case "question":
+          break;
+      }
+    }
+    audit.resolved = { ...audit.resolved, [p.key]: { action: action === "apply" ? "applied" : "dismissed", at: now } };
     return true;
   });
   return res?.client ?? null;
