@@ -9,6 +9,7 @@ import { getClientsFileCached, getSettingsCached } from "@/lib/server/cached-dat
 import { computeWeekPlan, hasWorkLeftThisWeek, planWeekBounds } from "@/lib/utils/week-plan";
 import { pendingSuggestions } from "@/lib/utils/deadlines";
 import { pendingRewrites } from "@/lib/utils/account-analysis";
+import { pendingAudit } from "@/lib/utils/account-audit";
 import { getBoardOrder } from "@/lib/store/board-order-store";
 import { getTodayAdjust } from "@/lib/store/not-today-store";
 import { pendingWeeklyReview } from "@/lib/utils/weekly-learning";
@@ -78,6 +79,7 @@ export default async function AccionablesPage({
         nowIso={now.toISOString()}
         suggestions={pendingSuggestions(clients, settings, now, ownerEmail ?? null)}
         rewrites={pendingRewrites(clients)}
+        audit={pendingAudit(clients, settings, now)}
         weeklyReview={pendingWeeklyReview(clients, now)}
         people={settings.people}
         corrections={settings.corrections}

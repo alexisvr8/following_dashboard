@@ -5,7 +5,7 @@ import { getState, setState } from "@/lib/store/backend";
 // `KEEP_DAYS` días (tope `MAX_ENTRIES`). Las escrituras se encadenan en el proceso para no pisarse cuando
 // corren llamadas en paralelo (análisis semanal: 2 a la vez); `app_state` no tiene control de versión.
 
-export type AIUsageKind = "postmeeting" | "status" | "analysis" | "reply" | "reminder" | "weekly";
+export type AIUsageKind = "postmeeting" | "status" | "analysis" | "reply" | "reminder" | "weekly" | "audit";
 
 export interface AIUsageEntry {
   at: string;
@@ -22,12 +22,15 @@ export interface AIUsageEntry {
   output: number;
   cacheRead: number;
   cacheWrite: number;
+  /** Corrió por la Batch API (50% del precio de lista). */
+  batch?: boolean;
 }
 
 export interface UsageMeta {
   clientId?: string;
   clientName?: string;
   trigger?: string;
+  batch?: boolean;
 }
 
 /** Forma de `response.usage` que interesa (los campos de caché pueden venir null). */

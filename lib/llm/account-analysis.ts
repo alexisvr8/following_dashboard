@@ -25,6 +25,8 @@ export interface AnalysisMail {
 }
 
 export interface AnalysisThread {
+  /** Id del hilo de Gmail (para no repetirlo entre fuentes). */
+  id?: string;
   subject: string;
   messages: AnalysisMail[];
 }

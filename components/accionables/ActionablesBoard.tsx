@@ -28,6 +28,7 @@ import {
   Send,
   SpellCheck,
   Sparkles,
+  ClipboardCheck,
   Target,
   Trash2,
   Undo2,
@@ -43,6 +44,8 @@ import { type Round } from "@/lib/utils/round";
 import { ActionablePanel, type PanelAction } from "@/components/accionables/ActionablePanel";
 import { SuggestionsDialog } from "@/components/accionables/SuggestionsSection";
 import { RewritesDialog } from "@/components/accionables/RewritesDialog";
+import { AuditDialog } from "@/components/accionables/AuditDialog";
+import type { AuditAccountView } from "@/lib/utils/account-audit";
 import { WeeklyReviewDialog } from "@/components/accionables/WeeklyReviewDialog";
 import type { WeeklyReviewEntry } from "@/lib/utils/weekly-learning";
 import { AttentionBadge } from "@/components/cuentas/AttentionToggle";
@@ -125,6 +128,7 @@ export function ActionablesBoard({
   nowIso,
   suggestions,
   rewrites = [],
+  audit = [],
   weeklyReview = [],
   people,
   corrections,
@@ -140,6 +144,8 @@ export function ActionablesBoard({
   initialAccounts?: string[];
   boardOrder?: Record<string, number>;
   rewrites?: RewriteItem[];
+  /** Auditoría única con IA: cuentas con propuestas pendientes (`pendingAudit`). */
+  audit?: AuditAccountView[];
   /** Revisión del mail semanal (borrador vs. enviado) sin resolver. */
   weeklyReview?: WeeklyReviewEntry[];
   mailPanels: Record<string, FollowupPanelData>;
@@ -177,7 +183,7 @@ export function ActionablesBoard({
   const [query, setQuery] = useState("");
   const [round, setRound] = useState<RoundView>(initialRound);
   const [quick, setQuick] = useState<Quick>(null);
-  const [review, setReview] = useState<"suggestions" | "rewrites" | "weekly" | "corrections" | null>(null);
+  const [review, setReview] = useState<"suggestions" | "rewrites" | "audit" | "weekly" | "corrections" | null>(null);
   const [hidden, setHidden] = useState<Set<string>>(new Set());
   const [busy, setBusy] = useState<string | null>(null);
   const [selectedId, setSelectedId] = useState<string | null>(null);
@@ -631,6 +637,8 @@ export function ActionablesBoard({
   // En el modal se ven todas (no dependen del filtro Accionar / Seguimiento del tablero), salvo el filtro de cuenta.
   const pendingSuggestionsList = suggestions.filter((s) => !resolved.has(s.id) && inAccounts(s.clientId));
   const rewritesShown = rewrites.filter((r) => inAccounts(r.clientId));
+  const auditShown = audit.filter((a) => inAccounts(a.clientId));
+  const auditCount = auditShown.reduce((n, a) => n + a.proposals.length, 0);
   const weeklyShown = weeklyReview.filter((e) => inAccounts(e.clientId));
   async function resolveSuggestion(s: SuggestedItem, action: "accept" | "dismiss", text?: string) {
     setBusy(s.id);
@@ -738,6 +746,7 @@ export function ActionablesBoard({
             onPick={setReview}
             entries={[
               { key: "suggestions", label: "De la reunión", hint: "Compromisos dichos en la reunión que Gemini no puso en Próximos pasos", icon: MessageSquareQuote, count: pendingSuggestionsList.length },
+              { key: "audit", label: "Auditoría", hint: "Cruce de reuniones, transcripciones y mails contra el tablero: hechos, duplicados, lados y faltantes", icon: ClipboardCheck, count: auditCount },
               { key: "rewrites", label: "Mejoras IA", hint: "Redacción mejorada por el análisis semanal para accionables con texto pobre", icon: Sparkles, count: rewritesShown.length },
               { key: "corrections", label: "Correcciones", hint: "Palabras o nombres que Gemini transcribe mal", icon: SpellCheck, count: corrections.length, passive: true },
             ]}
@@ -785,6 +794,7 @@ export function ActionablesBoard({
         busy={busy}
         onResolve={resolveSuggestion}
       />
+      <AuditDialog open={review === "audit"} onOpenChange={(o) => setReview(o ? "audit" : null)} accounts={auditShown} />
       <RewritesDialog open={review === "rewrites"} onOpenChange={(o) => setReview(o ? "rewrites" : null)} rewrites={rewritesShown} />
       <WeeklyReviewDialog open={review === "weekly"} onOpenChange={(o) => setReview(o ? "weekly" : null)} entries={weeklyShown} />
       <CorrectionsDialog open={review === "corrections"} onOpenChange={(o) => setReview(o ? "corrections" : null)} corrections={corrections} />
@@ -1021,7 +1031,7 @@ function usePopover() {
 }
 const POPOVER = "absolute top-full z-30 mt-1 rounded-lg border border-border-strong bg-popover p-2 text-popover-foreground shadow-popover";
 
-type ReviewKey = "suggestions" | "rewrites" | "weekly" | "corrections";
+type ReviewKey = "suggestions" | "rewrites" | "audit" | "weekly" | "corrections";
 /** "Revisar (N)": un solo menú para los modales de revisión; N = lo pendiente (las correcciones no cuentan). */
 function ReviewMenu({
   entries,

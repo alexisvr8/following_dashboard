@@ -10,8 +10,9 @@ const PRICES: Record<string, { input: number; output: number; cacheRead: number 
 };
 
 /** Costo estimado en US$ de una llamada, o null si el modelo no tiene precio cargado. */
-export function estimateCost(e: Pick<AIUsageEntry, "model" | "input" | "output" | "cacheRead" | "cacheWrite">): number | null {
+export function estimateCost(e: Pick<AIUsageEntry, "model" | "input" | "output" | "cacheRead" | "cacheWrite"> & { batch?: boolean }): number | null {
   const p = PRICES[e.model];
   if (!p) return null;
-  return (e.input * p.input + e.cacheWrite * p.input * 1.25 + e.cacheRead * p.cacheRead + e.output * p.output) / 1_000_000;
+  const full = (e.input * p.input + e.cacheWrite * p.input * 1.25 + e.cacheRead * p.cacheRead + e.output * p.output) / 1_000_000;
+  return e.batch ? full / 2 : full;
 }
