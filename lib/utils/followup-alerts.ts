@@ -247,6 +247,8 @@ export interface ReplyQueueItem {
   /** Del más viejo. */
   oldestAt: string;
   titles: string[];
+  /** Tickets de esos pedidos (✕ "No hace falta responder" los quita). */
+  ids: string[];
 }
 
 /**
@@ -259,7 +261,9 @@ export function replyQueue(clients: ClientRecord[], alerts: AccountAlert[]): Rep
     .filter((c) => c.status === "assigned" && !inPulse.has(c.id))
     .flatMap((c) => {
       const open = openMailRequests(c).sort((x, y) => x.date.localeCompare(y.date));
-      return open.length ? [{ clientId: c.id, name: c.name, count: open.length, oldestAt: open[0].date, titles: open.map((t) => t.title) }] : [];
+      return open.length
+        ? [{ clientId: c.id, name: c.name, count: open.length, oldestAt: open[0].date, titles: open.map((t) => t.title), ids: open.map((t) => t.id) }]
+        : [];
     })
     .sort((a, b) => a.oldestAt.localeCompare(b.oldestAt));
 }

@@ -13,6 +13,7 @@ import type { AccountAnalysisOutput, Level } from "@/lib/llm/account-analysis-sc
 import type { AccountAuditOutput } from "@/lib/llm/account-audit-schema";
 import { keywordSimilarity } from "@/lib/utils/mail-classify";
 import { accountActionables, stepTicketId } from "@/lib/utils/actionables";
+import type { MinutaAction, MinutaItem } from "@/lib/utils/minuta-review";
 
 export { mailTicketId };
 
@@ -325,6 +326,21 @@ export interface FollowupDraft {
   weeklyItems?: string[];
   /** Mail de los lunes: qué hice con el borrador en Gmail (`captureWeeklyOutcomes`). */
   outcome?: WeeklyOutcome;
+  /** Minuta post-reunión: cada línea de accionable con su ticket, para validar lo que se envía (`minutaChanges`). */
+  minutaItems?: MinutaItem[];
+  /** Minuta con borrador en Gmail: ya se revisó qué pasó con él (enviada desde Gmail / borrada). */
+  minutaChecked?: { state: "sent" | "deleted"; at: string };
+  /** Minuta enviada desde la app: cambios que se aplicaron al tablero (para "Deshacer"). */
+  minutaApplied?: MinutaApplied;
+}
+
+export interface MinutaApplied {
+  at: string;
+  entries: (
+    | { op: "done" | "created"; ticketId: string }
+    | { op: "removed"; ticketId: string; custom?: NonNullable<ClientRecord["customActionables"]>[number] }
+  )[];
+  undoneAt?: string;
 }
 
 /**
@@ -349,7 +365,12 @@ export interface WeeklyReviewItem {
   id: string;
   /** Lunes de la semana (AAAA-MM-DD). */
   week: string;
-  kind: "removed" | "added" | "skipped";
+  /** marked_done = punto de la minuta que pasaste a "Hecho" al enviarla. */
+  kind: "removed" | "added" | "skipped" | "marked_done";
+  /** De qué mail sale: semanal (default) o minuta post-reunión enviada desde Gmail (`week` = día de la reunión). */
+  source?: "minuta";
+  /** Minuta: reunión de la que salió (un punto agregado se crea como accionable de esa reunión). */
+  meetingId?: string;
   ticketId?: string;
   title: string;
   detail?: string;
@@ -1512,6 +1533,133 @@ export async function setWeeklyOutcome(
 
 export type WeeklyReviewAction = "done" | "not_applicable" | "keep" | "create" | "ignore" | "ok";
 
+/** Tilda un accionable (conserva la fecha de cierre si ya la tenía). */
+function markTicketDone(client: ClientRecord, t: string, now: string) {
+  client.doneTicketIds = [...new Set([...(client.doneTicketIds ?? []), t])];
+  client.doneTicketAt = { ...client.doneTicketAt, [t]: client.doneTicketAt?.[t] ?? now };
+  client.ticketsUpdatedAt = now;
+}
+
+/** "No corresponde": borra un propio o lo marca quitado (reversible: queda en `removedTicketIds`). */
+function removeTicket(client: ClientRecord, t: string, now: string) {
+  if (client.customActionables?.some((c) => c.id === t)) {
+    client.customActionables = client.customActionables.filter((c) => c.id !== t);
+  } else {
+    client.removedTicketIds = [...new Set([...(client.removedTicketIds ?? []), t])];
+  }
+  client.ticketsUpdatedAt = now;
+}
+
+/** Accionable propio nuevo (de `meetingId` si existe; si no, de la última reunión). Devuelve el id o null. */
+function addCustomTicket(client: ClientRecord, title: string, now: string, meetingId?: string): string | null {
+  const meeting =
+    client.meetings.find((x) => x.id === meetingId) ??
+    client.meetings.reduce<DiscoveredMeeting | null>((max, x) => (!max || x.date > max.date ? x : max), null);
+  if (!meeting || !title.trim()) return null;
+  const id = `${client.id}:custom-${randomUUID().slice(0, 8)}`;
+  client.customActionables = [...(client.customActionables ?? []), { id, title: title.trim().slice(0, 500), meetingId: meeting.id, createdAt: now }];
+  client.ticketsUpdatedAt = now;
+  return id;
+}
+
+export interface MinutaDecision {
+  action: MinutaAction;
+  ticketId?: string;
+  /** create: texto del accionable nuevo. */
+  title?: string;
+}
+
+/**
+ * Decisiones sobre los accionables al enviar la minuta desde la app: Hecho (tilda), No corresponde (quita), Crear
+ * (propio de esa reunión). Solo toca tickets de la cuenta que siguen abiertos; keep/ignore no hacen nada.
+ */
+export async function applyMinutaDecisions(
+  clientId: string,
+  meetingId: string,
+  decisions: MinutaDecision[],
+): Promise<{ done: number; removed: number; created: number } | null> {
+  const m = await mutateClient(clientId, (client) => {
+    const now = new Date().toISOString();
+    const open = new Set(accountActionables(client).filter((a) => !a.done).map((a) => a.id));
+    const doneIds = new Set(client.doneTicketIds ?? []);
+    const counts = { done: 0, removed: 0, created: 0 };
+    const undo: MinutaApplied["entries"] = [];
+    for (const d of decisions) {
+      const t = d.ticketId;
+      const mine = !!t && t.startsWith(`${client.id}:`) && !doneIds.has(t) && (open.has(t) || t.includes(":mail-"));
+      if (d.action === "done" && mine) {
+        markTicketDone(client, t!, now);
+        undo.push({ op: "done", ticketId: t! });
+        counts.done++;
+      } else if (d.action === "not_applicable" && mine) {
+        const custom = client.customActionables?.find((c) => c.id === t);
+        removeTicket(client, t!, now);
+        undo.push({ op: "removed", ticketId: t!, ...(custom && { custom }) });
+        counts.removed++;
+      } else if (d.action === "create" && d.title?.trim()) {
+        const id = addCustomTicket(client, d.title, now, meetingId);
+        if (id) {
+          undo.push({ op: "created", ticketId: id });
+          counts.created++;
+        }
+      }
+    }
+    if (!undo.length) return SKIP;
+    const key = followupKey("meeting", meetingId);
+    const f = client.followups?.[key];
+    if (f) client.followups = { ...client.followups, [key]: { ...f, minutaApplied: { at: now, entries: undo } } };
+    return counts;
+  });
+  return m?.result ?? null;
+}
+
+/** "Deshacer" del aviso de enviado: revierte lo que aplicó `applyMinutaDecisions` en esa minuta (una sola vez). */
+export async function undoMinutaDecisions(clientId: string, meetingId: string): Promise<boolean> {
+  const m = await mutateClient(clientId, (client) => {
+    const key = followupKey("meeting", meetingId);
+    const f = client.followups?.[key];
+    const applied = f?.minutaApplied;
+    if (!f || !applied || applied.undoneAt) return SKIP;
+    const now = new Date().toISOString();
+    for (const e of applied.entries) {
+      if (e.op === "done") {
+        client.doneTicketIds = (client.doneTicketIds ?? []).filter((t) => t !== e.ticketId);
+        if (client.doneTicketAt) delete client.doneTicketAt[e.ticketId];
+      } else if (e.op === "removed") {
+        client.removedTicketIds = (client.removedTicketIds ?? []).filter((t) => t !== e.ticketId);
+        if (e.custom && !client.customActionables?.some((c) => c.id === e.ticketId)) {
+          client.customActionables = [...(client.customActionables ?? []), e.custom];
+        }
+      } else {
+        client.customActionables = (client.customActionables ?? []).filter((c) => c.id !== e.ticketId);
+      }
+    }
+    client.ticketsUpdatedAt = now;
+    client.followups = { ...client.followups, [key]: { ...f, minutaApplied: { ...applied, undoneAt: now } } };
+  });
+  return !!m;
+}
+
+/** Minuta con borrador en Gmail: guarda qué pasó (enviada / borrada) y suma la revisión al modal de /accionables. */
+export async function setMinutaOutcome(
+  clientId: string,
+  key: string,
+  checked: { state: "sent" | "deleted"; at: string },
+  review: WeeklyReviewItem[],
+): Promise<boolean> {
+  const m = await mutateClient(clientId, (client) => {
+    const f = client.followups?.[key];
+    if (!f || f.minutaChecked || f.sentAt) return SKIP;
+    client.followups = { ...client.followups, [key]: { ...f, minutaChecked: checked, ...(checked.state === "sent" && { sentAt: checked.at }) } };
+    if (review.length) {
+      const current = { ...client.weeklyReview };
+      for (const item of review) current[item.id] ??= item;
+      client.weeklyReview = current;
+    }
+  });
+  return !!m;
+}
+
 /**
  * Resuelve un ítem de la revisión semanal: punto quitado → Hecho (tilda) / No corresponde (lo quita) / Sigue (nada);
  * punto agregado → Crear card (accionable propio con el texto, y fecha si se eligió) / Ignorar; cuenta sin mail →
@@ -1526,7 +1674,7 @@ export async function resolveWeeklyReview(
     if (!item || item.state) return SKIP;
     const now = new Date().toISOString();
     const valid =
-      item.kind === "removed"
+      item.kind === "removed" || item.kind === "marked_done"
         ? ["done", "not_applicable", "keep"].includes(input.action)
         : item.kind === "added"
           ? ["create", "ignore"].includes(input.action)
@@ -1534,30 +1682,14 @@ export async function resolveWeeklyReview(
     if (!valid) return SKIP;
     let created: string | null = null;
     const t = item.ticketId;
-    if (item.kind === "removed" && t && input.action === "done") {
-      client.doneTicketIds = [...new Set([...(client.doneTicketIds ?? []), t])];
-      client.doneTicketAt = { ...client.doneTicketAt, [t]: client.doneTicketAt?.[t] ?? now };
-      client.ticketsUpdatedAt = now;
-    }
-    if (item.kind === "removed" && t && input.action === "not_applicable") {
-      if (client.customActionables?.some((c) => c.id === t)) {
-        client.customActionables = client.customActionables.filter((c) => c.id !== t);
-      } else {
-        client.removedTicketIds = [...new Set([...(client.removedTicketIds ?? []), t])];
-      }
-      client.ticketsUpdatedAt = now;
-    }
+    if (t && input.action === "done") markTicketDone(client, t, now);
+    if (t && input.action === "not_applicable") removeTicket(client, t, now);
     if (item.kind === "added" && input.action === "create") {
-      const latest = client.meetings.reduce<DiscoveredMeeting | null>((max, x) => (!max || x.date > max.date ? x : max), null);
-      if (!latest) return SKIP;
+      const meetingId = item.source === "minuta" ? item.meetingId : undefined;
       const fallback = `${item.owner ? `[${item.owner}] ` : ""}${item.title}${item.detail ? `: ${item.detail}` : ""}`;
-      created = `${client.id}:custom-${randomUUID().slice(0, 8)}`;
-      client.customActionables = [
-        ...(client.customActionables ?? []),
-        { id: created, title: (input.title?.trim() || fallback).slice(0, 500), meetingId: latest.id, createdAt: now },
-      ];
+      created = addCustomTicket(client, input.title?.trim() || fallback, now, meetingId);
+      if (!created) return SKIP;
       if (input.due) client.actionableDue = { ...client.actionableDue, [created]: input.due };
-      client.ticketsUpdatedAt = now;
     }
     const state: WeeklyReviewItem["state"] =
       input.action === "create" ? "created" : input.action === "ignore" ? "ignored" : input.action;

@@ -12,6 +12,7 @@ import type {
   MeetingAttendee,
 } from "@/lib/store/clients-store";
 import { eventKey } from "@/lib/store/clients-store";
+import { googlePausedUntil, noteGoogleLimit } from "@/lib/integrations/google-limit";
 
 // Descubre clientes desde los mails de Gemini Notes: mail → evento de Calendar (por Doc
 // adjunto o título+fecha) → asistentes externos → dominio → empresa.
@@ -44,6 +45,9 @@ export async function mapLimit<T, R>(items: T[], limit: number, fn: (item: T) =>
 
 // Reintenta ante rate limit de Google (429 / 403 rateLimitExceeded) con backoff exponencial.
 export async function withRetry<T>(fn: () => Promise<T>, tries = 5): Promise<T> {
+  // Google pidió esperar hasta una hora concreta: no se llama (cada intento extra solo suma pedidos).
+  const paused = googlePausedUntil();
+  if (paused) throw new Error(`User-rate limit exceeded. Retry after ${paused}`);
   for (let attempt = 0; ; attempt++) {
     try {
       return await fn();
@@ -51,6 +55,7 @@ export async function withRetry<T>(fn: () => Promise<T>, tries = 5): Promise<T> 
       const e = error as { code?: number; status?: number; message?: string };
       const code = e.code ?? e.status;
       const rateLimited = code === 429 || (code === 403 && /quota|rate/i.test(e.message ?? ""));
+      if (rateLimited && noteGoogleLimit(error)) throw error;
       if (!rateLimited || attempt >= tries - 1) throw error;
       await new Promise((r) => setTimeout(r, 2 ** attempt * 2000 + Math.random() * 500));
     }

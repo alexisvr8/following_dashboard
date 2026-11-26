@@ -15,7 +15,9 @@ import { getSettings } from "@/lib/store/settings-store";
 import { getDraft } from "@/lib/utils/followup";
 import { generateStatusMails } from "@/lib/integrations/status-ai";
 import { generateClientMailAI } from "@/lib/integrations/reply-ai";
-import { setTicketDone } from "@/lib/store/clients-store";
+import { applyMinutaDecisions, setTicketDone, type MinutaDecision } from "@/lib/store/clients-store";
+import type { MinutaAction } from "@/lib/utils/minuta-review";
+import { isUserRateLimit, noteGoogleLimit } from "@/lib/integrations/google-limit";
 
 // Borradores de la cuenta: `kind` "meeting" (follow-up de la reunión), "status" (actualización /
 // seguimiento) o "reminder" (recordatorio pidiendo status de lo que me deben; con `ticketId`, de un solo punto). PUT guarda la edición; POST crea el draft en Gmail o, con `send: true`, envía el
@@ -33,7 +35,20 @@ type Body = {
   cc?: string[];
   threadId?: string | null;
   send?: boolean;
+  /** Solo minuta enviada: qué hacer con los accionables que sacaste / marcaste hechos / agregaste (`minutaChanges`). */
+  minutaReview?: { action?: unknown; ticketId?: unknown; title?: unknown }[];
 };
+
+const MINUTA_ACTIONS: MinutaAction[] = ["done", "not_applicable", "keep", "create", "ignore"];
+const parseDecisions = (list: Body["minutaReview"]): MinutaDecision[] =>
+  (Array.isArray(list) ? list : [])
+    .filter((d) => d && MINUTA_ACTIONS.includes(d.action as MinutaAction))
+    .slice(0, 100)
+    .map((d) => ({
+      action: d.action as MinutaAction,
+      ...(typeof d.ticketId === "string" && { ticketId: d.ticketId }),
+      ...(typeof d.title === "string" && { title: d.title.slice(0, 500) }),
+    }));
 
 const parseKind = (k: unknown): FollowupKind => (k === "status" || k === "reminder" || k === "reply" ? k : "meeting");
 
@@ -124,8 +139,7 @@ export async function POST(request: Request, { params }: { params: Promise<{ id:
         replacesDraftId: r.pendingDraftId,
       });
     } catch (error) {
-      const msg = (error as Error).message;
-      return Response.json({ error: msg }, { status: msg === "google_not_connected" ? 409 : 502 });
+      return gmailError(error);
     }
     // El mail ya salió: ningún fallo posterior puede responder error (invitaría a reenviarlo).
     const sentAt = new Date().toISOString();
@@ -145,9 +159,15 @@ export async function POST(request: Request, { params }: { params: Promise<{ id:
     }
     // Respuesta enviada: lo que contestaba queda respondido (aunque viniera de otros hilos).
     for (const t of r.draft.replyTicketIds ?? []) await setTicketDone(r.client.id, t, true).catch(() => undefined);
+    // Minuta: lo que sacaste del mail / marcaste hecho / agregaste pasa al tablero.
+    const decisions = parseKind(input.kind) === "meeting" ? parseDecisions(input.minutaReview) : [];
+    const applied = decisions.length
+      ? await applyMinutaDecisions(r.client.id, r.draft.meetingId, decisions).catch(() => null)
+      : null;
     await refreshActivity(r).catch(() => undefined);
     return Response.json({
       sentAt,
+      ...(applied && { applied }),
       inThread: input.threadId ? sent.threadId === input.threadId : null,
       to: r.draft.to,
       gmailUrl: gmailDraftUrl({ ...sent }, sent.threadId),
@@ -183,9 +203,18 @@ export async function POST(request: Request, { params }: { params: Promise<{ id:
     const inThread = input.threadId ? created.threadId === input.threadId : null;
     return Response.json({ ...draft, inThread, updated: created.updated, gmailUrl: gmailDraftUrl(created, created.threadId ?? input.threadId ?? null) });
   } catch (error) {
-    const msg = (error as Error).message;
-    return Response.json({ error: msg }, { status: msg === "google_not_connected" ? 409 : 502 });
+    return gmailError(error);
   }
+}
+
+/** Error de Gmail → respuesta; el corte por exceso de uso va con la hora hasta la que hay que esperar. */
+function gmailError(error: unknown) {
+  const until = noteGoogleLimit(error);
+  if (until || isUserRateLimit(error)) {
+    return Response.json({ error: "gmail_rate_limit", until: until?.toISOString() ?? null }, { status: 429 });
+  }
+  const msg = (error as Error).message;
+  return Response.json({ error: msg }, { status: msg === "google_not_connected" ? 409 : 502 });
 }
 
 /** Trae enseguida el mail recién enviado, para que los borradores partan de él sin esperar la sync. */

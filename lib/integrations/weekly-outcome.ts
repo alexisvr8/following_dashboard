@@ -21,7 +21,7 @@ function partText(p: gmail_v1.Schema$MessagePart | undefined, mime: string): str
   }
   return "";
 }
-function messageText(m: gmail_v1.Schema$Message): string {
+export function messageText(m: gmail_v1.Schema$Message): string {
   const plain = partText(m.payload, "text/plain");
   if (plain) return plain;
   return partText(m.payload, "text/html")

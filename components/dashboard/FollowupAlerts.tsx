@@ -89,6 +89,7 @@ export function FollowupAlerts({
   const [openChoice, setOpenChoice] = useState<MailKindChoice>("general");
   const [expanded, setExpanded] = useState<Set<string>>(new Set());
   const [closing, setClosing] = useState<Set<string>>(new Set());
+  const [dismissed, setDismissed] = useState<Set<string>>(new Set());
   const [range, setRange] = useState<Range>("all");
   const [snoozeFor, setSnoozeFor] = useState<string | null>(null);
   const [snoozed, setSnoozed] = useState<{ id: string; name: string } | null>(null);
@@ -173,6 +174,31 @@ export function FollowupAlerts({
     }
   }
 
+  /** ✕ en "Por responder": no hace falta contestar → los pedidos se quitan (`removedTicketIds`, no vuelven). */
+  async function dismissQueued(q: ReplyQueueItem) {
+    setDismissed((s) => new Set(s).add(q.clientId));
+    const results = await Promise.all(
+      q.ids.map((id) =>
+        fetch(`/api/clients/${encodeURIComponent(q.clientId)}`, {
+          method: "PATCH",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ actionable: { op: "remove", id } }),
+        })
+          .then((r) => r.ok)
+          .catch(() => false),
+      ),
+    );
+    if (results.some((ok) => !ok)) {
+      setDismissed((s) => {
+        const n = new Set(s);
+        n.delete(q.clientId);
+        return n;
+      });
+      setError(`No se pudieron quitar todos los pedidos de ${q.name}. Reintenta.`);
+    }
+    router.refresh();
+  }
+
   async function snooze(a: AccountAlert, mode: "tomorrow" | "interaction" | null) {
     setSnoozeFor(null);
     if (await patch(a.clientId, { profile: { followupSnooze: mode } })) setSnoozed(mode ? { id: a.clientId, name: a.name } : null);
@@ -235,20 +261,35 @@ export function FollowupAlerts({
             <span className="flex items-center gap-1 text-label-sm uppercase text-muted-foreground">
               <MailQuestionMark className="size-3.5 text-warning" /> Por responder
             </span>
-            {queue.map((q) => (
-              <button
-                key={q.clientId}
-                type="button"
-                title={["Pedidos sin resolver:", ...q.titles.map((t) => `• ${t}`)].join("\n")}
-                onClick={() => {
-                  setOpenChoice("reply");
-                  setOpenId(q.clientId);
-                }}
-                className="rounded-md border border-warning/25 bg-warning-muted px-2 py-0.5 text-xs text-foreground transition-colors hover:border-warning/50"
-              >
-                {q.name} <span className="tabular text-warning">({q.count})</span>
-              </button>
-            ))}
+            {queue
+              .filter((q) => !dismissed.has(q.clientId))
+              .map((q) => (
+                <span
+                  key={q.clientId}
+                  className="inline-flex items-center rounded-md border border-warning/25 bg-warning-muted text-xs text-foreground transition-colors hover:border-warning/50"
+                >
+                  <button
+                    type="button"
+                    title={["Pedidos sin resolver:", ...q.titles.map((t) => `• ${t}`)].join("\n")}
+                    onClick={() => {
+                      setOpenChoice("reply");
+                      setOpenId(q.clientId);
+                    }}
+                    className="py-0.5 pl-2 pr-1"
+                  >
+                    {q.name} <span className="tabular text-warning">({q.count})</span>
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => dismissQueued(q)}
+                    title="No hace falta responder: quita estos pedidos y la alerta"
+                    aria-label={`No hace falta responder a ${q.name}`}
+                    className="rounded-r-md py-1 pl-0.5 pr-1.5 text-muted-foreground hover:text-foreground"
+                  >
+                    <X className="size-3" />
+                  </button>
+                </span>
+              ))}
           </div>
         )}
         {unassignedCount > 0 && (
