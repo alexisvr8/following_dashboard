@@ -36,6 +36,7 @@ import {
 import { Label } from "@/components/ui/label";
 import type { FollowupDraft, FollowupKind, ThreadRef } from "@/lib/store/clients-store";
 import { MailKindToggle, useMailKind } from "@/components/cuentas/MailKindSwitch";
+import { addedTitle, DEFAULT_ACTION, minutaChanges, type MinutaAction, type MinutaChange } from "@/lib/utils/minuta-review";
 
 const NEW_THREAD = "__new__";
 /** Por qué el borrador eligió ese hilo (`pickFollowupThread`). */
@@ -168,11 +169,17 @@ export function FollowupComposer({
   const [seenBody, setSeenBody] = useState(initial.body);
   const [edited, setEdited] = useState(false);
   const [hasNews, setHasNews] = useState(false);
+  // Minuta: líneas de accionables generadas con su ticket (las del texto que estás editando).
+  const [minutaItems, setMinutaItems] = useState(initial.minutaItems);
+  // Al enviar: cambios detectados contra lo generado y qué hacer con cada uno (default por tipo).
+  const [minutaReview, setMinutaReview] = useState<MinutaChange[]>([]);
+  const [decisions, setDecisions] = useState<Record<string, MinutaAction>>({});
   if (initial.body !== seenBody) {
     setSeenBody(initial.body);
     if (edited) {
       setHasNews(true);
     } else {
+      setMinutaItems(initial.minutaItems);
       setSubject(initial.subject);
       setBody(initial.body);
       setTo(initial.to.join(", "));
@@ -193,6 +200,9 @@ export function FollowupComposer({
     to: string[];
     /** Se actualizó el borrador que ya existía (no se creó otro). */
     updated?: boolean;
+    /** Minuta: cambios aplicados al tablero al enviar. */
+    applied?: AppliedCounts;
+    undone?: boolean;
   } | null>(null);
   const [error, setError] = useState<string | null>(null);
   const draftCreatedAt = initial.draftCreatedAt;
@@ -214,10 +224,15 @@ export function FollowupComposer({
     setResult(null);
     const where = threadLabel;
     setConfirming(false);
+    const review = minutaReview.map((c) => ({
+      action: decisions[c.key] ?? DEFAULT_ACTION[c.kind],
+      ticketId: c.ticketId,
+      ...(c.kind === "added" && { title: addedTitle(c) }),
+    }));
     const res = await fetch(`/api/clients/${encodeURIComponent(clientId)}/followup`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ ...payload(), send: true }),
+      body: JSON.stringify({ ...payload(), send: true, ...(review.length ? { minutaReview: review } : {}) }),
     });
     const data = await res.json();
     setState("idle");
@@ -227,14 +242,38 @@ export function FollowupComposer({
           ? "Google no está conectado."
           : data.error === "no_recipients"
             ? "Agregá al menos un destinatario."
-            : `No se envió: ${data.error}`,
+            : data.error === "gmail_rate_limit"
+              ? rateLimitText(data.until)
+              : `No se envió: ${data.error}`,
       );
       return;
     }
     setEdited(false);
     setSeenBody(""); // fuerza a tomar el borrador nuevo: el texto enviado no queda listo para reenviar
     setHasNews(false);
-    setResult({ kind: "sent", url: data.gmailUrl, inThread: data.inThread ?? null, where, to: data.to ?? [] });
+    setResult({ kind: "sent", url: data.gmailUrl, inThread: data.inThread ?? null, where, to: data.to ?? [], applied: data.applied });
+    router.refresh();
+  }
+
+  /** Abre la confirmación; en la minuta, con lo que cambió en los accionables respecto de lo generado. */
+  function askSend() {
+    const changes = kind === "meeting" && minutaItems?.length ? minutaChanges(minutaItems, body) : [];
+    setMinutaReview(changes);
+    setDecisions({});
+    setConfirming(true);
+  }
+
+  async function undoApplied() {
+    const res = await fetch(`/api/clients/${encodeURIComponent(clientId)}`, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ minutaUndo: { meetingId: initial.meetingId } }),
+    }).catch(() => null);
+    if (!res?.ok) {
+      setError("No se pudo deshacer el cambio en el tablero.");
+      return;
+    }
+    setResult((r) => (r ? { ...r, applied: undefined, undone: true } : r));
     router.refresh();
   }
 
@@ -256,7 +295,9 @@ export function FollowupComposer({
           ? "Google no está conectado."
           : data.error === "no_recipients"
             ? "Agregá al menos un destinatario."
-            : `Error: ${data.error}`,
+            : data.error === "gmail_rate_limit"
+              ? rateLimitText(data.until)
+              : `Error: ${data.error}`,
       );
       return;
     }
@@ -279,6 +320,7 @@ export function FollowupComposer({
       const { draft, synced } = (await res.json()) as { draft: FollowupDraft; synced: boolean };
       setSubject(draft.subject);
       setBody(draft.body);
+      setMinutaItems(draft.minutaItems);
       setTo(draft.to.join(", "));
       setCc(draft.cc?.join(", ") ?? "");
       setThreadId(draft.threadId === null ? NEW_THREAD : (draft.threadId ?? threads[0]?.threadId ?? NEW_THREAD));
@@ -562,7 +604,7 @@ export function FollowupComposer({
         {(state === "sending" || state === "drafting") && (
           <ActionProgress label={state === "sending" ? "Enviando el mail…" : "Creando el borrador en Gmail…"} />
         )}
-        {result && <ResultBox result={result} onClose={() => setResult(null)} />}
+        {result && <ResultBox result={result} onClose={() => setResult(null)} onUndo={undoApplied} />}
         {!result && state !== "drafting" && initial.gmailDraftId && initial.gmailBody && initial.gmailBody !== body && (
           <div className="flex flex-wrap items-center gap-2 rounded-md border border-warning/30 bg-warning-muted px-3 py-2 text-xs text-foreground">
             <span className="min-w-0 flex-1">
@@ -574,7 +616,7 @@ export function FollowupComposer({
           </div>
         )}
         <div className="sticky bottom-0 z-10 flex shrink-0 flex-wrap items-center gap-2 bg-card pt-1">
-        <Button onClick={() => setConfirming(true)} disabled={state === "sending" || confirming}>
+        <Button onClick={askSend} disabled={state === "sending" || confirming}>
             {state === "sending" ? <Loader2 className="animate-spin" /> : <Send />}
             Enviar
           </Button>
@@ -602,7 +644,10 @@ export function FollowupComposer({
       </CardContent>
       {/* Evita envíos por error: el foco arranca en Cancelar, así un Enter no dispara el mail. */}
       <Dialog open={confirming} onOpenChange={setConfirming}>
-        <DialogContent initialFocus={cancelSendRef} className="sm:max-w-md">
+        <DialogContent
+          initialFocus={cancelSendRef}
+          className={cn("max-h-[calc(100dvh-2rem)] overflow-y-auto", minutaReview.length ? "sm:max-w-xl" : "sm:max-w-md")}
+        >
           <DialogHeader>
             <DialogTitle>¿Enviar este mail?</DialogTitle>
             <DialogDescription>Un mail enviado no se puede deshacer. Revisá los datos antes de confirmar.</DialogDescription>
@@ -623,6 +668,13 @@ export function FollowupComposer({
               <dd className="break-words">{threadLabel}</dd>
             </div>
           </dl>
+          {minutaReview.length > 0 && (
+            <MinutaReviewList
+              changes={minutaReview}
+              decisions={decisions}
+              onChange={(key, action) => setDecisions((d) => ({ ...d, [key]: action }))}
+            />
+          )}
           <DialogFooter>
             <Button ref={cancelSendRef} variant="outline" onClick={() => setConfirming(false)}>
               Cancelar
@@ -692,10 +744,31 @@ function ActionProgress({ label }: { label: string }) {
 function ResultBox({
   result,
   onClose,
+  onUndo,
 }: {
-  result: { kind: "draft" | "sent"; url: string; inThread: boolean | null; where: string; to: string[]; updated?: boolean };
+  result: {
+    kind: "draft" | "sent";
+    url: string;
+    inThread: boolean | null;
+    where: string;
+    to: string[];
+    updated?: boolean;
+    applied?: AppliedCounts;
+    undone?: boolean;
+  };
   onClose: () => void;
+  onUndo: () => void;
 }) {
+  const a = result.applied;
+  const appliedText = a
+    ? [
+        a.removed && `${a.removed} quitado${a.removed > 1 ? "s" : ""} (No corresponde)`,
+        a.done && `${a.done} marcado${a.done > 1 ? "s" : ""} como hecho`,
+        a.created && `${a.created} accionable${a.created > 1 ? "s" : ""} nuevo${a.created > 1 ? "s" : ""}`,
+      ]
+        .filter(Boolean)
+        .join(", ")
+    : "";
   const sent = result.kind === "sent";
   const outOfThread = result.inThread === false;
   return (
@@ -724,6 +797,15 @@ function ResultBox({
           {sent && result.to.length > 0 && ` Para: ${result.to.join(", ")}.`}
           {sent && " El borrador de la cuenta se regenera a partir de este envío."}
         </p>
+        {appliedText && (
+          <p className="flex flex-wrap items-center gap-x-2 text-muted-foreground">
+            <span>Tablero actualizado: {appliedText}.</span>
+            <button type="button" onClick={onUndo} className="font-medium text-foreground underline underline-offset-2 hover:no-underline">
+              Deshacer
+            </button>
+          </p>
+        )}
+        {result.undone && <p className="text-muted-foreground">Se deshicieron los cambios en el tablero.</p>}
       </div>
       <div className="flex shrink-0 items-center gap-1.5">
         <Button size="sm" variant={sent ? "outline" : "default"} render={<a href={result.url} target="_blank" rel="noopener noreferrer" />}>
@@ -733,6 +815,86 @@ function ResultBox({
           Cerrar
         </Button>
       </div>
+    </div>
+  );
+}
+
+/** Gmail cortó por exceso de uso: hasta qué hora (local) hay que esperar. */
+function rateLimitText(until?: string | null) {
+  const at = until ? new Date(until).toLocaleTimeString("es", { hour: "2-digit", minute: "2-digit" }) : null;
+  return `Gmail frenó las consultas por exceso de uso${at ? ` hasta las ${at}` : " por un rato"}. No se hizo nada: probá de nuevo después${at ? " de esa hora" : ""}.`;
+}
+
+type AppliedCounts = { done: number; removed: number; created: number };
+
+const CHANGE_LABEL: Record<MinutaChange["kind"], string> = {
+  removed: "Lo sacaste del mail",
+  marked_done: "Lo marcaste como hecho",
+  added: "Lo agregaste",
+};
+
+const CHANGE_OPTIONS: Record<MinutaChange["kind"], { action: MinutaAction; label: string }[]> = {
+  removed: [
+    { action: "not_applicable", label: "No corresponde" },
+    { action: "done", label: "Hecho" },
+    { action: "keep", label: "Sigue abierto" },
+  ],
+  marked_done: [
+    { action: "done", label: "Cerrar en el tablero" },
+    { action: "keep", label: "Dejar abierto" },
+  ],
+  added: [
+    { action: "create", label: "Crear accionable" },
+    { action: "ignore", label: "Solo en el mail" },
+  ],
+};
+
+/** Minuta: qué pasa en el tablero con lo que cambiaste en los accionables del mail (se aplica al enviar). */
+function MinutaReviewList({
+  changes,
+  decisions,
+  onChange,
+}: {
+  changes: MinutaChange[];
+  decisions: Record<string, MinutaAction>;
+  onChange: (key: string, action: MinutaAction) => void;
+}) {
+  return (
+    <div className="space-y-2 border-t border-divider pt-3">
+      <p className="text-xs text-muted-foreground">
+        Cambiaste {changes.length} accionable{changes.length > 1 ? "s" : ""} respecto de la minuta. Al enviar se aplica en el tablero
+        (podés deshacerlo después):
+      </p>
+      <ul className="space-y-2">
+        {changes.map((c) => {
+          const current = decisions[c.key] ?? DEFAULT_ACTION[c.kind];
+          return (
+            <li key={c.key} className="space-y-1.5 rounded-md border border-border bg-surface px-2.5 py-2">
+              <p className="text-label-sm text-subtle-foreground">{CHANGE_LABEL[c.kind]}</p>
+              <p className="text-[13px] leading-snug">
+                <b className="font-medium">{c.title}</b>
+                {c.detail && <span className="text-muted-foreground">: {c.detail}</span>}
+                {c.owner && <span className="text-muted-foreground"> ({c.owner})</span>}
+              </p>
+              <div role="radiogroup" aria-label="Qué hacer en el tablero" className="flex flex-wrap gap-1">
+                {CHANGE_OPTIONS[c.kind].map((o) => (
+                  <Button
+                    key={o.action}
+                    type="button"
+                    size="xs"
+                    role="radio"
+                    aria-checked={current === o.action}
+                    variant={current === o.action ? "default" : "outline"}
+                    onClick={() => onChange(c.key, o.action)}
+                  >
+                    {current === o.action && <Check />} {o.label}
+                  </Button>
+                ))}
+              </div>
+            </li>
+          );
+        })}
+      </ul>
     </div>
   );
 }

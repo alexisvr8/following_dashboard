@@ -19,9 +19,14 @@ type Action = "done" | "not_applicable" | "keep" | "create" | "ignore" | "ok";
 
 const REASONS = ["Hubo reunión esta semana", "Esperando al cliente (ya está pedido)", "Proyecto en pausa", "Se habló por otro canal", "Nada para pedir"];
 
-const KIND_LABEL = { removed: "Lo sacaste", added: "Lo agregaste", skipped: "Sin mail" } as const;
+const KIND_LABEL = { removed: "Lo sacaste", added: "Lo agregaste", skipped: "Sin mail", marked_done: "Lo marcaste hecho" } as const;
 
-const weekLabel = (w: string) => `semana del ${w.slice(8, 10)}/${w.slice(5, 7)}`;
+const ddmm = (w: string) => `${w.slice(8, 10)}/${w.slice(5, 7)}`;
+const originLabel = (i: WeeklyReviewEntry["item"]) => (i.source === "minuta" ? `minuta del ${ddmm(i.week)}` : `mail semanal · semana del ${ddmm(i.week)}`);
+
+/** Lo sugerido para "Aplicar lo sugerido": minuta = sacado → No corresponde, marcado → Hecho; el semanal no tiene default. */
+const suggested = (i: WeeklyReviewEntry["item"]): Action | null =>
+  i.source !== "minuta" ? null : i.kind === "removed" ? "not_applicable" : i.kind === "marked_done" ? "done" : null;
 
 export function WeeklyReviewDialog({
   entries,
@@ -74,18 +79,33 @@ export function WeeklyReviewDialog({
     router.refresh();
   }
 
+  async function applySuggested() {
+    for (const e of pending) {
+      const action = suggested(e.item);
+      if (action) await resolve(e, action);
+    }
+  }
+
   return (
     <>
       <Dialog open={open} onOpenChange={onOpenChange}>
         <DialogContent className="flex max-h-[calc(100dvh-2rem)] flex-col sm:max-w-3xl">
           <DialogHeader>
-            <DialogTitle>Revisión del mail semanal</DialogTitle>
+            <DialogTitle>Revisión de lo enviado</DialogTitle>
             <DialogDescription>
-              Lo que cambiaste respecto del borrador de los lunes. Decidí cada punto para que no se acumulen: lo que
-              sacaste puede estar hecho o no corresponder, y lo que agregaste puede pasar al tablero como card.
+              Lo que cambiaste respecto del borrador (mail de los lunes y minutas enviadas desde Gmail). Decidí cada punto
+              para que no se acumulen: lo que sacaste puede estar hecho o no corresponder, lo que marcaste hecho se cierra y
+              lo que agregaste puede pasar al tablero como card.
             </DialogDescription>
           </DialogHeader>
           {error && <p className="text-xs text-critical">{error}</p>}
+          {pending.some((e) => suggested(e.item)) && (
+            <div className="flex justify-end">
+              <Button size="xs" variant="outline" disabled={!!busy} onClick={applySuggested}>
+                <Check /> Aplicar lo sugerido de las minutas ({pending.filter((e) => suggested(e.item)).length})
+              </Button>
+            </div>
+          )}
           {!pending.length ? (
             <p className="py-6 text-center text-sm text-subtle-foreground">No hay nada pendiente de revisar.</p>
           ) : (
@@ -98,8 +118,8 @@ export function WeeklyReviewDialog({
                   <li key={k} className={cn("space-y-2 px-3 py-3", isBusy && "opacity-60")}>
                     <div className="flex flex-wrap items-center gap-x-2 gap-y-1 text-label-sm text-subtle-foreground">
                       <span className="font-medium text-foreground">{e.clientName}</span>
-                      <span>· {weekLabel(item.week)}</span>
-                      <Badge variant={item.kind === "added" ? "success" : item.kind === "removed" ? "warning" : "outline"}>
+                      <span>· {originLabel(item)}</span>
+                      <Badge variant={item.kind === "added" || item.kind === "marked_done" ? "success" : item.kind === "removed" ? "warning" : "outline"}>
                         {KIND_LABEL[item.kind]}
                       </Badge>
                     </div>
@@ -128,7 +148,7 @@ export function WeeklyReviewDialog({
                           </div>
                         </div>
                       </>
-                    ) : item.kind === "removed" ? (
+                    ) : item.kind === "removed" || item.kind === "marked_done" ? (
                       <>
                         <p className="text-[13px] leading-snug">
                           <b className="font-medium">{item.title}</b>
@@ -136,10 +156,20 @@ export function WeeklyReviewDialog({
                           {item.detail && <span className="text-muted-foreground">: {item.detail}</span>}
                         </p>
                         <div className="flex flex-wrap justify-end gap-1.5">
-                          <Button size="xs" disabled={isBusy} onClick={() => resolve(e, "done")}>
+                          <Button
+                            size="xs"
+                            variant={suggested(item) === "not_applicable" ? "outline" : "default"}
+                            disabled={isBusy}
+                            onClick={() => resolve(e, "done")}
+                          >
                             <Check /> Hecho
                           </Button>
-                          <Button size="xs" variant="outline" disabled={isBusy} onClick={() => resolve(e, "not_applicable")}>
+                          <Button
+                            size="xs"
+                            variant={suggested(item) === "not_applicable" ? "default" : "outline"}
+                            disabled={isBusy}
+                            onClick={() => resolve(e, "not_applicable")}
+                          >
                             <CircleSlash /> No corresponde
                           </Button>
                           <Button size="xs" variant="ghost" disabled={isBusy} onClick={() => resolve(e, "keep")}>

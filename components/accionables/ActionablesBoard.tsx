@@ -754,13 +754,13 @@ export function ActionablesBoard({
           <button
             type="button"
             onClick={() => setReview("weekly")}
-            title="Diferencias entre el mail semanal que generó la app y el que enviaste"
+            title="Diferencias entre lo que generó la app (mail semanal y minutas enviadas desde Gmail) y lo que enviaste"
             className={cn(
               "flex h-8 items-center gap-1.5 rounded-md border px-2.5 text-xs transition-colors",
               weeklyShown.length ? "border-border-strong bg-surface text-foreground" : "border-input bg-surface text-muted-foreground hover:text-foreground",
             )}
           >
-            <Mail className="size-3.5" /> Del mail semanal
+            <Mail className="size-3.5" /> De lo enviado
             {weeklyShown.length > 0 && <span className="tabular rounded bg-accent px-1 font-medium">{weeklyShown.length}</span>}
           </button>
           <div className="ml-auto flex items-center gap-2">

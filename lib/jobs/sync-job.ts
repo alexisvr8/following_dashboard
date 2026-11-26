@@ -4,6 +4,8 @@ import { generateStatusMails } from "@/lib/integrations/status-ai";
 import { createThreadDraft, draftFate } from "@/lib/integrations/gmail";
 import { syncClientsActivity } from "@/lib/integrations/client-activity";
 import { captureWeeklyOutcomes } from "@/lib/integrations/weekly-outcome";
+import { captureMinutaOutcomes } from "@/lib/integrations/minuta-outcome";
+import { googlePausedUntil } from "@/lib/integrations/google-limit";
 import { weeklyStyleExamples } from "@/lib/utils/weekly-learning";
 import { scanUnassignedMails, UNASSIGNED_SCAN_EVERY_MS } from "@/lib/integrations/unassigned-mail";
 import { getUnassignedMails } from "@/lib/store/unassigned-mail-store";
@@ -88,6 +90,9 @@ async function doSync({ drafts: withDrafts, trigger }: SyncOptions): Promise<Syn
   const drafts: { clientId: string; ok: boolean; error?: string }[] = [];
 
   try {
+    // Gmail cortó por exceso de uso: hasta la hora que indicó no se lo consulta (insistir solo alarga el corte).
+    const gmailPaused = googlePausedUntil();
+    if (gmailPaused) throw new Error(`gmail_rate_limit: Gmail pidió esperar hasta ${new Date(gmailPaused).toLocaleTimeString("es", { hour: "2-digit", minute: "2-digit" })}`);
     // 1) Minutas nuevas → reuniones (y con ellas, accionables de la última minuta).
     const initial = await getClientsFile();
     const fingerprintBefore = fingerprint(initial);
@@ -115,6 +120,8 @@ async function doSync({ drafts: withDrafts, trigger }: SyncOptions): Promise<Syn
 
     // 2a) Mail de los lunes: qué envié / programé / borré (referencia de estilo + revisión punto por punto). Cada 30 min.
     await captureWeeklyOutcomes(await getClientsFile()).catch(() => undefined);
+    // 2a') Minuta enviada desde Gmail: lo que sacaste / marcaste hecho / agregaste → revisión en /accionables.
+    await captureMinutaOutcomes(await getClientsFile()).catch(() => undefined);
 
     // 2b) Mails sin cuenta (capa C): externos dirigidos a mí que nadie tomó. Cada 30 min (muchas llamadas a Gmail).
     const inbox = await getUnassignedMails().catch(() => null);

@@ -26,6 +26,8 @@ import {
 } from "@/lib/utils/followup-thread";
 import { actionableLine, greetingName, renderPostMeetingMail, statusSuffix, weeklyClosing, weeklyThanks, type MailStatus } from "@/lib/utils/postmeeting-mail";
 import type { Actionable } from "@/lib/utils/actionables";
+import { isAutoTicket } from "@/lib/utils/auto-ticket";
+import type { MinutaItem } from "@/lib/utils/minuta-review";
 import type { AISide } from "@/lib/llm/postmeeting-schema";
 import { statusKey, type StatusMailInput } from "@/lib/llm/status-mail";
 import { clientMailKey, type ClientMailInput, type ClientMailMode } from "@/lib/llm/reply-mail";
@@ -420,13 +422,14 @@ export function buildFollowup(
   const both = `Xtract y ${company}`;
   // `owner` = responsables según la minuta (" (Gonzalo)"); vacío si no se dijo. Con IA, status (Pendiente / En curso /
   // Stand By) y empresa del responsable salen de la generación; el lado puesto a mano sigue mandando.
-  const steps: { text: string; owner: string; side: StepSide; status: MailStatus; done: boolean; doneAt: string | null }[] =
+  const steps: { id: string; text: string; owner: string; side: StepSide; status: MailStatus; done: boolean; doneAt: string | null }[] =
     actionables.map((a) => {
       const ai = aiStep(client.id, a);
       const side = overrideSide(client, a.id, ai ? AI_SIDE[ai.empresa] : stepSide(a.step, client, ownerEmail, settings));
       // Con IA el mail lleva la versión corta (la card, el detalle); si lo editaste a mano, tu texto.
       const base = ai?.mail && !client.actionableEdits?.[a.id] ? ai.mail : formatStep(a.step);
       return {
+        id: a.id,
         text:
           base.replace(/\s*\.+$/, "") +
           (!a.done && trace.has(a.id) ? ` (conversado por mail el ${fmtShort(trace.get(a.id)!.date)})` : "") +
@@ -439,6 +442,7 @@ export function buildFollowup(
       };
     });
   const requests = openRequests(client, interaction).map((r) => ({
+    id: r.id,
     text: `${r.title} (consulta por mail)`,
     owner: "",
     side: "team" as StepSide,
@@ -476,6 +480,15 @@ export function buildFollowup(
     const aiName = greetingName(ai?.intro ?? "");
     return aiName ? `${salutation(now)} ${aiName},` : `${salutation(now)},`;
   };
+  // Cada línea de accionable con su ticket: al enviar se compara con el texto final (`minutaChanges`).
+  const theirLines = theirs.map((s) => ({ s, line: actionableLine(s.text, s.owner || "Equipo", s.status) }));
+  const ourLines = ours.map((s) => ({ s, line: actionableLine(s.text, s.owner === both ? both : me, s.status) }));
+  const doneLines = steps
+    .filter((s) => s.done)
+    .map((s) => ({ s, line: actionableLine(s.text, s.owner || me, "Hecho", s.doneAt ? fmtDay(s.doneAt) : null) }));
+  const minutaItems: MinutaItem[] = [...theirLines, ...ourLines, ...doneLines]
+    .filter((x) => !isAutoTicket(x.s.id))
+    .map((x) => ({ ticketId: x.s.id, line: x.line, done: x.s.done }));
   const body = renderPostMeetingMail({
     greeting: one ? oneGreeting() : `${salutation(now)} equipo,`,
     // Apertura de la semana (la misma para todas las cuentas, cambia cada lunes), con el día relativo a la reunión.
@@ -484,9 +497,9 @@ export function buildFollowup(
     objetivo,
     charlamos,
     clientName: company,
-    theirs: theirs.map((s) => actionableLine(s.text, s.owner || "Equipo", s.status)),
-    ours: ours.map((s) => actionableLine(s.text, s.owner === both ? both : me, s.status)),
-    done: steps.filter((s) => s.done).map((s) => actionableLine(s.text, s.owner || me, "Hecho", s.doneAt ? fmtDay(s.doneAt) : null)),
+    theirs: theirLines.map((x) => x.line),
+    ours: ourLines.map((x) => x.line),
+    done: doneLines.map((x) => x.line),
     extra: strays.length ? [strayLine(strays, one)!] : [],
     // Cierre de la semana, igual que la apertura.
     closing: weeklyClosing(now, one),
@@ -516,6 +529,7 @@ export function buildFollowup(
     threadId: thread.threadId,
     threadReason: thread.reason,
     reviewNotes,
+    minutaItems,
   };
 }
 
@@ -1102,7 +1116,9 @@ export function getDraft(
       lastSentAt,
     };
   }
-  return { draft: saved, generated, regenerated: false, lastSentAt };
+  // Edición guardada antes de que existiera `minutaItems`: la validación al enviar usa las líneas actuales.
+  const draft = kind === "meeting" && !saved.minutaItems ? { ...saved, minutaItems: generated.minutaItems } : saved;
+  return { draft, generated, regenerated: false, lastSentAt };
 }
 
 const norm = (s: string) => s.normalize("NFD").replace(/[\u0300-\u036f]/g, "").toLowerCase().trim();

@@ -21,7 +21,7 @@ import { mondayKey } from "@/lib/utils/account-analysis";
 // - Todos los días (hábiles y fines de semana, si el servidor está prendido) entre `CRON_FROM` y `CRON_TO`
 //   (default 8–21), cada `CRON_INTERVAL_MINUTES` (15): sync.
 // - Modo rápido: durante `CRON_FAST_MINUTES` (40) después de que termina una reunión de Calendar con externos,
-//   sync cada `CRON_FAST_INTERVAL_MINUTES` (2), para que la minuta de Gemini y su borrador lleguen enseguida.
+//   sync cada `CRON_FAST_INTERVAL_MINUTES` (5), para que la minuta de Gemini y su borrador lleguen enseguida.
 // - Al iniciar o tras un hueco (Mac dormido), si la última corrida es más vieja que el intervalo: sync.
 // - Varios equipos sobre la misma base: solo corre el que tiene el candado (`scheduler-lock.ts`); las tareas del
 //   lunes además se reservan al empezar (`claimWeeklyTask`) para que un relevo a mitad de corrida no las repita.
@@ -40,7 +40,7 @@ export function startScheduler() {
   const interval = Math.max(1, num(process.env.CRON_INTERVAL_MINUTES, 15));
   const from = num(process.env.CRON_FROM, 8);
   const to = num(process.env.CRON_TO, 21);
-  const fastInterval = Math.max(1, num(process.env.CRON_FAST_INTERVAL_MINUTES, 2));
+  const fastInterval = Math.max(1, num(process.env.CRON_FAST_INTERVAL_MINUTES, 5));
   const fastMinutes = Math.max(0, num(process.env.CRON_FAST_MINUTES, 40));
   // Fines de reunión con externos (ms), de Calendar; se refresca cada 30 min.
   let meetingEnds: number[] = [];

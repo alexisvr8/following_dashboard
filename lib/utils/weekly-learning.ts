@@ -192,7 +192,7 @@ export interface WeeklyReviewEntry {
 /** Revisión semanal sin resolver de las cuentas asignadas (las últimas 3 semanas), la más reciente primero. */
 export function pendingWeeklyReview(clients: ClientRecord[], now = new Date()): WeeklyReviewEntry[] {
   const since = now.getTime() - 21 * 86_400_000;
-  const order = { skipped: 0, removed: 1, added: 2 } as const;
+  const order = { skipped: 0, removed: 1, marked_done: 2, added: 3 } as const;
   return clients
     .filter((c) => c.status === "assigned")
     .flatMap((c) =>

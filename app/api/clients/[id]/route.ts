@@ -8,6 +8,7 @@ import {
   resolveRewrite,
   resolveSuggestion,
   resolveWeeklyReview,
+  undoMinutaDecisions,
   setFollowupThread,
   setActionablePlan,
   setTicketDone,
@@ -39,6 +40,7 @@ export async function PATCH(
     rewrite?: { ref?: unknown; action?: unknown; title?: unknown };
     audit?: { key?: unknown; action?: unknown; title?: unknown };
     weeklyReview?: { id?: unknown; action?: unknown; title?: unknown; due?: unknown; reason?: unknown };
+    minutaUndo?: { meetingId?: unknown };
     followupThread?: { threadId?: unknown; subject?: unknown } | null;
     close?: { note?: unknown; handedTo?: unknown };
     reopen?: boolean;
@@ -109,6 +111,14 @@ export async function PATCH(
     const client = await resolveRewrite(decodeURIComponent(id), ref, action, typeof title === "string" ? title : undefined);
     if (!client) return Response.json({ error: "not_found" }, { status: 404 });
     return Response.json({ id: client.id });
+  }
+
+  // "Deshacer" de los cambios al tablero que aplicó el envío de la minuta.
+  if (body.minutaUndo && typeof body.minutaUndo === "object") {
+    const { meetingId } = body.minutaUndo;
+    if (typeof meetingId !== "string") return Response.json({ error: "invalid_minuta_undo" }, { status: 400 });
+    const ok = await undoMinutaDecisions(decodeURIComponent(id), meetingId);
+    return ok ? Response.json({ ok: true }) : Response.json({ error: "nothing_to_undo" }, { status: 409 });
   }
 
   // Revisión del mail semanal: punto quitado (hecho / no corresponde / sigue), agregado (crear card / ignorar) o
