@@ -326,8 +326,10 @@ export interface FollowupDraft {
   weeklyItems?: string[];
   /** Mail de los lunes: qué hice con el borrador en Gmail (`captureWeeklyOutcomes`). */
   outcome?: WeeklyOutcome;
-  /** Minuta post-reunión: cada línea de accionable con su ticket, para validar lo que se envía (`minutaChanges`). */
+  /** Minuta post-reunión y resumen del viernes: cada línea de accionable con su ticket, para validar lo que se envía (`minutaChanges`). */
   minutaItems?: MinutaItem[];
+  /** Mail de los lunes en versión recordatorio (el viernes ya salió el resumen): sin puntos que revisar. */
+  mondayNudge?: boolean;
   /** Minuta con borrador en Gmail: ya se revisó qué pasó con él (enviada desde Gmail / borrada). */
   minutaChecked?: { state: "sent" | "deleted"; at: string };
   /** Minuta enviada desde la app: cambios que se aplicaron al tablero (para "Deshacer"). */
@@ -367,8 +369,8 @@ export interface WeeklyReviewItem {
   week: string;
   /** marked_done = punto de la minuta que pasaste a "Hecho" al enviarla. */
   kind: "removed" | "added" | "skipped" | "marked_done";
-  /** De qué mail sale: semanal (default) o minuta post-reunión enviada desde Gmail (`week` = día de la reunión). */
-  source?: "minuta";
+  /** De qué mail sale: semanal (default), minuta post-reunión enviada desde Gmail (`week` = día de la reunión) o resumen del viernes (`week` = lunes de esa semana). */
+  source?: "minuta" | "viernes";
   /** Minuta: reunión de la que salió (un punto agregado se crea como accionable de esa reunión). */
   meetingId?: string;
   ticketId?: string;

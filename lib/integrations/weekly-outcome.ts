@@ -2,7 +2,7 @@
 // lo guardo como referencia de estilo para la IA y armo la revisión punto por punto. Solo lectura en Gmail.
 import { google, type gmail_v1 } from "googleapis";
 import { getAuthorizedClient } from "@/lib/integrations/google-client";
-import { setWeeklyOutcome, type ClientsFile, type WeeklyOutcome } from "@/lib/store/clients-store";
+import { setWeeklyOutcome, type ClientsFile, type WeeklyOutcome, type WeeklyReviewItem } from "@/lib/store/clients-store";
 import { ownMailText, parseMailItems, skippedReviewItem, weeklyReviewItems } from "@/lib/utils/weekly-learning";
 
 /** Borradores semanales de hasta 14 días: después ya no se revisan. */
@@ -72,8 +72,14 @@ export async function captureWeeklyOutcomes(file: ClientsFile, opts: { force?: b
       const week = key.slice("week:".length);
       const now = new Date();
       let outcome: WeeklyOutcome;
-      let review;
-      if (!pick) {
+      let review: WeeklyReviewItem[];
+      if (f.mondayNudge) {
+        // Recordatorio corto del lunes (los puntos salieron el viernes): nada que revisar, solo se registra.
+        outcome = pick
+          ? { state: scheduled.has(pick.m.id!) ? "scheduled" : "sent", at: new Date(Number(pick.m.internalDate)).toISOString(), body: pick.body, checkedAt: now.toISOString() }
+          : { state: "deleted", at: now.toISOString(), checkedAt: now.toISOString() };
+        review = [];
+      } else if (!pick) {
         outcome = { state: "deleted", at: now.toISOString(), checkedAt: now.toISOString() };
         review = [skippedReviewItem(week, client.name, "deleted", now)];
       } else if (!pick.items && parseMailItems(f.body).length) {

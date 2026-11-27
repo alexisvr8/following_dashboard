@@ -22,11 +22,12 @@ const REASONS = ["Hubo reunión esta semana", "Esperando al cliente (ya está pe
 const KIND_LABEL = { removed: "Lo sacaste", added: "Lo agregaste", skipped: "Sin mail", marked_done: "Lo marcaste hecho" } as const;
 
 const ddmm = (w: string) => `${w.slice(8, 10)}/${w.slice(5, 7)}`;
-const originLabel = (i: WeeklyReviewEntry["item"]) => (i.source === "minuta" ? `minuta del ${ddmm(i.week)}` : `mail semanal · semana del ${ddmm(i.week)}`);
+const originLabel = (i: WeeklyReviewEntry["item"]) =>
+  i.source === "minuta" ? `minuta del ${ddmm(i.week)}` : i.source === "viernes" ? `resumen del viernes · semana del ${ddmm(i.week)}` : `mail semanal · semana del ${ddmm(i.week)}`;
 
-/** Lo sugerido para "Aplicar lo sugerido": minuta = sacado → No corresponde, marcado → Hecho; el semanal no tiene default. */
+/** Lo sugerido para "Aplicar lo sugerido": minuta y viernes = sacado → No corresponde, marcado → Hecho; el semanal no tiene default. */
 const suggested = (i: WeeklyReviewEntry["item"]): Action | null =>
-  i.source !== "minuta" ? null : i.kind === "removed" ? "not_applicable" : i.kind === "marked_done" ? "done" : null;
+  i.source !== "minuta" && i.source !== "viernes" ? null : i.kind === "removed" ? "not_applicable" : i.kind === "marked_done" ? "done" : null;
 
 export function WeeklyReviewDialog({
   entries,
@@ -93,7 +94,7 @@ export function WeeklyReviewDialog({
           <DialogHeader>
             <DialogTitle>Revisión de lo enviado</DialogTitle>
             <DialogDescription>
-              Lo que cambiaste respecto del borrador (mail de los lunes y minutas enviadas desde Gmail). Decidí cada punto
+              Lo que cambiaste respecto del borrador (resumen del viernes, mail de los lunes y minutas enviadas desde Gmail). Decidí cada punto
               para que no se acumulen: lo que sacaste puede estar hecho o no corresponder, lo que marcaste hecho se cierra y
               lo que agregaste puede pasar al tablero como card.
             </DialogDescription>
@@ -102,7 +103,7 @@ export function WeeklyReviewDialog({
           {pending.some((e) => suggested(e.item)) && (
             <div className="flex justify-end">
               <Button size="xs" variant="outline" disabled={!!busy} onClick={applySuggested}>
-                <Check /> Aplicar lo sugerido de las minutas ({pending.filter((e) => suggested(e.item)).length})
+                <Check /> Aplicar lo sugerido ({pending.filter((e) => suggested(e.item)).length})
               </Button>
             </div>
           )}
