@@ -2,6 +2,7 @@ import { google, type gmail_v1 } from "googleapis";
 import { getAuthorizedClient } from "./google-client";
 import { listEventsBetween } from "./calendar";
 import { extractBody, mapLimit, stripHtml, unwrapPlain, withRetry } from "./gemini-mail";
+import { gmailCached, THREAD_TTL_MS } from "./gmail-cache";
 import {
   followupTicketId,
   mailTicketId,
@@ -117,6 +118,23 @@ async function syncOne(
         maxResults: MAX_MAILS_CHECK,
       }),
     );
+    // Hilos recientes (paso 2) antes que nada: su `historyId` dice qué hilos cambiaron y evita volver a bajarlos.
+    const tl = await withRetry(() =>
+      gmail.users.threads.list({
+        userId: "me",
+        q: `{from:(${or}) to:(${or}) cc:(${or})} -from:${GEMINI_SENDER} -from:calendar-notification@google.com -in:drafts newer_than:${LOOKBACK_DAYS}d`,
+        maxResults: KEEP_THREADS * 2,
+      }),
+    );
+    const history = new Map((tl.data.threads ?? []).map((t) => [t.id!, t.historyId ?? ""]));
+    const fullThread = (id: string) => {
+      const h = history.get(id);
+      return gmailCached(
+        h ? `thread:${id}:${h}` : `thread:${id}`,
+        async () => (await withRetry(() => gmail.users.threads.get({ userId: "me", id, format: "full" }))).data,
+        h ? Infinity : THREAD_TTL_MS,
+      );
+    };
     // Hilos donde ya apareció el cliente: un tercero que escribe ahí (aunque no lo copie) también es de la cuenta.
     const clientThreads = new Set<string>();
     const seen = new Set<string>();
@@ -175,13 +193,18 @@ async function syncOne(
       const hasClient = recentMails.some((m) => m.direction === "client");
       if (recentMails.length >= KEEP_MAILS && hasClient) break;
       if (recentMails.length >= KEEP_MAILS * 2) break;
-      consider((await withRetry(() => gmail.users.messages.get({ userId: "me", id: id!, format: "full" }))).data, false);
+      // Un mail enviado no cambia: si ya se bajó en una corrida anterior se reutiliza.
+      const msg = await gmailCached(
+        `msg:${id}`,
+        async () => (await withRetry(() => gmail.users.messages.get({ userId: "me", id: id!, format: "full" }))).data,
+      );
+      consider(msg, false);
     }
     // Hilos asignados a mano desde "Mails sin cuenta": siempre son de la cuenta (los 5 más recientes).
     const linkedThreads = [...(client.profile?.linkedThreads ?? [])].sort((a, b) => b.at.localeCompare(a.at)).slice(0, 5);
     for (const lt of linkedThreads) {
       try {
-        const th = (await withRetry(() => gmail.users.threads.get({ userId: "me", id: lt.threadId, format: "full" }))).data;
+        const th = await fullThread(lt.threadId);
         clientThreads.add(lt.threadId);
         for (const msg of th.messages ?? []) consider(msg, true, true);
       } catch {
@@ -199,7 +222,7 @@ async function syncOne(
       ),
     ].slice(0, 3);
     for (const threadId of mixed) {
-      const th = (await withRetry(() => gmail.users.threads.get({ userId: "me", id: threadId, format: "full" }))).data;
+      const th = await fullThread(threadId);
       for (const msg of th.messages ?? []) consider(msg, true);
     }
     recentMails.sort((a, b) => b.date.localeCompare(a.date));
@@ -210,26 +233,24 @@ async function syncOne(
       autoDoneTicketIds.push(mailTicketId(client.id, lastClient.messageId, "reply"));
     }
 
-    // 2) Hilos recientes con referentes (cualquier dirección), sin minutas ni invitaciones.
-    const tl = await withRetry(() =>
-      gmail.users.threads.list({
-        userId: "me",
-        q: `{from:(${or}) to:(${or}) cc:(${or})} -from:${GEMINI_SENDER} -from:calendar-notification@google.com -in:drafts newer_than:${LOOKBACK_DAYS}d`,
-        maxResults: KEEP_THREADS * 2,
-      }),
-    );
+    // 2) Hilos recientes con referentes (cualquier dirección), sin minutas ni invitaciones (`tl`, listado arriba).
     for (const t of tl.data.threads ?? []) {
       if (threads.length >= KEEP_THREADS) break;
-      const th = (
-        await withRetry(() =>
-          gmail.users.threads.get({
-            userId: "me",
-            id: t.id!,
-            format: "metadata",
-            metadataHeaders: ["Subject", "From", "Auto-Submitted"],
-          }),
-        )
-      ).data;
+      const th = await gmailCached(
+        t.historyId ? `meta:${t.id}:${t.historyId}` : `meta:${t.id}`,
+        async () =>
+          (
+            await withRetry(() =>
+              gmail.users.threads.get({
+                userId: "me",
+                id: t.id!,
+                format: "metadata",
+                metadataHeaders: ["Subject", "From", "Auto-Submitted"],
+              }),
+            )
+          ).data,
+        t.historyId ? Infinity : THREAD_TTL_MS,
+      );
       const msgs = th.messages ?? [];
       const real = msgs.filter((m) => {
         if (m.labelIds?.includes("DRAFT")) return false;
@@ -267,11 +288,15 @@ async function syncOne(
         }),
       );
       for (const { id } of sent.data.messages ?? []) {
-        const m = (
-          await withRetry(() =>
-            gmail.users.messages.get({ userId: "me", id: id!, format: "metadata", metadataHeaders: ["Subject"] }),
-          )
-        ).data;
+        const m = await gmailCached(
+          `subject:${id}`,
+          async () =>
+            (
+              await withRetry(() =>
+                gmail.users.messages.get({ userId: "me", id: id!, format: "metadata", metadataHeaders: ["Subject"] }),
+              )
+            ).data,
+        );
         const h = hdr(m);
         if (m.labelIds?.includes("DRAFT")) continue;
         if (classifyMail({ subject: h["subject"] ?? "", from: "", headers: h, hasCalendarPart: false }) === "message") {
@@ -287,11 +312,17 @@ async function syncOne(
   const pin = client.profile?.followupThread;
   if (pin) {
     try {
-      const th = (
-        await withRetry(() =>
-          gmail.users.threads.get({ userId: "me", id: pin.threadId, format: "metadata", metadataHeaders: ["Subject"] }),
-        )
-      ).data;
+      // Solo se usa para saber si sigue existiendo y si se acerca a los 100 mensajes: alcanza con mirarlo cada 30 min.
+      const th = await gmailCached(
+        `pin:${pin.threadId}`,
+        async () =>
+          (
+            await withRetry(() =>
+              gmail.users.threads.get({ userId: "me", id: pin.threadId, format: "metadata", metadataHeaders: ["Subject"] }),
+            )
+          ).data,
+        THREAD_TTL_MS,
+      );
       // Un hilo con solo el borrador es válido: es el mail nuevo auto-fijado que todavía no salió.
       const all = th.messages ?? [];
       const last = all.filter((m) => !m.labelIds?.includes("DRAFT")).at(-1);
