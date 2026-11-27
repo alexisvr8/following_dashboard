@@ -132,7 +132,7 @@ se vuelve menú desplegable `MobileNav`). Sin sidebar. 5 secciones. Navegación 
   handlers `GET` de `/api/integrations/*` (sin fetch HTTP, in-process). Debajo, `AIUsageCard`
   (`components/conexiones/`): consumo de IA estimado hoy / 7 / 30 días, por tipo, por origen y top 5 cuentas
   (`summarizeAIUsage`, `lib/utils/ai-usage-summary.ts`, el mismo que usa `GET /api/ai-usage`) + **saldo estimado** (`AICreditPanel`:
-  saldo de la consola cargado a mano en `settings.aiCredit {amountUsd, since}` menos `spentSince`; la API no expone el saldo). Al pie, línea **"Lectura Supabase"** (hoy / 30 días de 5 GB / consultas): `fetchWithRetry` mide los bytes de cada respuesta (`lib/supabase/egress-meter.ts`, sin comprimir = cota superior) y cada 10 min los suma por día en `app_state.supabase_egress` (`lib/store/egress-store.ts`, 40 días; cada equipo suma lo suyo).
+  saldo de la consola cargado a mano en `settings.aiCredit {amountUsd, since}` menos `spentSince`; la API no expone el saldo). Al pie, línea **"Lectura Supabase"** (hoy / 30 días de 5 GB / consultas): `fetchWithRetry` mide los bytes de cada respuesta (`lib/supabase/egress-meter.ts`, sin comprimir = cota superior) y cada 10 min los suma por día en `app_state.supabase_egress` (`lib/store/egress-store.ts`, 40 días; cada equipo suma lo suyo). **Freno** (`egressBudget`, egress-store.ts; scheduler): >70% de 5 GB en 30 días o >2× el presupuesto diario (≈166 MB) → sync automática ×4 más espaciada y sin modo post-reunión; >90% o >4× → sin sync automática (lo manual sigue).
 
 Dark mode vía `next-themes` (`ThemeProvider`/`ThemeToggleButton` en
 `components/layout/`), toggle en `AppHeader`; tokens OKLCH ya definidos en
@@ -164,8 +164,8 @@ el Session pooler sigue aceptando conexiones. `pnpm export:supabase [-- --test |
 `SUPABASE_DATABASE_URL` = URI del Session pooler `postgres.<ref>:<contraseña de la base>@…:5432/postgres`) copia todo a `.data/rescate-<fecha>/`;
 `--local` además lo deja en `.data/` con los nombres del modo archivo (lo anterior a `.data/antes-<fecha-hora>/`) → `STORE_BACKEND=file` y reiniciar.
 Mientras dure, **un solo equipo activo**: para cambiar de equipo se lleva la carpeta `.data` (zip sin `rescate-*`/`antes-*`) y el otro también usa
-`STORE_BACKEND=file`. Al volver: `pnpm migrate:supabase -- --merge --dry-run` → sin `--dry-run` (solo combina clientes; `settings`/`board_order`/
-`ai_usage` se suben aparte) y quitar `STORE_BACKEND=file`.
+`STORE_BACKEND=file`. Al volver (hecho el 27/11/2026): con la app detenida, `pnpm migrate:supabase -- --restore --dry-run` → sin `--dry-run` (lo local manda:
+verifica que la base siga igual al último `.data/rescate-*` [si no, se niega salvo `--accept-diff`], sube todas las cuentas con `version+1` y todas las claves de `app_state` menos `scheduler_lock`, respaldo previo; `--merge` solo combina algunos campos y perdería auditoría/fechas/lados/análisis) y quitar `STORE_BACKEND=file`.
 Local (opción vigente): `pnpm autostart:install|uninstall|restart|logs` (`scripts/autostart.sh`) instala un LaunchAgent
 `com.xtract.method` que corre `scripts/start-local.sh` al iniciar sesión (recompila si cambió el commit o
 `FORCE_BUILD=1`, luego `next start`; logs en `~/Library/Logs/xtract-method.log`). **No instalado**: macOS (TCC) no deja
