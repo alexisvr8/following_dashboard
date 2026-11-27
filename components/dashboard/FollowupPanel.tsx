@@ -183,7 +183,14 @@ function ThreadView({ clientId, mail }: { clientId: string; mail: MailRef | null
       .then(async (res) => {
         const body = await res.json();
         if (cancelled) return;
-        if (!res.ok) setError(body.error === "google_not_connected" ? "Google no está conectado." : "No se pudo leer el hilo.");
+        if (!res.ok)
+          setError(
+            body.error === "google_not_connected"
+              ? "Google no está conectado."
+              : body.error === "gmail_rate_limit"
+                ? `Gmail está en pausa por exceso de uso${body.until ? ` hasta las ${new Date(body.until).toLocaleTimeString("es", { hour: "2-digit", minute: "2-digit" })}` : ""}.`
+                : "No se pudo leer el hilo.",
+          );
         else setMessages(body.messages);
       })
       .catch(() => !cancelled && setError("No se pudo leer el hilo."));

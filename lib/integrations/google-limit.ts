@@ -7,7 +7,7 @@
 import { getState, setState } from "@/lib/store/backend";
 
 type Pause = { until: number; strikes: number };
-const g = globalThis as unknown as { __googlePause?: Pause; __googlePauseLoaded?: Promise<void> };
+const g = globalThis as unknown as { __googlePause?: Pause; __googlePauseLoaded?: Promise<void>; __googlePauseReadAt?: number };
 
 const BASE_MS = 15 * 60_000;
 const MAX_MS = 2 * 60 * 60_000;
@@ -24,11 +24,17 @@ export function retryAfterOf(error: unknown): Date | null {
 
 export const isUserRateLimit = (error: unknown) => /user-?rate limit exceeded|rate ?limit exceeded/i.test((error as { message?: string })?.message ?? "");
 
-/** Carga (una vez por proceso) la pausa guardada: sobrevive a reinicios. */
+/** Relee la pausa guardada (sobrevive a reinicios y la comparten la sync y los botones, que en dev pueden correr con
+ * módulos separados). Con pausa vigente en memoria no hace falta; si no, como mucho una lectura cada 15 s. */
+const REREAD_MS = 15_000;
 export function loadGooglePause(): Promise<void> {
-  g.__googlePauseLoaded ??= getState<Pause>("google_pause")
+  const fresh = g.__googlePauseReadAt && Date.now() - g.__googlePauseReadAt < REREAD_MS;
+  if (g.__googlePauseLoaded && (fresh || googlePausedUntil())) return g.__googlePauseLoaded;
+  g.__googlePauseReadAt = Date.now();
+  g.__googlePauseLoaded = getState<Pause>("google_pause")
     .then((saved) => {
-      if (saved && (!g.__googlePause || saved.until > g.__googlePause.until)) g.__googlePause = saved;
+      // La guardada manda si es más nueva: trae la escalada que registró el otro lado.
+      if (saved && (!g.__googlePause || saved.until > g.__googlePause.until || saved.strikes > g.__googlePause.strikes)) g.__googlePause = saved;
     })
     .catch(() => undefined);
   return g.__googlePauseLoaded;
