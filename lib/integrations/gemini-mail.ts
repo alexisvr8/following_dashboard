@@ -12,7 +12,8 @@ import type {
   MeetingAttendee,
 } from "@/lib/store/clients-store";
 import { eventKey } from "@/lib/store/clients-store";
-import { googlePausedUntil, noteGoogleLimit } from "@/lib/integrations/google-limit";
+import { retryAfterOf } from "@/lib/integrations/google-limit";
+import { gmailCached } from "@/lib/integrations/gmail-cache";
 
 // Descubre clientes desde los mails de Gemini Notes: mail → evento de Calendar (por Doc
 // adjunto o título+fecha) → asistentes externos → dominio → empresa.
@@ -45,9 +46,7 @@ export async function mapLimit<T, R>(items: T[], limit: number, fn: (item: T) =>
 
 // Reintenta ante rate limit de Google (429 / 403 rateLimitExceeded) con backoff exponencial.
 export async function withRetry<T>(fn: () => Promise<T>, tries = 5): Promise<T> {
-  // Google pidió esperar hasta una hora concreta: no se llama (cada intento extra solo suma pedidos).
-  const paused = googlePausedUntil();
-  if (paused) throw new Error(`User-rate limit exceeded. Retry after ${paused}`);
+  // La pausa de Gmail la aplica el cliente OAuth (`google-client.ts`) solo a Gmail: Calendar y Drive siguen.
   for (let attempt = 0; ; attempt++) {
     try {
       return await fn();
@@ -55,7 +54,8 @@ export async function withRetry<T>(fn: () => Promise<T>, tries = 5): Promise<T> 
       const e = error as { code?: number; status?: number; message?: string };
       const code = e.code ?? e.status;
       const rateLimited = code === 429 || (code === 403 && /quota|rate/i.test(e.message ?? ""));
-      if (rateLimited && noteGoogleLimit(error)) throw error;
+      // Google pidió esperar hasta una hora concreta: reintentar enseguida solo alarga el corte.
+      if (rateLimited && retryAfterOf(error)) throw error;
       if (!rateLimited || attempt >= tries - 1) throw error;
       await new Promise((r) => setTimeout(r, 2 ** attempt * 2000 + Math.random() * 500));
     }
@@ -272,6 +272,8 @@ export interface DiscoveryStats {
 export async function discoverGeminiMeetings(
   days: number,
   skipMessageIds: Set<string>,
+  /** Docs ya guardados (p. ej. por `discoverFromCalendar` durante un corte de Gmail): no se duplican. */
+  skipDocIds: Set<string> = new Set(),
 ): Promise<{ result: DiscoveryResult; stats: DiscoveryStats } | null> {
   const auth = await getAuthorizedClient();
   if (!auth) return null;
@@ -312,10 +314,12 @@ export async function discoverGeminiMeetings(
   const unmatched: DiscoveredMeeting[] = [];
 
   let failed = 0;
+  let sameDoc = 0;
   await mapLimit(ids, CONCURRENCY, async (id) => {
     let msg: gmail_v1.Schema$Message;
     try {
-      msg = (await withRetry(() => gmail.users.messages.get({ userId: "me", id, format: "full" }))).data;
+      // En caché: el mail de una minuta ya tomada por Calendar se vuelve a ver en cada corrida (su id no se guarda).
+      msg = await gmailCached(`gemini:${id}`, async () => (await withRetry(() => gmail.users.messages.get({ userId: "me", id, format: "full" }))).data);
     } catch {
       failed++; // no se persiste: se reintenta en el próximo escaneo
       return;
@@ -326,6 +330,10 @@ export async function discoverGeminiMeetings(
     const { text, html } = extractBody(msg.payload ?? undefined);
     const body = text || stripHtml(html);
     const docId = (html + text).match(/docs\.google\.com\/document\/d\/([\w-]+)/)?.[1] ?? null;
+    if (docId && skipDocIds.has(docId)) {
+      sameDoc++;
+      return;
+    }
 
     let event = docId ? byDocId.get(docId) : undefined;
     if (!event) {
@@ -362,35 +370,7 @@ export async function discoverGeminiMeetings(
       attendees: event ? eventAttendees(event) : [],
     };
 
-    const external = (event?.attendees ?? []).filter((a) => {
-      const domain = a.email?.split("@")[1]?.toLowerCase();
-      return domain && !a.resource && domain !== ownDomain && !IGNORED_DOMAINS.has(domain);
-    });
-    if (!external.length) {
-      unmatched.push(meeting);
-      return;
-    }
-
-    const seen = new Set<string>();
-    for (const a of external) {
-      const email = a.email!.toLowerCase();
-      const domain = email.split("@")[1];
-      const isFree = isFreemail(domain);
-      const key = isFree ? email : domain;
-      const client = clients.get(key) ?? {
-        id: key,
-        domain,
-        name: isFree ? (a.displayName ?? email.split("@")[0]) : companyNameFromDomain(domain),
-        contactEmails: [],
-        meetings: [],
-      };
-      if (!client.contactEmails.includes(email)) client.contactEmails.push(email);
-      if (!seen.has(key)) {
-        client.meetings.push(meeting);
-        seen.add(key);
-      }
-      clients.set(key, client);
-    }
+    assignMeeting(meeting, event, ownDomain, clients, unmatched);
   });
 
   return {
@@ -404,10 +384,128 @@ export async function discoverGeminiMeetings(
     },
     stats: {
       scanned: allIds.length,
-      skipped: allIds.length - ids.length,
-      matched: ids.length - unmatched.length - failed,
+      skipped: allIds.length - ids.length + sameDoc,
+      matched: ids.length - unmatched.length - failed - sameDoc,
       unmatched: unmatched.length,
       failed,
     },
   };
+}
+
+/** Reunión → cliente(s) por los asistentes externos del evento (dominio; freemail = por email). Sin externos → sin cliente. */
+function assignMeeting(
+  meeting: DiscoveredMeeting,
+  event: calendar_v3.Schema$Event | undefined,
+  ownDomain: string,
+  clients: Map<string, DiscoveredClient>,
+  unmatched: DiscoveredMeeting[],
+) {
+  const external = (event?.attendees ?? []).filter((a) => {
+    const domain = a.email?.split("@")[1]?.toLowerCase();
+    return domain && !a.resource && domain !== ownDomain && !IGNORED_DOMAINS.has(domain);
+  });
+  if (!external.length) {
+    unmatched.push(meeting);
+    return;
+  }
+
+  const seen = new Set<string>();
+  for (const a of external) {
+    const email = a.email!.toLowerCase();
+    const domain = email.split("@")[1];
+    const isFree = isFreemail(domain);
+    const key = isFree ? email : domain;
+    const client = clients.get(key) ?? {
+      id: key,
+      domain,
+      name: isFree ? (a.displayName ?? email.split("@")[0]) : companyNameFromDomain(domain),
+      contactEmails: [],
+      meetings: [],
+    };
+    if (!client.contactEmails.includes(email)) client.contactEmails.push(email);
+    if (!seen.has(key)) {
+      client.meetings.push(meeting);
+      seen.add(key);
+    }
+    clients.set(key, client);
+  }
+}
+
+const GEMINI_DOC = /gemini/i;
+const GOOGLE_DOC_MIME = "application/vnd.google-apps.document";
+
+/** Doc de notas de Gemini adjunto al evento (Calendar lo adjunta al terminar la reunión). */
+export function geminiDocOf(e: calendar_v3.Schema$Event): string | null {
+  const a = (e.attachments ?? []).find((x) => x.fileId && GEMINI_DOC.test(x.title ?? "") && (!x.mimeType || x.mimeType === GOOGLE_DOC_MIME));
+  return a?.fileId ?? null;
+}
+
+/**
+ * Plan B sin Gmail (corte por exceso de uso): las minutas salen de los eventos de Calendar con el Doc de Gemini
+ * adjunto, leído por Drive (ambos con cupo propio). Solo reuniones con externos (las internas no son de ninguna
+ * cuenta) y Docs que no estén guardados; id `cal-<docId>`. Cuando Gmail vuelve, el mail de esa minuta se saltea
+ * por Doc (`skipDocIds` de `discoverGeminiMeetings`), así que no se duplica.
+ */
+export async function discoverFromCalendar(
+  days: number,
+  file: ClientsFile,
+): Promise<{ result: DiscoveryResult; stats: DiscoveryStats } | null> {
+  const auth = await getAuthorizedClient();
+  if (!auth) return null;
+  const calendar = google.calendar({ version: "v3", auth });
+  const ownerEmail = file.ownerEmail?.toLowerCase() ?? null;
+  const ownDomain = ownerEmail?.split("@")[1] ?? "";
+  const { corrections } = await getSettings();
+  const knownDocs = knownDocIds(file);
+  const events = await listEvents(calendar, days);
+
+  const clients = new Map<string, DiscoveredClient>();
+  const ignored: DiscoveredMeeting[] = [];
+  let scanned = 0;
+  let failed = 0;
+  const pending = events.filter((e) => {
+    const docId = geminiDocOf(e);
+    if (!docId) return false;
+    scanned++;
+    return !knownDocs.has(docId) && !knownDocs.has(`cal-${docId}`);
+  });
+  await mapLimit(pending, CONCURRENCY, async (event) => {
+    const docId = geminiDocOf(event)!;
+    let notesText: string;
+    try {
+      notesText = applyCorrections(await withRetry(() => getDocText(docId)), corrections);
+    } catch {
+      failed++;
+      return;
+    }
+    const parsed = parseGeminiNotes(notesText);
+    if (!parsed.summary && !parsed.nextSteps.length) return; // Gemini todavía no escribió las notas: próxima corrida.
+    const id = `cal-${docId}`;
+    const meeting: DiscoveredMeeting = {
+      id,
+      docId,
+      title: event.summary ?? "Reunión",
+      date: new Date(eventStart(event)).toISOString(),
+      summary: parsed.summary,
+      nextSteps: parsed.nextSteps,
+      milestones: parsed.milestones,
+      decisions: parsed.decisions,
+      transcript: extractSuggestions(id, notesText, parsed.nextSteps),
+      durationMinutes: eventMinutes(event),
+      attendees: eventAttendees(event),
+    };
+    assignMeeting(meeting, event, ownDomain, clients, ignored);
+  });
+
+  const found = [...clients.values()];
+  const matched = new Set(found.flatMap((c) => c.meetings.map((m) => m.id))).size;
+  return {
+    result: { clients: found, unmatched: [], durationsByDocId: {}, attendeesByDocId: {}, attendeesByEventKey: {}, ownerEmail },
+    stats: { scanned, skipped: scanned - pending.length, matched, unmatched: ignored.length, failed },
+  };
+}
+
+/** Docs de minutas ya guardadas en alguna cuenta. */
+export function knownDocIds(file: ClientsFile): Set<string> {
+  return new Set(file.clients.flatMap((c) => c.meetings.map((m) => m.docId).filter((d): d is string => !!d)));
 }
