@@ -1,5 +1,6 @@
 import { getThreadMessages } from "@/lib/integrations/client-activity";
 import { getClientsFile } from "@/lib/store/clients-store";
+import { googlePausedUntil, isUserRateLimit } from "@/lib/integrations/google-limit";
 
 // Hilo de Gmail de una cuenta, para leerlo completo en el panel de Seguimiento del Dashboard.
 // Solo lectura; únicamente hilos ya asociados al cliente por la sincronización de actividad.
@@ -21,6 +22,8 @@ export async function GET(_request: Request, { params }: { params: Promise<{ id:
     if (!messages) return Response.json({ error: "google_not_connected" }, { status: 409 });
     return Response.json({ messages });
   } catch (e) {
+    // Gmail en pausa por exceso de uso: el panel muestra el extracto guardado y hasta qué hora.
+    if (isUserRateLimit(e)) return Response.json({ error: "gmail_rate_limit", until: googlePausedUntil() }, { status: 429 });
     return Response.json({ error: e instanceof Error ? e.message : "gmail_error" }, { status: 502 });
   }
 }
