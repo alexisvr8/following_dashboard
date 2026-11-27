@@ -1,5 +1,6 @@
 import { google } from "googleapis";
 import { getTokens, saveTokens, type GoogleTokens } from "./google-token-store";
+import { googlePausedUntil, isUserRateLimit, loadGooglePause, noteGoogleLimit, noteGoogleOk } from "./google-limit";
 
 export const GOOGLE_SCOPES = [
   "https://www.googleapis.com/auth/gmail.readonly",
@@ -39,5 +40,34 @@ export async function getAuthorizedClient() {
     void saveTokens(merged);
   });
 
+  guardGmail(client);
   return client;
+}
+
+const GMAIL_URL = /gmail\.googleapis\.com|\/gmail\/v1\//;
+
+/**
+ * Todas las llamadas de googleapis pasan por `client.request`: acá se frena Gmail mientras dure su corte por exceso de
+ * uso (cada pedido durante el corte lo renueva), se registra el corte y se avisa cuando vuelve a andar. Calendar y
+ * Drive tienen cupo propio y siguen.
+ */
+function guardGmail(client: ReturnType<typeof createOAuthClient>) {
+  const original = client.request.bind(client) as (opts: unknown) => Promise<unknown>;
+  (client as unknown as { request: (opts: unknown) => Promise<unknown> }).request = async (opts: unknown) => {
+    if (!GMAIL_URL.test(String((opts as { url?: unknown })?.url ?? ""))) return original(opts);
+    await loadGooglePause();
+    const paused = googlePausedUntil();
+    if (paused) {
+      throw Object.assign(new Error(`User-rate limit exceeded. Retry after ${paused}`), { code: 429, status: 429 });
+    }
+    try {
+      const res = await original(opts);
+      noteGoogleOk();
+      return res;
+    } catch (error) {
+      const e = error as { code?: unknown; status?: unknown; response?: { status?: number } };
+      if (Number(e.status ?? e.response?.status ?? e.code) === 429 || isUserRateLimit(error)) noteGoogleLimit(error);
+      throw error;
+    }
+  };
 }

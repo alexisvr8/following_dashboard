@@ -1,11 +1,11 @@
-import { backfillMeetingNotes, backfillTranscripts, discoverGeminiMeetings } from "@/lib/integrations/gemini-mail";
+import { backfillMeetingNotes, backfillTranscripts, discoverFromCalendar, discoverGeminiMeetings, knownDocIds } from "@/lib/integrations/gemini-mail";
 import { generateMeetingAI } from "@/lib/integrations/meeting-ai";
 import { generateStatusMails } from "@/lib/integrations/status-ai";
 import { createThreadDraft, draftFate } from "@/lib/integrations/gmail";
 import { syncClientsActivity } from "@/lib/integrations/client-activity";
 import { captureWeeklyOutcomes } from "@/lib/integrations/weekly-outcome";
 import { captureMinutaOutcomes } from "@/lib/integrations/minuta-outcome";
-import { googlePausedUntil } from "@/lib/integrations/google-limit";
+import { googlePausedUntil, loadGooglePause } from "@/lib/integrations/google-limit";
 import { weeklyStyleExamples } from "@/lib/utils/weekly-learning";
 import { scanUnassignedMails, UNASSIGNED_SCAN_EVERY_MS } from "@/lib/integrations/unassigned-mail";
 import { getUnassignedMails } from "@/lib/store/unassigned-mail-store";
@@ -97,13 +97,25 @@ async function doSync({ drafts: withDrafts, friday: withFriday = false, trigger 
 
   try {
     // Gmail cortó por exceso de uso: hasta la hora que indicó no se lo consulta (insistir solo alarga el corte).
-    const gmailPaused = googlePausedUntil();
-    if (gmailPaused) throw new Error(`gmail_rate_limit: Gmail pidió esperar hasta ${new Date(gmailPaused).toLocaleTimeString("es", { hour: "2-digit", minute: "2-digit" })}`);
-    // 1) Minutas nuevas → reuniones (y con ellas, accionables de la última minuta).
+    // Mientras tanto, las minutas siguen entrando por Calendar + Drive (cupo propio) y la IA arma el mail post-reunión:
+    // queda listo en la app y el borrador en Gmail se crea apenas vuelva.
+    await loadGooglePause();
     const initial = await getClientsFile();
     const fingerprintBefore = fingerprint(initial);
+    const gmailCut = async () => {
+      await meetingsWithoutGmail(status, fingerprintBefore);
+      return new Error(`gmail_rate_limit: Gmail pidió esperar hasta ${new Date(googlePausedUntil() ?? Date.now()).toLocaleTimeString("es", { hour: "2-digit", minute: "2-digit" })}`);
+    };
+    if (googlePausedUntil()) throw await gmailCut();
+    // 1) Minutas nuevas → reuniones (y con ellas, accionables de la última minuta).
     const known = knownMeetingIds(initial);
-    const discovery = await discoverGeminiMeetings(DISCOVERY_DAYS, known);
+    let discovery: Awaited<ReturnType<typeof discoverGeminiMeetings>>;
+    try {
+      discovery = await discoverGeminiMeetings(DISCOVERY_DAYS, known, knownDocIds(initial));
+    } catch (error) {
+      if (googlePausedUntil()) throw await gmailCut();
+      throw error;
+    }
     if (!discovery) throw new Error("google_not_connected");
     const before = countMeetings(await getClientsFile());
     const { file: merged, newClients } = await mergeDiscovery(discovery.result);
@@ -173,6 +185,30 @@ async function doSync({ drafts: withDrafts, friday: withFriday = false, trigger 
   status.durationMs = Date.now() - started;
   await saveSyncStatus(status);
   return { ...status, skipped: false, alertList, drafts };
+}
+
+/**
+ * Corte de Gmail: lo que no depende de Gmail sigue. Minutas por Calendar + Drive (`discoverFromCalendar`), hitos y
+ * transcripción del Doc y el mail post-reunión con IA. Nunca corta la corrida por su cuenta (lo que falle, se reintenta).
+ */
+async function meetingsWithoutGmail(status: SyncStatus, fingerprintBefore: string) {
+  try {
+    const file = await getClientsFile();
+    const found = await discoverFromCalendar(DISCOVERY_DAYS, file);
+    if (found?.result.clients.length) {
+      const before = countMeetings(file);
+      const { file: merged, newClients } = await mergeDiscovery(found.result);
+      status.newMeetings = countMeetings(merged) - before;
+      status.newClients = newClients;
+    }
+    await setMeetingNotes(await backfillMeetingNotes(await getClientsFile()));
+    await setMeetingTranscripts(await backfillTranscripts(await getClientsFile()));
+    const ai = await generateMeetingAI(await getClientsFile(), await getSettings());
+    status.aiMeetings = ai.generated;
+  } catch {
+    // Calendar/Drive/IA con problemas: la próxima corrida reintenta.
+  }
+  if (fingerprint(await getClientsFile()) !== fingerprintBefore) status.lastChangeAt = status.lastRunAt;
 }
 
 /** Huella de los datos de clientes sin la marca de hora de cada sync (`syncedAt`), para saber si algo cambió. */
