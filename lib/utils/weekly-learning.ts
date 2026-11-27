@@ -157,7 +157,7 @@ export function skippedReviewItem(week: string, clientName: string, how: "delete
 /** Mails semanales que realmente envié (texto real), del más reciente al más viejo. */
 export function sentWeeklyBodies(client: ClientRecord, beforeKey?: string): { key: string; body: string }[] {
   return Object.entries(client.followups ?? {})
-    .filter(([k, f]) => k.startsWith("week:") && (!beforeKey || k < beforeKey) && f.outcome?.body && f.outcome.state !== "replaced")
+    .filter(([k, f]) => k.startsWith("week:") && !f.mondayNudge && (!beforeKey || k < beforeKey) && f.outcome?.body && f.outcome.state !== "replaced")
     .sort(([a], [b]) => b.localeCompare(a))
     .map(([key, f]) => ({ key, body: f.outcome!.body! }));
 }
@@ -171,7 +171,7 @@ export function weeklyStyleExamples(clients: ClientRecord[], excludeId: string |
     .filter((c) => c.id !== excludeId && c.status === "assigned")
     .flatMap((c) =>
       Object.entries(c.followups ?? {})
-        .filter(([k, f]) => k.startsWith("week:") && k < beforeKey && f.outcome?.body && f.outcome.state !== "replaced")
+        .filter(([k, f]) => k.startsWith("week:") && !f.mondayNudge && k < beforeKey && f.outcome?.body && f.outcome.state !== "replaced")
         .map(([k, f]) => ({ k, body: f.outcome!.body!, edited: 1 - keywordSimilarity(f.body ?? "", f.outcome!.body!) })),
     );
   const latest = all.reduce((max, x) => (x.k > max ? x.k : max), "");

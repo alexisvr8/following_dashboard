@@ -18,7 +18,7 @@ export interface WeeklyAIState {
   claims?: Partial<Record<WeeklyTask, WeeklyClaim>>;
 }
 
-export type WeeklyTask = "analysis" | "drafts" | "digest";
+export type WeeklyTask = "analysis" | "drafts" | "digest" | "friday";
 export interface WeeklyClaim {
   week: string;
   by: string;

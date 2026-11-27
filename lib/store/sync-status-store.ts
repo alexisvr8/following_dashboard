@@ -18,6 +18,8 @@ export interface SyncStatus {
   aiMeetings?: number;
   /** Última vez que se generaron los borradores semanales de objetivos (lunes 08:30). */
   lastWeeklyDraftsAt?: string | null;
+  /** Última vez que se generaron los resúmenes del viernes. */
+  lastFridayDraftsAt?: string | null;
   /** Última corrida que cambió datos (reuniones, mails, borradores…): la UI solo refresca cuando cambia. */
   lastChangeAt?: string | null;
   durationMs: number;

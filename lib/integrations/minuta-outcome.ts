@@ -1,6 +1,7 @@
-// Minuta post-reunión con borrador en Gmail: si la enviaste desde Gmail (no desde la app), compara lo que salió con
+// Minuta post-reunión (y resumen del viernes) con borrador en Gmail: si la enviaste desde Gmail (no desde la app), compara lo que salió con
 // las líneas que generó la app (`minutaChanges`) y deja la revisión en el modal "De lo enviado" de /accionables
-// (sacado → No corresponde sugerido; pasado a Hecho → cerrar; agregado → crear accionable). Solo lectura en Gmail.
+// (sacado → No corresponde sugerido; pasado a Hecho → cerrar; agregado → crear accionable). Igual con el resumen del
+// viernes (`friday:<lunes>`, mismo formato de líneas). Solo lectura en Gmail.
 import { google } from "googleapis";
 import { getAuthorizedClient } from "@/lib/integrations/google-client";
 import { messageText } from "@/lib/integrations/weekly-outcome";
@@ -55,12 +56,13 @@ export async function captureMinutaOutcomes(file: ClientsFile, opts: { force?: b
         if (await setMinutaOutcome(client.id, key, { state: "deleted", at: now }, [])) saved++;
         continue;
       }
+      const friday = key.startsWith("friday:");
       const meeting = client.meetings.find((m) => m.id === f.meetingId);
-      const day = (meeting?.date ?? f.draftCreatedAt!).slice(0, 10);
+      const day = friday ? key.slice("friday:".length) : (meeting?.date ?? f.draftCreatedAt!).slice(0, 10);
       const review: WeeklyReviewItem[] = minutaChanges(f.minutaItems!, pick.body).map((c) => ({
-        id: `minuta:${f.meetingId}:${c.key}`,
+        id: friday ? `viernes:${day}:${c.key}` : `minuta:${f.meetingId}:${c.key}`,
         week: day,
-        source: "minuta",
+        source: friday ? "viernes" : "minuta",
         meetingId: f.meetingId,
         kind: c.kind,
         ...(c.ticketId && { ticketId: c.ticketId }),

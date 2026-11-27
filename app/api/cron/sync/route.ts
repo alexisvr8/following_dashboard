@@ -20,6 +20,7 @@ export async function POST(req: Request) {
   if (req.headers.get("x-cron-secret") !== process.env.CRON_SECRET) {
     return Response.json({ error: "unauthorized" }, { status: 401 });
   }
-  const result = await runSync({ drafts: new URL(req.url).searchParams.get("drafts") === "1", trigger: "api" });
+  const params = new URL(req.url).searchParams;
+  const result = await runSync({ drafts: params.get("drafts") === "1", friday: params.get("friday") === "1", trigger: "api" });
   return Response.json(result, { status: result.skipped ? 409 : 200 });
 }

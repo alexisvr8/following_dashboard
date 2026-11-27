@@ -24,7 +24,9 @@ import {
 import { getSettings, type WorkSettings } from "@/lib/store/settings-store";
 import { saveSyncStatus, type SyncStatus } from "@/lib/store/sync-status-store";
 import { computeAlerts, type AccountAlert } from "@/lib/utils/followup-alerts";
-import { buildFollowup, buildWeeklyPlan, weeklyAIRequest } from "@/lib/utils/followup";
+import { buildFollowup, buildFridayRecap, buildMondayNudge, buildWeeklyPlan, weeklyAIRequest } from "@/lib/utils/followup";
+import { listEventsBetween } from "@/lib/integrations/calendar";
+import { nextMeetings } from "@/lib/utils/deadlines";
 import { aiEnabled } from "@/lib/llm/postmeeting";
 import { generateWeeklyMail, type WeeklyMailOutput } from "@/lib/llm/weekly-mail";
 import { aiPausedUntil, isAILimitError, pauseAIFor } from "@/lib/llm/ai-limit";
@@ -35,13 +37,16 @@ import { createHash } from "node:crypto";
 // Sincronización completa (la usan el scheduler de `instrumentation.ts` y `/api/cron/*`):
 // 1) minutas nuevas de Gemini Notes (incremental), 2) actividad de mails/reuniones de clientes
 // asignados y no asignados, 3) borrador de minuta de cada reunión nueva (si `settings.autoMeetingDrafts`),
-// 4) alertas y, si `drafts` (lunes), el borrador semanal de objetivos por cuenta. Nunca envía mails.
+// 4) alertas y, si `drafts` (lunes), el borrador semanal de objetivos por cuenta (o el recordatorio corto si el
+// viernes salió el resumen); si `friday`, el resumen de la semana por cuenta. Nunca envía mails.
 
 /** Días hacia atrás que se re-escanean en cada corrida (los mails ya procesados se saltan). */
 const DISCOVERY_DAYS = 7;
 
 export interface SyncOptions {
   drafts: boolean;
+  /** Viernes: resumen de la semana por cuenta asignada (`createFridayDrafts`). */
+  friday?: boolean;
   trigger: "scheduler" | "api";
 }
 
@@ -66,12 +71,13 @@ export async function runSync(opts: SyncOptions): Promise<SyncResult> {
   }
 }
 
-async function doSync({ drafts: withDrafts, trigger }: SyncOptions): Promise<SyncResult> {
+async function doSync({ drafts: withDrafts, friday: withFriday = false, trigger }: SyncOptions): Promise<SyncResult> {
   const started = Date.now();
   // El último mail semanal se conserva entre corridas (el scheduler lo usa para no repetirlo ni saltearlo).
-  const { lastWeeklyDraftsAt, lastChangeAt } = await getSyncStatus();
+  const { lastWeeklyDraftsAt, lastFridayDraftsAt, lastChangeAt } = await getSyncStatus();
   const status: SyncStatus = {
     lastWeeklyDraftsAt,
+    lastFridayDraftsAt,
     lastChangeAt,
     lastRunAt: new Date().toISOString(),
     ok: false,
@@ -150,6 +156,12 @@ async function doSync({ drafts: withDrafts, trigger }: SyncOptions): Promise<Syn
       status.draftsCreated = weekly.filter((d) => d.ok).length;
       status.lastWeeklyDraftsAt = new Date().toISOString();
     }
+    if (withFriday) {
+      const recap = await createFridayDrafts(file, settings);
+      drafts.push(...recap);
+      status.draftsCreated += recap.filter((d) => d.ok).length;
+      status.lastFridayDraftsAt = new Date().toISOString();
+    }
     if (fingerprint(await getClientsFile()) !== fingerprintBefore || status.draftsCreated > 0) {
       status.lastChangeAt = status.lastRunAt;
     }
@@ -187,7 +199,12 @@ export function weekKey(d: Date): string {
  */
 async function createWeeklyDrafts(file: ClientsFile, settings: WorkSettings) {
   const out: { clientId: string; ok: boolean; error?: string }[] = [];
-  const key = `week:${weekKey(new Date())}`;
+  const now = new Date();
+  const key = `week:${weekKey(now)}`;
+  // Resumen del viernes pasado: si salió, el lunes va un recordatorio corto (con la próxima reunión de Calendar).
+  const fridayKey = `friday:${weekKey(new Date(now.getTime() - 7 * 86_400_000))}`;
+  const events = await listEventsBetween(now, new Date(now.getTime() + 14 * 86_400_000)).catch(() => null);
+  const upcoming = nextMeetings(file.clients, events, now);
   for (const client of file.clients) {
     if (client.status !== "assigned") continue;
     const meeting = [...client.meetings].sort((a, b) => b.date.localeCompare(a.date))[0];
@@ -205,6 +222,44 @@ async function createWeeklyDrafts(file: ClientsFile, settings: WorkSettings) {
         out.push({ clientId: client.id, ok: false, error: (error as Error).message });
         continue;
       }
+    }
+    // El viernes salió el resumen (y no hubo reunión después): recordatorio corto en ese hilo en vez de los puntos.
+    const friday = client.followups?.[fridayKey];
+    let fridaySentAt = friday?.sentAt ?? null;
+    if (friday && !fridaySentAt && friday.gmailDraftId) {
+      try {
+        const fate = await draftFate(friday.gmailDraftId, friday.threadId, friday.draftCreatedAt);
+        if (fate.state === "sent") {
+          fridaySentAt = fate.at;
+          await saveFollowup(client.id, fridayKey, { ...friday, sentAt: fate.at });
+        }
+      } catch {
+        // Sin poder confirmarlo va el mail completo de siempre.
+      }
+    }
+    if (friday && fridaySentAt && meeting.date < fridaySentAt) {
+      if (previous?.gmailDraftId && previous.mondayNudge) continue; // ya está el recordatorio de esta semana
+      const nudge = buildMondayNudge(client, meeting, friday, upcoming.get(client.id) ?? null, file.ownerEmail ?? null, settings, now);
+      if (!nudge) continue;
+      try {
+        const created = await createThreadDraft(
+          { threadId: nudge.threadId ?? null, to: nudge.to, cc: nudge.cc, subject: nudge.subject, body: nudge.body },
+          previous?.gmailDraftId,
+        );
+        await saveFollowup(client.id, key, {
+          ...nudge,
+          gmailDraftId: created.draftId,
+          gmailMessageId: created.messageId,
+          threadId: created.threadId,
+          draftCreatedAt: new Date().toISOString(),
+          gmailBody: nudge.body,
+          autoFor: key,
+        });
+        out.push({ clientId: client.id, ok: true });
+      } catch (error) {
+        out.push({ clientId: client.id, ok: false, error: (error as Error).message });
+      }
+      continue;
     }
     const req = weeklyAIRequest(client, meeting, file.ownerEmail ?? null, settings, new Date(), weeklyStyleExamples(file.clients, client.id, key));
     if (!req) continue;
@@ -239,6 +294,49 @@ async function createWeeklyDrafts(file: ClientsFile, settings: WorkSettings) {
         gmailBody: draft.body,
         autoFor: key,
         ...(ai && draft.aiKey === req.key && { weeklyItems: req.ticketIds }),
+      });
+      out.push({ clientId: client.id, ok: true });
+    } catch (error) {
+      out.push({ clientId: client.id, ok: false, error: (error as Error).message });
+    }
+  }
+  return out;
+}
+
+/** Reunión reciente (≤2 días): la minuta ya cuenta la semana, no va el resumen del viernes. */
+const FRIDAY_SKIP_MEETING_MS = 2 * 86_400_000;
+
+/**
+ * Viernes: por cada cuenta asignada, el resumen de la semana (`buildFridayRecap`: lo cerrado esta semana + lo que
+ * queda por lado) como borrador en el hilo de seguimiento. Clave `friday:<lunes>`, una vez por semana; no se crea si
+ * hubo reunión en los últimos 2 días o la semana no tuvo movimiento. Al enviarlo, lo sacado / pasado a Hecho / agregado
+ * se valida en "De lo enviado" (`captureMinutaOutcomes`); si salió, el lunes va solo un recordatorio corto.
+ */
+async function createFridayDrafts(file: ClientsFile, settings: WorkSettings) {
+  const out: { clientId: string; ok: boolean; error?: string }[] = [];
+  const now = new Date();
+  const key = `friday:${weekKey(now)}`;
+  for (const client of file.clients) {
+    if (client.status !== "assigned") continue;
+    const meeting = [...client.meetings].sort((a, b) => b.date.localeCompare(a.date))[0];
+    if (!meeting) continue;
+    const previous = client.followups?.[key];
+    if (previous?.sentAt || previous?.gmailDraftId) continue;
+    if (now.getTime() - Date.parse(meeting.date) < FRIDAY_SKIP_MEETING_MS) continue;
+    const draft = buildFridayRecap(client, meeting, file.ownerEmail ?? null, settings, now);
+    if (!draft || !draft.to.length) continue;
+    const threadId = draft.threadId ?? null;
+    try {
+      const created = await createThreadDraft({ threadId, to: draft.to, cc: draft.cc, subject: draft.subject, body: draft.body });
+      await pinNewThread(client.id, threadId, created.threadId, draft.subject);
+      await saveFollowup(client.id, key, {
+        ...draft,
+        gmailDraftId: created.draftId,
+        gmailMessageId: created.messageId,
+        threadId: created.threadId,
+        draftCreatedAt: new Date().toISOString(),
+        gmailBody: draft.body,
+        autoFor: key,
       });
       out.push({ clientId: client.id, ok: true });
     } catch (error) {

@@ -17,6 +17,8 @@ import { mondayKey } from "@/lib/utils/account-analysis";
 //   semana ENVIADO a mí mismo (`WEEKLY_DIGEST=draft` lo deja como borrador). Una vez por semana cada uno (estado
 //   en `app_state.weekly_ai`). Si el servidor no estaba prendido, corre apenas se levante: el lunes después de esa
 //   hora o cualquier día hábil siguiente de la misma semana.
+// - Viernes (`CRON_FRIDAY_DAY`, default 5) desde `CRON_FRIDAY_AT` (11:00): sync + resumen de la semana por cuenta
+//   (borrador al cliente). Si salió, el lunes siguiente esa cuenta recibe solo un recordatorio corto.
 // - Siempre (cada sync): la minuta en borrador de cada reunión nueva.
 // - Todos los días (hábiles y fines de semana, si el servidor está prendido) entre `CRON_FROM` y `CRON_TO`
 //   (default 8–21), cada `CRON_INTERVAL_MINUTES` (15): sync.
@@ -47,7 +49,10 @@ export function startScheduler() {
   let eventsFetchedAt = 0;
   const [dH, dM] = (process.env.CRON_DRAFTS_AT ?? "08:30").split(":").map(Number);
   const draftsDay = num(process.env.CRON_DRAFTS_DAY, 1);
-  let weeklyTriedAt = 0; // si la corrida semanal falla, se reintenta cada `interval` min (no cada minuto)
+  let weeklyTriedAt = 0;
+  const [fH, fM] = (process.env.CRON_FRIDAY_AT ?? "11:00").split(":").map(Number);
+  const fridayDay = num(process.env.CRON_FRIDAY_DAY, 5);
+  let fridayTriedAt = 0; // si la corrida semanal falla, se reintenta cada `interval` min (no cada minuto)
   const hm = (v: string | undefined, def: string) => {
     const [a, b] = (v ?? def).split(":").map(Number);
     return (Number.isFinite(a) ? a : 0) * 60 + (Number.isFinite(b) ? b : 0);
@@ -100,14 +105,14 @@ export function startScheduler() {
 
   const log = (msg: string) => console.log(`[sync ${new Date().toLocaleString()}] ${msg}`);
 
-  const run = async (drafts: boolean, reason: string) => {
-    const r = await runSync({ drafts, trigger: "scheduler" });
+  const run = async (drafts: boolean, reason: string, friday = false) => {
+    const r = await runSync({ drafts, friday, trigger: "scheduler" });
     if (r.skipped) return log(`${reason}: omitido (ya hay una corrida en curso)`);
     log(
       r.ok
         ? `${reason}: ${r.newMeetings} reuniones nuevas, ${r.synced} clientes, ${r.alerts} alertas` +
             (r.meetingDrafts ? `, ${r.meetingDrafts} minutas en borrador` : "") +
-            (drafts ? `, ${r.draftsCreated} borradores` : "") + ` (${r.durationMs} ms)`
+            (drafts || friday ? `, ${r.draftsCreated} borradores` : "") + ` (${r.durationMs} ms)`
         : `${reason}: error ${r.error}`,
     );
   };
@@ -161,6 +166,15 @@ export function startScheduler() {
         return run(true, "semanal (objetivos)");
       }
     }
+    if (workDays.includes(now.getDay()) && now.getDay() === fridayDay && minuteOfDay >= fH * 60 + fM) {
+      const { lastFridayDraftsAt } = await getSyncStatus();
+      const dueAt = new Date(now.getFullYear(), now.getMonth(), now.getDate(), fH, fM).getTime();
+      if ((!lastFridayDraftsAt || Date.parse(lastFridayDraftsAt) < dueAt) && Date.now() - fridayTriedAt >= interval * 60_000) {
+        fridayTriedAt = Date.now();
+        if (!(await claimWeeklyTask("friday", mondayKey(now), me, 3_600_000))) return log("resumen del viernes: lo está generando otro equipo");
+        return run(false, "viernes (resumen)", true);
+      }
+    }
     await refreshMeetingEnds().catch((e) => log(`calendar: ${(e as Error).message}`));
     const t = Date.now();
     const afterMeeting = meetingEnds.some((end) => t >= end && t - end <= fastMinutes * 60_000);
@@ -178,7 +192,7 @@ export function startScheduler() {
   };
 
   const DAYS = ["domingos", "lunes", "martes", "miércoles", "jueves", "viernes", "sábados"];
-  log(`scheduler activo: cada ${interval} min (${from}–${to} h, todos los días), post-reunión cada ${fastInterval} min por ${fastMinutes} min, objetivos semanales ${DAYS[draftsDay] ?? draftsDay} ${process.env.CRON_DRAFTS_AT ?? "08:30"}, análisis IA ${process.env.CRON_ANALYSIS_AT ?? "07:00"} y resumen ${process.env.CRON_DIGEST_AT ?? "08:00"}`);
+  log(`scheduler activo: cada ${interval} min (${from}–${to} h, todos los días), post-reunión cada ${fastInterval} min por ${fastMinutes} min, objetivos semanales ${DAYS[draftsDay] ?? draftsDay} ${process.env.CRON_DRAFTS_AT ?? "08:30"}, resumen ${DAYS[fridayDay] ?? fridayDay} ${process.env.CRON_FRIDAY_AT ?? "11:00"}, análisis IA ${process.env.CRON_ANALYSIS_AT ?? "07:00"} y resumen ${process.env.CRON_DIGEST_AT ?? "08:00"}`);
   setInterval(() => void tick().catch((e) => log(`error ${(e as Error).message}`)), 60_000);
   // Recuperación al iniciar (en segundo plano, para no bloquear el arranque del servidor).
   setTimeout(() => void catchUp("inicio").catch((e) => log(`error ${(e as Error).message}`)), 10_000);

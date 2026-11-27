@@ -1228,7 +1228,7 @@ function previousWeeklyBodies(client: ClientRecord, now: Date): string[] {
   const current = `week:${mondayKey(now)}`;
   return Object.keys(client.followups ?? {})
     .filter((k) => k.startsWith("week:") && k < current)
-    .filter((k) => client.followups![k].outcome?.state !== "deleted")
+    .filter((k) => client.followups![k].outcome?.state !== "deleted" && !client.followups![k].mondayNudge)
     .sort()
     .reverse()
     .slice(0, 3)
@@ -1386,6 +1386,169 @@ export function buildWeeklyPlan(
     "Saludos",
   ];
   return { ...p.base, subject, body: lines.join("\n"), reviewNotes: [] };
+}
+
+// ── Viernes: resumen de la semana al cliente (reemplaza al mail de objetivos del lunes) ──────────────────────────
+// [ustedes, tú]; rotan por semana y cuenta (`weekSeed`), así no suena siempre igual.
+const FRIDAY_GREETINGS: [string, string][] = [
+  ["Hola {n}, ¿cómo va el cierre de semana?", "Hola {n}, ¿cómo va el cierre de semana?"],
+  ["Buen día {n}, espero que estén terminando bien la semana.", "Buen día {n}, espero que estés terminando bien la semana."],
+  ["Hola {n}, ¿cómo están? Ya cerrando la semana.", "Hola {n}, ¿cómo estás? Ya cerrando la semana."],
+  ["Buen día {n}, espero que estén muy bien.", "Buen día {n}, espero que estés muy bien."],
+];
+const FRIDAY_INTROS: [string, string][] = [
+  ["Les comparto un resumen de lo que avanzamos esta semana y lo que nos queda para la próxima:", "Te comparto un resumen de lo que avanzamos esta semana y lo que nos queda para la próxima:"],
+  ["Antes de cerrar la semana, les dejo lo que avanzamos y los puntos que siguen para la semana que viene:", "Antes de cerrar la semana, te dejo lo que avanzamos y los puntos que siguen para la semana que viene:"],
+  ["Para cerrar la semana, les paso cómo quedamos: lo que avanzamos y lo que sigue:", "Para cerrar la semana, te paso cómo quedamos: lo que avanzamos y lo que sigue:"],
+];
+const FRIDAY_INTROS_NO_DONE: [string, string][] = [
+  ["Antes de cerrar la semana, les comparto los puntos que siguen para la semana que viene:", "Antes de cerrar la semana, te comparto los puntos que siguen para la semana que viene:"],
+  ["Para cerrar la semana, les dejo cómo quedamos con lo que sigue:", "Para cerrar la semana, te dejo cómo quedamos con lo que sigue:"],
+];
+const FRIDAY_CLOSINGS: [string, string][] = [
+  ["Que tengan un buen fin de semana. Cualquier consulta, me avisan.", "Que tengas un buen fin de semana. Cualquier consulta, me avisas."],
+  ["Si algo de esto cambió o quieren priorizar otro punto, me avisan y lo ajustamos. ¡Buen fin de semana!", "Si algo de esto cambió o quieres priorizar otro punto, me avisas y lo ajustamos. ¡Buen fin de semana!"],
+  ["Quedo a disposición por cualquier duda. ¡Buen fin de semana!", "Quedo a disposición por cualquier duda. ¡Buen fin de semana!"],
+];
+
+/** Lunes 00:00 (hora local) de la semana de `now`. */
+const thisMonday = (now: Date) => new Date(now.getFullYear(), now.getMonth(), now.getDate() - ((now.getDay() + 6) % 7));
+
+/**
+ * Resumen del viernes: lo que se cerró esta semana (✅ Ya avanzamos con) + lo que queda abierto para la próxima
+ * (🚀 Accionables por lado), con el mismo formato de líneas que la minuta, así al enviarlo se valida igual
+ * (`minutaItems` → `minutaChanges`: lo sacado → No corresponde, lo pasado a Hecho → se cierra, lo agregado → opción
+ * de crearlo). `null` si no hay destinatarios o la semana no tuvo movimiento (nada cerrado ni nuevo).
+ */
+export function buildFridayRecap(
+  client: ClientRecord,
+  meeting: DiscoveredMeeting,
+  ownerEmail: string | null,
+  settings: WorkSettings,
+  now = new Date(),
+): FollowupDraft | null {
+  const p = weeklyParts(client, meeting, ownerEmail, settings, now);
+  if (!p.base.to.length) return null;
+  const since = thisMonday(now).getTime();
+  const company = companyName(client);
+  const both = `Xtract y ${company}`;
+  const me = firstName(settings.ownerAliases[0] ?? "Alexis");
+  const created = new Map((client.customActionables ?? []).map((c) => [c.id, c.createdAt]));
+  const steps = accountActionables(client)
+    .filter((a) => !isAutoTicket(a.id))
+    .map((a) => {
+      const ai = aiStep(client.id, a);
+      const side = overrideSide(client, a.id, ai ? AI_SIDE[ai.empresa] : stepSide(a.step, client, ownerEmail, settings));
+      const text = (ai?.mail && !client.actionableEdits?.[a.id] ? ai.mail : formatStep(a.step)).replace(/\s*\.+$/, "");
+      return {
+        a,
+        text,
+        owner: ai?.empresa === "ambas" ? both : groupTag(a.step),
+        ours: side === "me" || side === "team",
+        status: (ai && ai.status !== "Hecho" ? ai.status : "Pendiente") as MailStatus,
+        origin: created.get(a.id) ?? a.meeting.date,
+      };
+    });
+  const open = steps.filter((s) => !s.a.done);
+  const doneWeek = steps
+    .filter((s) => s.a.done && s.a.doneAt && Date.parse(s.a.doneAt) >= since)
+    .sort((x, y) => x.a.doneAt!.localeCompare(y.a.doneAt!));
+  const newThisWeek = open.some((s) => Date.parse(s.origin) >= since);
+  if (!doneWeek.length && !newThisWeek) return null;
+
+  const theirLines = open.filter((s) => !s.ours).map((s) => ({ s, line: actionableLine(s.text, s.owner || "Equipo", s.status) }));
+  const ourLines = open.filter((s) => s.ours).map((s) => ({ s, line: actionableLine(s.text, s.owner === both ? both : me, s.status) }));
+  const doneLines = doneWeek.map((s) => ({ s, line: actionableLine(s.text, s.owner || me, "Hecho", fmtDay(s.a.doneAt!)) }));
+  const minutaItems: MinutaItem[] = [...theirLines, ...ourLines, ...doneLines].map((x) => ({ ticketId: x.s.a.id, line: x.line, done: x.s.a.done }));
+
+  const seed = weekSeed(client.id, now);
+  const k = p.plural ? 0 : 1;
+  const name = p.plural ? "equipo" : (p.names[0] ?? "equipo");
+  const intros = doneLines.length ? FRIDAY_INTROS : FRIDAY_INTROS_NO_DONE;
+  const section = (title: string, rows: string[]) => (rows.length ? ["", title, ...rows] : []);
+  const body = [
+    FRIDAY_GREETINGS[seed % FRIDAY_GREETINGS.length][k].replace("{n}", name),
+    "",
+    intros[seed % intros.length][k],
+    ...section("✅ Ya avanzamos con:", doneLines.map((x) => x.line)),
+    ...(theirLines.length || ourLines.length
+      ? ["", "🚀 Accionables:", ...section(`De parte de ${company}:`, theirLines.map((x) => x.line)), ...section("De nuestro lado (Xtract):", ourLines.map((x) => x.line))]
+      : []),
+    "",
+    "",
+    FRIDAY_CLOSINGS[(seed + 1) % FRIDAY_CLOSINGS.length][k],
+    "",
+    "",
+    "Saludos",
+  ].join("\n");
+  return {
+    ...p.base,
+    meetingId: meeting.id,
+    subject: p.base.threadId ? p.base.subject : `Resumen de la semana – ${company}`,
+    body,
+    reviewNotes: ["Resumen del viernes: lo que saques o pases a Hecho se valida en \"De lo enviado\" al enviarlo."],
+    minutaItems,
+  };
+}
+
+// ── Lunes después del resumen del viernes: recordatorio corto en el mismo hilo ───────────────────────────────────
+// `{r}` = " de cara a nuestra reunión pautada para el jueves 04/12" (solo si hay reunión agendada).
+const MONDAY_NUDGES: [string, string][] = [
+  ["Les recuerdo los accionables que quedaron de su lado en el mail del viernes, así logramos avanzar esta semana{r}.", "Te recuerdo los accionables que quedaron de tu lado en el mail del viernes, así logramos avanzar esta semana{r}."],
+  ["Cuando puedan, vayan viendo los puntos de su lado que les compartí el viernes, para que esta semana sigamos avanzando{r}.", "Cuando puedas, ve viendo los puntos de tu lado que te compartí el viernes, para que esta semana sigamos avanzando{r}."],
+  ["Retomo el resumen del viernes: les pido que vayan revisando los accionables de su lado así avanzamos esta semana{r}.", "Retomo el resumen del viernes: te pido que vayas revisando los accionables de tu lado así avanzamos esta semana{r}."],
+  ["Un recordatorio rápido de los puntos de su lado que quedaron en el mail del viernes, para que logremos avanzar esta semana{r}.", "Un recordatorio rápido de los puntos de tu lado que quedaron en el mail del viernes, para que logremos avanzar esta semana{r}."],
+];
+const MONDAY_NUDGE_CLOSINGS: [string, string][] = [
+  ["Cualquier duda, me avisan.", "Cualquier duda, me avisas."],
+  ["Si algo se traba, me avisan y lo vemos.", "Si algo se traba, me avisas y lo vemos."],
+  ["Quedo atento a cualquier consulta.", "Quedo atento a cualquier consulta."],
+];
+
+/**
+ * Lunes de una cuenta que recibió el resumen del viernes: en vez de repetir los puntos, un recordatorio corto
+ * (rotativo) en el hilo del viernes y, si hay reunión agendada (`nextMeetingAt`, de Calendar), "de cara a
+ * nuestra reunión pautada para el …". `null` si ya no queda nada del lado del cliente.
+ */
+export function buildMondayNudge(
+  client: ClientRecord,
+  meeting: DiscoveredMeeting,
+  friday: FollowupDraft,
+  nextMeetingAt: string | null,
+  ownerEmail: string | null,
+  settings: WorkSettings,
+  now = new Date(),
+): FollowupDraft | null {
+  const p = weeklyParts(client, meeting, ownerEmail, settings, now);
+  if (!p.theirs.length && !p.shared.length) return null;
+  const to = friday.to.length ? friday.to : p.base.to;
+  if (!to.length) return null;
+  const seed = weekSeed(client.id, now);
+  const k = p.plural ? 0 : 1;
+  const when = nextMeetingAt
+    ? `${new Date(nextMeetingAt).toLocaleDateString("es", { weekday: "long" })} ${fmtDay(nextMeetingAt)}`
+    : null;
+  const line = MONDAY_NUDGES[seed % MONDAY_NUDGES.length][k].replace("{r}", when ? ` de cara a nuestra reunión pautada para el ${when}` : "");
+  const subject = friday.subject ? (/^re:/i.test(friday.subject) ? friday.subject : `Re: ${friday.subject}`) : p.base.subject;
+  const body = [
+    weeklyGreeting(client.id, now, p.plural ? null : (p.names[0] ?? null), p.plural),
+    "",
+    line,
+    "",
+    MONDAY_NUDGE_CLOSINGS[(seed + 1) % MONDAY_NUDGE_CLOSINGS.length][k],
+    "",
+    "Saludos",
+  ].join("\n");
+  return {
+    ...p.base,
+    to,
+    cc: friday.cc ?? p.base.cc,
+    threadId: friday.threadId ?? p.base.threadId,
+    subject,
+    body,
+    reviewNotes: ["Recordatorio del lunes: los puntos ya salieron en el resumen del viernes."],
+    mondayNudge: true,
+  };
 }
 
 /** Entrada de la IA para el mail de seguimiento vigente (la misma que arma `buildStatusUpdate`) y su huella. */
