@@ -5,7 +5,9 @@
 //   manual de ningún lado (ver merge-clients.mjs). Respalda Supabase en `.data/` antes de escribir.
 //   Con --dry-run solo muestra qué cambiaría.
 // - --force: sobrescribe cada cliente con la versión del archivo (pierde lo hecho solo en Supabase).
-import { readFile, writeFile } from "node:fs/promises";
+// - --restore [--dry-run] [--accept-diff]: vuelta del modo archivo (rescate): lo local manda y se sube todo
+//   (cuentas con version+1 y todas las claves de app_state). Ver runRestore.
+import { readdir, readFile, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { createClient } from "@supabase/supabase-js";
 import { diffSummary, mergeClient, sameJson } from "./merge-clients.mjs";
@@ -40,6 +42,10 @@ const { data: existing, error: countError } = await db.from("clients").select("i
 if (countError) throw new Error(`¿Aplicaste 0002_app_store.sql y la URL es la base (sin /rest/v1)? ${countError.message}`);
 if (merge) {
   await runMerge();
+  process.exit(0);
+}
+if (process.argv.includes("--restore")) {
+  await runRestore();
   process.exit(0);
 }
 if (existing.length && !force) {
@@ -148,4 +154,101 @@ async function runMerge() {
     if (value) console.log(`${key}: subido (no existía en Supabase)`);
   }
   console.log("Listo.");
+}
+
+// Claves de app_state y su archivo en modo `file` (igual que lib/store/backend.ts). `scheduler_lock` no se sube:
+// el candado lo toma el equipo que arranque.
+function stateFiles() { return {
+  settings: "settings.json",
+  sync_status: "sync-status.json",
+  google_tokens: "google-tokens.json",
+  notion_tokens: "notion-tokens.json",
+  weekly_ai: "weekly-ai.json",
+  ai_usage: "ai-usage.json",
+  board_order: "board-order.json",
+  unassigned_mails: "unassigned-mails.json",
+  supabase_egress: "supabase-egress.json",
+  not_today: "not-today.json",
+  google_pause: "google-pause.json",
+}; }
+
+// Vuelta del modo archivo (después de `export:supabase --local`): lo de `.data/` es la verdad. Antes de escribir
+// verifica que la base siga igual que el último rescate (`.data/rescate-*/clients.json`); si alguna cuenta cambió
+// (p. ej. otro equipo escribió), se niega salvo `--accept-diff`. Cuentas que solo están en la base se conservan.
+async function runRestore() {
+  const file = await readJson("clients.json");
+  if (!file) throw new Error("No hay .data/clients.json para subir.");
+  const rescueDir = (await readdir(DATA)).filter((n) => n.startsWith("rescate-")).sort().pop();
+  if (!rescueDir) throw new Error("No hay carpeta .data/rescate-* para verificar la base.");
+  const rescue = JSON.parse(await readFile(path.join(DATA, rescueDir, "clients.json"), "utf-8"));
+
+  const { data: rows, error } = await db.from("clients").select("id, data, version");
+  check("clients (lectura)", { error });
+  const { data: state, error: stateError } = await db.from("app_state").select("key, value");
+  check("app_state (lectura)", { error: stateError });
+  const stateMap = Object.fromEntries(state.map((r) => [r.key, r.value]));
+
+  // 1) ¿La base cambió desde el rescate?
+  const rescueById = new Map(rescue.clients.map((c) => [c.id, c]));
+  const changed = rows.filter((r) => !rescueById.has(r.id) || !sameJson(r.data, rescueById.get(r.id)));
+  console.log(`Base: ${rows.length} cuentas · rescate ${rescueDir}: ${rescue.clients.length} · cambiadas desde el rescate: ${changed.length}`);
+  for (const r of changed) console.log(`  ! ${r.data.name} (${r.id}) ${rescueById.has(r.id) ? "distinta al rescate" : "no está en el rescate"}`);
+  for (const key of Object.keys(stateFiles())) {
+    let saved = null;
+    try { saved = JSON.parse(await readFile(path.join(DATA, rescueDir, `app_state.${key}.json`), "utf-8")); } catch {}
+    if (saved && stateMap[key] && !sameJson(saved, stateMap[key])) console.log(`  · app_state.${key} distinto al rescate`);
+  }
+  if (changed.length && !process.argv.includes("--accept-diff")) {
+    throw new Error("La base cambió después del rescate: revisa esas cuentas (o usa --merge). --accept-diff las pisa igual.");
+  }
+
+  // 2) Qué se sube.
+  const byId = new Map(rows.map((r) => [r.id, r]));
+  const localIds = new Set(file.clients.map((c) => c.id));
+  const updates = file.clients.filter((c) => byId.has(c.id) && !sameJson(c, byId.get(c.id).data));
+  const inserts = file.clients.filter((c) => !byId.has(c.id));
+  const onlyDb = rows.filter((r) => !localIds.has(r.id));
+  for (const c of inserts) console.log(`  + ${c.name} (${c.id}) nueva`);
+  for (const r of onlyDb) console.log(`  = ${r.data.name} (${r.id}) solo en la base: se conserva`);
+  const stateUploads = [];
+  for (const [key, name] of Object.entries(stateFiles())) {
+    let value = await readJson(name);
+    if (value == null) continue;
+    if (key === "supabase_egress") {
+      // Medido por día: se queda el mayor de cada lado.
+      const merged = { ...stateMap[key] };
+      for (const [d, v] of Object.entries(value)) if (!merged[d] || v.bytes > merged[d].bytes) merged[d] = v;
+      value = merged;
+    }
+    if (!sameJson(value, stateMap[key])) stateUploads.push([key, value]);
+  }
+  const meta = { lastScanAt: file.lastScanAt ?? null, ownerEmail: file.ownerEmail ?? null };
+  stateUploads.push(["clients_meta", meta], ["clients_unmatched", file.unmatched ?? []]);
+  console.log(`\nResumen: ${updates.length} cuentas actualizadas, ${inserts.length} nuevas, ` +
+    `${file.clients.length - updates.length - inserts.length} iguales, ${onlyDb.length} solo en la base · ` +
+    `app_state: ${stateUploads.map(([k]) => k).join(", ")}`);
+  if (dryRun) {
+    console.log("--dry-run: no se escribió nada.");
+    return;
+  }
+
+  // 3) Respaldo y escritura (version+1, solo si nadie tocó la fila desde la lectura).
+  const backup = path.join(DATA, `supabase-backup-${new Date().toISOString().replace(/[:.]/g, "-")}.json`);
+  await writeFile(backup, JSON.stringify({ clients: rows, app_state: state }, null, 2));
+  console.log(`Respaldo de Supabase: ${backup}`);
+  for (const c of updates) {
+    const row = byId.get(c.id);
+    const { data, error: updateError } = await db.from("clients")
+      .update({ status: c.status, name: c.name, domain: c.domain, data: c, version: row.version + 1 })
+      .eq("id", c.id).eq("version", row.version).select("id");
+    check(`clients (${c.id})`, { error: updateError });
+    if (!data.length) throw new Error(`${c.id} cambió mientras se subía (¿la app corre contra Supabase?). Vuelve a correr --restore.`);
+  }
+  if (inserts.length) {
+    check("clients (alta)", await db.from("clients").insert(
+      inserts.map((c) => ({ id: c.id, status: c.status, name: c.name, domain: c.domain, data: c })),
+    ));
+  }
+  for (const [key, value] of stateUploads) check(key, await db.from("app_state").upsert({ key, value }));
+  console.log("Listo. Quita STORE_BACKEND=file de .env.local y reinicia la app.");
 }

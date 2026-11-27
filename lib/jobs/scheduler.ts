@@ -8,6 +8,8 @@ import { deliverWeeklyDigest } from "@/lib/integrations/weekly-digest";
 import { claimWeeklyTask, getWeeklyAIState, saveWeeklyAIState } from "@/lib/store/weekly-ai-store";
 import { holdSchedulerLock, schedulerHost, schedulerId } from "@/lib/jobs/scheduler-lock";
 import { mondayKey } from "@/lib/utils/account-analysis";
+import { usingSupabase } from "@/lib/store/backend";
+import { egressBudget, type EgressBudget } from "@/lib/store/egress-store";
 
 // Scheduler interno (sin dependencias): un tick por minuto contra la hora local del servidor (`TZ`).
 // - Lunes (`CRON_DRAFTS_DAY`, default 1) desde las `CRON_DRAFTS_AT` (default 08:30): sync + borrador semanal de
@@ -131,6 +133,7 @@ export function startScheduler() {
 
   // Candado compartido: un solo equipo corre el scheduler; avisa en el log cuando cambia de rol.
   let leader: boolean | null = null;
+  let lastBudget: EgressBudget = "ok";
   const isLeader = async () => {
     const ok = await holdSchedulerLock();
     if (ok !== leader) log(ok ? `scheduler: este equipo (${me.host}) corre la sync automática` : "scheduler: en pausa, otro equipo tiene la sync automática");
@@ -175,11 +178,20 @@ export function startScheduler() {
         return run(false, "viernes (resumen)", true);
       }
     }
+    // Freno por egress de Supabase: cerca del límite, la sync automática se espacia (×4) o se detiene.
+    const budget: EgressBudget = usingSupabase() ? await egressBudget().catch(() => "ok" as const) : "ok";
+    if (budget !== lastBudget) {
+      log(budget === "ok" ? "egress Supabase normal: sync automática habitual"
+        : `egress Supabase alto: sync automática ${budget === "stop" ? "detenida (solo manual)" : `cada ${interval * 4} min`}`);
+      lastBudget = budget;
+    }
+    if (budget === "stop") return;
+    const every = budget === "slow" ? interval * 4 : interval;
     await refreshMeetingEnds().catch((e) => log(`calendar: ${(e as Error).message}`));
     const t = Date.now();
     const afterMeeting = meetingEnds.some((end) => t >= end && t - end <= fastMinutes * 60_000);
-    if (afterMeeting && minuteOfDay % fastInterval === 0) return run(false, "post-reunión");
-    if (inWindow && minuteOfDay % interval === 0) return run(false, "periódica");
+    if (budget === "ok" && afterMeeting && minuteOfDay % fastInterval === 0) return run(false, "post-reunión");
+    if (inWindow && minuteOfDay % every === 0) return run(false, "periódica");
     if (inWindow && gap > 2 * 60_000) return catchUp("recuperación");
   };
 

@@ -35,3 +35,21 @@ export async function getEgressSummary(days = 30): Promise<{ today: number; tota
   }
   return { today: saved[todayKey]?.bytes ?? 0, total, requests };
 }
+
+// Freno del scheduler según lo medido (plan Free: 5 GB por ciclo, ~166 MB/día). `slow` = sync automática más
+// espaciada y sin modo post-reunión; `stop` = sin sync automática (lo manual sigue). Se consulta cada 5 min.
+export const EGRESS_QUOTA_BYTES = 5 * 1024 ** 3;
+const DAILY_BUDGET = EGRESS_QUOTA_BYTES / 30;
+export type EgressBudget = "ok" | "slow" | "stop";
+const g = globalThis as unknown as { __egressBudget?: { at: number; value: EgressBudget } };
+
+export async function egressBudget(): Promise<EgressBudget> {
+  if (g.__egressBudget && Date.now() - g.__egressBudget.at < 5 * 60_000) return g.__egressBudget.value;
+  const { today, total } = await getEgressSummary(30);
+  const value: EgressBudget =
+    total > EGRESS_QUOTA_BYTES * 0.9 || today > DAILY_BUDGET * 4 ? "stop"
+    : total > EGRESS_QUOTA_BYTES * 0.7 || today > DAILY_BUDGET * 2 ? "slow"
+    : "ok";
+  g.__egressBudget = { at: Date.now(), value };
+  return value;
+}
